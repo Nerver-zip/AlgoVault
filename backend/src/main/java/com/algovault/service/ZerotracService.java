@@ -18,13 +18,13 @@ import java.util.Map;
 public class ZerotracService {
     private static final String RATINGS_URL = "https://raw.githubusercontent.com/zerotrac/leetcode_problem_rating/main/ratings.txt";
     private static final String FALLBACK_URL = "https://cdn.jsdelivr.net/gh/zerotrac/leetcode_problem_rating@main/ratings.txt";
-    private static final String CACHE_KEY = "zerotrac:ratings:v3";
-    private static final String FULL_CACHE_KEY = "zerotrac:full-ratings:v3";
+    private static final String CACHE_KEY = "zerotrac:ratings:v4";
+    private static final String FULL_CACHE_KEY = "zerotrac:full-ratings:v4";
 
     private final RedisTemplate<String, Object> redisTemplate;
     private final RestTemplate restTemplate;
 
-    public record ZerotracInfo(Double rating, String title, String contestId, String problemIndex) implements Serializable {
+    public record ZerotracInfo(Double rating, String title, String contestId, String problemIndex, Integer id) implements Serializable {
         private static final long serialVersionUID = 1L;
     }
 
@@ -116,11 +116,17 @@ public class ZerotracService {
 
             try {
                 Double rating = Double.parseDouble(parts[0]);
+                Integer id = null;
+                if (parts.length > 1) {
+                    try {
+                        id = Integer.parseInt(parts[1]);
+                    } catch (NumberFormatException ignored) {}
+                }
                 String titleSlug = parts[4];
                 String title = parts.length > 2 ? parts[2] : titleSlug;
                 String contestId = parts.length > 5 ? parts[5] : "";
                 String problemIndex = parts.length > 6 ? parts[6] : "?";
-                ratings.put(titleSlug, new ZerotracInfo(rating, title, contestId, problemIndex));
+                ratings.put(titleSlug, new ZerotracInfo(rating, title, contestId, problemIndex, id));
             } catch (NumberFormatException ignored) {
                 // Skip malformed upstream rows without failing the whole sync.
             }

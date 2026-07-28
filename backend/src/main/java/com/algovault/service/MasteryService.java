@@ -119,8 +119,17 @@ public class MasteryService {
                     ? first.getProblem().getActualRating()
                     : 1500.0;
 
+                // Dynamic opponent RD: well-known problems have low RD, uncertain ones high.
+                double baseOpponentRD = computeOpponentRD(first.getProblem());
+
+                // Fractional tag attribution: a problem with N tags gives each tag
+                // score/N credit, preventing multi-tag double-counting.
+                int numTags = (first.getProblem().getTags() != null) ? first.getProblem().getTags().size() : 1;
+                double effectiveScore = numTags > 1 ? score / numTags : score;
+                double effectiveOpponentRD = numTags > 1 ? baseOpponentRD * Math.sqrt(numTags) : baseOpponentRD;
+
                 currentRating = glickoEngine.updateRating(currentRating, List.of(
-                    new Glicko2MasteryEngine.MatchResult(opponentRating, 50.0, score)
+                    new Glicko2MasteryEngine.MatchResult(opponentRating, effectiveOpponentRD, effectiveScore)
                 ));
             }
 
@@ -256,8 +265,16 @@ public class MasteryService {
                 ? first.getProblem().getActualRating()
                 : 1500.0;
 
+            // Dynamic opponent RD based on problem metadata confidence
+            double baseOpponentRD = computeOpponentRD(first.getProblem());
+
+            // Fractional tag attribution for multi-tag problems
+            int numTags = (first.getProblem().getTags() != null) ? first.getProblem().getTags().size() : 1;
+            double effectiveScore = numTags > 1 ? score / numTags : score;
+            double effectiveOpponentRD = numTags > 1 ? baseOpponentRD * Math.sqrt(numTags) : baseOpponentRD;
+
             currentRating = glickoEngine.updateRating(currentRating, List.of(
-                new Glicko2MasteryEngine.MatchResult(opponentRating, 50.0, score)
+                new Glicko2MasteryEngine.MatchResult(opponentRating, effectiveOpponentRD, effectiveScore)
             ));
         }
 
@@ -288,5 +305,23 @@ public class MasteryService {
         tm.setLastSolvedAt(lastSolvedAt);
 
         tagMasteryRepository.save(tm);
+    }
+
+    /**
+     * Computes the Glicko-2 opponent rating deviation based on how well-established
+     * a problem's rating is. Well-known problems (with acceptance rate data) have
+     * low RD; uncertain problems have high RD.
+     */
+    private double computeOpponentRD(com.algovault.model.Problem problem) {
+        if (problem.getActualRating() != null && problem.getAcceptanceRate() != null) {
+            // Well-established rating from zerotrac/LC contest data
+            return 30.0;
+        } else if (problem.getActualRating() != null) {
+            // Has a rating but no acceptance data — somewhat confident
+            return 60.0;
+        } else {
+            // Rating inferred from difficulty string — high uncertainty
+            return 120.0;
+        }
     }
 }

@@ -8,6 +8,145 @@ export const config: PlasmoCSConfig = {
   run_at: "document_idle"
 }
 
+let isZenithActive = false;
+let isZenithRevealed = false;
+
+const hideForbiddenTabs = () => {
+  if (!isZenithActive || isZenithRevealed) return;
+
+  // 1. Target via XPath text search for "Editorial", "Solutions", "Discussion"
+  const xpathResult = document.evaluate(
+    "//*[text()='Editorial' or text()='Solutions' or text()='Discussion']",
+    document,
+    null,
+    XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+    null
+  );
+
+  for (let i = 0; i < xpathResult.snapshotLength; i++) {
+    const node = xpathResult.snapshotItem(i) as HTMLElement;
+    if (node) {
+      // Find closest tab container or interactive wrapper
+      const tabContainer = node.closest('[role="tab"], a, button, div[class*="tab"]') || node;
+      if (tabContainer && !tabContainer.textContent?.includes("Description") && !tabContainer.id?.includes("av-intentional-reveal")) {
+        (tabContainer as HTMLElement).style.setProperty("display", "none", "important");
+      }
+    }
+  }
+
+  // 2. Target tablist children that are not Description
+  const tablist = document.querySelectorAll('[role="tablist"] > *');
+  tablist.forEach((child) => {
+    const text = child.textContent?.trim() || "";
+    if ((text.includes("Editorial") || text.includes("Solutions") || text.includes("Discussion") || text.includes("Discuss")) && !child.id?.includes("av-intentional-reveal")) {
+      (child as HTMLElement).style.setProperty("display", "none", "important");
+    }
+  });
+};
+
+const injectIntentionalRevealButton = () => {
+  if (!isZenithActive || isZenithRevealed) return;
+  const tablist = document.querySelector('[role="tablist"]');
+  if (tablist && !document.getElementById("av-intentional-reveal")) {
+    const revealBtn = document.createElement("button");
+    revealBtn.id = "av-intentional-reveal";
+    revealBtn.className = "ml-auto text-xs px-3 py-1 rounded bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors font-medium flex items-center gap-1 cursor-pointer font-mono select-none";
+    revealBtn.innerHTML = "<span>🔒</span> Yield & Reveal Solutions";
+    revealBtn.title = "Hold for 2 seconds to yield and reveal solutions";
+
+    let holdTimer: number | null = null;
+
+    revealBtn.onmousedown = () => {
+      revealBtn.innerHTML = "<span>🔓</span> Yielding...";
+      revealBtn.style.backgroundColor = "rgba(239, 68, 68, 0.3)";
+      holdTimer = window.setTimeout(() => {
+        chrome.storage.local.set({ 
+          "algovault.zenithGrade": "D", 
+          "algovault.zenithReason": "Intentional Reveal" 
+        }, () => {
+          isZenithRevealed = true;
+          // Un-hide Editorial & Solutions tabs
+          document.querySelectorAll('[role="tab"], a, button, div').forEach((el) => {
+            const text = el.textContent?.trim() || "";
+            if (text === "Editorial" || text === "Solutions" || text === "Discussion") {
+              (el as HTMLElement).style.removeProperty("display");
+              const parent = (el as HTMLElement).closest('[role="tab"]');
+              if (parent) (parent as HTMLElement).style.removeProperty("display");
+            }
+          });
+          revealBtn.innerHTML = "<span>✅</span> Solutions Revealed";
+          revealBtn.disabled = true;
+          revealBtn.style.opacity = "0.5";
+          revealBtn.style.cursor = "default";
+        });
+      }, 2000);
+    };
+
+    revealBtn.onmouseup = revealBtn.onmouseleave = () => {
+      if (holdTimer) {
+        clearTimeout(holdTimer);
+        if (!revealBtn.disabled) {
+          revealBtn.innerHTML = "<span>🔒</span> Yield & Reveal Solutions";
+          revealBtn.style.backgroundColor = "rgba(239, 68, 68, 0.1)";
+        }
+      }
+    };
+
+    tablist.appendChild(revealBtn);
+  }
+};
+
+const applyZenithMode = (isActive: boolean) => {
+  let zenithStyle = document.getElementById("av-zenith-style");
+  if (isActive) {
+    if (!zenithStyle) {
+      zenithStyle = document.createElement("style");
+      zenithStyle.id = "av-zenith-style";
+      // Cinematic Focus: Darker backgrounds, hiding extraneous information
+      zenithStyle.textContent = `
+        /* Hide Navbar to prevent navigation away */
+        #navbar-root, nav, header { display: none !important; }
+        
+        /* Hide topics, companies, hints sections at the bottom */
+        div[class*="topic-tags"], div.mt-6.flex.flex-col.gap-3 { display: none !important; }
+        
+        /* Hide LeetCode's own timer/session widgets if any */
+        [data-track-load="timer"] { display: none !important; }
+        
+        /* Premium Background */
+        body { background-color: #030303 !important; }
+      `;
+      document.head.appendChild(zenithStyle);
+    }
+    hideForbiddenTabs();
+    injectIntentionalRevealButton();
+  } else {
+    isZenithRevealed = false;
+    if (zenithStyle) zenithStyle.remove();
+    const revealBtn = document.getElementById("av-intentional-reveal");
+    if (revealBtn) revealBtn.remove();
+    // Restore any hidden tabs if Zenith is turned off
+    document.querySelectorAll('[role="tab"], a, button').forEach((el) => {
+      if ((el as HTMLElement).style.display === "none") {
+        (el as HTMLElement).style.removeProperty("display");
+      }
+    });
+  }
+}
+
+// Listen for Zenith state changes to apply/remove blackout
+chrome.storage.local.get("algovault.isZenith", (res) => {
+  isZenithActive = !!res["algovault.isZenith"];
+  applyZenithMode(isZenithActive);
+});
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === "local" && changes["algovault.isZenith"]) {
+    isZenithActive = !!changes["algovault.isZenith"].newValue;
+    applyZenithMode(isZenithActive);
+  }
+});
+
 // Global state to prevent infinite loops from MutationObserver
 let ratingInjected = false;
 let acceptanceHidden = false;
@@ -162,41 +301,151 @@ const injectAlgoVaultOverlay = () => {
     titleH1.appendChild(listsBtn);
   }
 
-  // Inject Start Zenith button if not already in Zenith session
-  if (titleH1 && !document.getElementById('av-start-zenith-btn')) {
-    chrome.storage.local.get("algovault.isZenith", (res) => {
-      const active = !!res["algovault.isZenith"];
-      if (active) return;
+  // Helper to make Zenith button freely draggable across the screen
+  const makeElementDraggable = (el: HTMLElement, storageKey: string, onClickHandler: () => void) => {
+    let isDragging = false;
+    let startX = 0;
+    let startY = 0;
+    let initialLeft = 0;
+    let initialTop = 0;
+    let hasMoved = false;
 
-      const startZenithBtn = document.createElement('button');
-      startZenithBtn.id = 'av-start-zenith-btn';
-      startZenithBtn.textContent = '⚔️ Start Zenith';
-      startZenithBtn.className = 'ml-3 text-xs px-2.5 py-1 rounded bg-[#dfa054]/10 text-[#dfa054] border border-[#dfa054]/25 hover:bg-[#dfa054]/20 transition-colors font-medium cursor-pointer';
-      startZenithBtn.onclick = () => {
-        showZenithQuestModal(
-          (intent) => {
-            // Synchronously request fullscreen on user click
-            document.documentElement.requestFullscreen().catch((err) => {
-              console.warn("Fullscreen request rejected:", err);
-            });
-            chrome.storage.local.set({
-              "algovault.isZenith": true,
-              "algovault.zenithGrade": "S_PLUS",
-              "algovault.zenithReason": "Pure Solve",
-              "algovault.zenithFocusScore": 100,
-              "algovault.zenithIntent": intent,
-              "algovault.problemStartTime": new Date().toISOString()
-            }, () => {
-              startZenithBtn.remove();
-            });
-          },
-          () => {
-            // Cancel
-          }
-        );
-      };
-      titleH1.appendChild(startZenithBtn);
+    // Restore saved position if present
+    chrome.storage.local.get(storageKey, (res) => {
+      const saved = res[storageKey];
+      if (saved && typeof saved.left === "number" && typeof saved.top === "number") {
+        el.style.bottom = "auto";
+        el.style.left = `${saved.left}px`;
+        el.style.top = `${saved.top}px`;
+      }
     });
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      isDragging = true;
+      hasMoved = false;
+      startX = e.clientX;
+      startY = e.clientY;
+
+      const rect = el.getBoundingClientRect();
+      initialLeft = rect.left;
+      initialTop = rect.top;
+
+      el.style.transition = "none";
+      el.style.cursor = "grabbing";
+
+      const onMouseMove = (moveEvent: MouseEvent) => {
+        if (!isDragging) return;
+        const dx = moveEvent.clientX - startX;
+        const dy = moveEvent.clientY - startY;
+
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+          hasMoved = true;
+        }
+
+        let newLeft = Math.max(10, Math.min(window.innerWidth - rect.width - 10, initialLeft + dx));
+        let newTop = Math.max(10, Math.min(window.innerHeight - rect.height - 10, initialTop + dy));
+
+        el.style.bottom = "auto";
+        el.style.left = `${newLeft}px`;
+        el.style.top = `${newTop}px`;
+      };
+
+      const onMouseUp = () => {
+        isDragging = false;
+        el.style.cursor = "pointer";
+        el.style.transition = "all 0.3s ease";
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+
+        if (hasMoved) {
+          const rect = el.getBoundingClientRect();
+          chrome.storage.local.set({
+            [storageKey]: { left: rect.left, top: rect.top }
+          });
+        } else {
+          onClickHandler();
+        }
+      };
+
+      window.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", onMouseUp);
+    };
+
+    el.addEventListener("mousedown", onMouseDown);
+  };
+
+  // Inject Start Zenith button if not already in Zenith session
+  if (!document.getElementById('av-start-zenith-btn') && !isZenithActive) {
+    const startZenithBtn = document.createElement('button');
+    startZenithBtn.id = 'av-start-zenith-btn';
+    startZenithBtn.innerHTML = '<span style="font-size: 12px; margin-right: 4px;">⚔️</span> ZENITH';
+    
+    // Positioned at bottom-left corner by default with compact, sleek pill styling
+    Object.assign(startZenithBtn.style, {
+      position: 'fixed',
+      bottom: '24px',
+      left: '24px',
+      zIndex: '9999',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '4px 10px',
+      borderRadius: '9999px',
+      backgroundColor: 'rgba(9, 9, 11, 0.85)',
+      color: '#dfa054',
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      fontSize: '11px',
+      fontWeight: '700',
+      letterSpacing: '0.8px',
+      textTransform: 'uppercase',
+      border: '1px solid rgba(223, 160, 84, 0.3)',
+      boxShadow: '0 2px 10px rgba(0, 0, 0, 0.5), 0 0 12px rgba(223, 160, 84, 0.15)',
+      backdropFilter: 'blur(8px)',
+      cursor: 'pointer',
+      userSelect: 'none',
+      transition: 'all 0.2s ease'
+    });
+
+    startZenithBtn.onmouseover = () => {
+      startZenithBtn.style.backgroundColor = 'rgba(24, 24, 27, 0.95)';
+      startZenithBtn.style.borderColor = 'rgba(223, 160, 84, 0.6)';
+      startZenithBtn.style.boxShadow = '0 0 25px rgba(223, 160, 84, 0.3)';
+    };
+    
+    startZenithBtn.onmouseleave = () => {
+      startZenithBtn.style.backgroundColor = 'rgba(9, 9, 11, 0.9)';
+      startZenithBtn.style.borderColor = 'rgba(223, 160, 84, 0.3)';
+      startZenithBtn.style.boxShadow = '0 0 15px rgba(223, 160, 84, 0.15)';
+    };
+
+    makeElementDraggable(startZenithBtn, "algovault.zenithBtnPos", () => {
+      showZenithQuestModal(
+        (intent) => {
+          // Synchronously request fullscreen on user click
+          document.documentElement.requestFullscreen().catch((err) => {
+            console.warn("Fullscreen request rejected:", err);
+          });
+          chrome.storage.local.set({
+            "algovault.isZenith": true,
+            "algovault.zenithGrade": "S_PLUS",
+            "algovault.zenithReason": "Pure Solve",
+            "algovault.zenithFocusScore": 100,
+            "algovault.zenithIntent": intent,
+            "algovault.problemStartTime": new Date().toISOString()
+          }, () => {
+            startZenithBtn.remove();
+          });
+        },
+        () => {
+          // Cancel
+        }
+      );
+    });
+
+    document.body.appendChild(startZenithBtn);
+  } else if (isZenithActive && document.getElementById('av-start-zenith-btn')) {
+    document.getElementById('av-start-zenith-btn')?.remove();
   }
 
   // Early return if we don't have prediction data yet
@@ -272,6 +521,8 @@ const observer = new MutationObserver((mutations) => {
   if (observerTimeout) window.clearTimeout(observerTimeout);
   observerTimeout = window.setTimeout(() => {
     injectAlgoVaultOverlay();
+    hideForbiddenTabs();
+    injectIntentionalRevealButton();
   }, 250);
 });
 

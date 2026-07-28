@@ -29,18 +29,33 @@ public class WeaknessService {
     public WeaknessResponse getWeakness(Long userId) {
         List<TagMastery> masteries = tagMasteryRepository.findByUserIdOrderByMasteryScoreDesc(userId);
         
-        // Bottom 5 tags: sort by mastery score (ascending), tie-break by total attempted (ascending)
+        // Filter out tags with insufficient evidence (< 3 attempts)
+        // and rank by confidence-weighted score: lower masteryScore + higher RD = weaker
         List<WeaknessResponse.WeakTag> weakTags = masteries.stream()
+            .filter(m -> m.getTotalAttempted() != null && m.getTotalAttempted() >= 3)
             .sorted((m1, m2) -> {
+                // Rank by masteryScore ascending, then by totalAttempted ascending as tie-breaker
                 int scoreCompare = Double.compare(m1.getMasteryScore(), m2.getMasteryScore());
                 if (scoreCompare != 0) return scoreCompare;
                 return Integer.compare(m1.getTotalAttempted(), m2.getTotalAttempted());
             })
             .limit(5)
-            .map(m -> WeaknessResponse.WeakTag.builder()
-                .tag(m.getTag())
-                .masteryScore(m.getMasteryScore())
-                .build())
+            .map(m -> {
+                String evidenceLevel;
+                if (m.getTotalAttempted() >= 10) {
+                    evidenceLevel = "STRONG";
+                } else if (m.getTotalAttempted() >= 5) {
+                    evidenceLevel = "MODERATE";
+                } else {
+                    evidenceLevel = "PRELIMINARY";
+                }
+                return WeaknessResponse.WeakTag.builder()
+                    .tag(m.getTag())
+                    .masteryScore(m.getMasteryScore())
+                    .rd(m.getRd())
+                    .evidenceLevel(evidenceLevel)
+                    .build();
+            })
             .collect(Collectors.toList());
 
         User user = userRepository.findById(userId).orElseThrow();

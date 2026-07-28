@@ -52,6 +52,47 @@ function finite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value)
 }
 
+export async function loadRecentAttendedContests(username: string, limit: number = 5): Promise<ContestLifecycleItem[]> {
+  const refreshedAt = new Date().toISOString()
+  const officialResponse = await sendMessage<any>({ action: "get_user_contest_history", payload: { username } }).catch(() => null)
+
+  const officialRows: OfficialContestRow[] = officialResponse?.ok
+    ? officialResponse.data?.userContestRankingHistory ?? []
+    : []
+  const official = officialRows
+    .filter((row) => row.attended && row.contest?.titleSlug)
+    .sort((left, right) => (left.contest?.startTime ?? 0) - (right.contest?.startTime ?? 0))
+
+  const items: ContestLifecycleItem[] = official.map((row, index) => {
+    const slug = row.contest!.titleSlug!.toLowerCase()
+    const previousRating = index > 0 && finite(official[index - 1]?.rating) ? official[index - 1].rating! : null
+    const currentRating = finite(row.rating) ? row.rating : null
+    const ratingDelta = previousRating != null && currentRating != null ? currentRating - previousRating : null
+
+    return {
+      contestSlug: slug,
+      contestTitle: row.contest?.title || titleFromSlug(slug),
+      contestDate: finite(row.contest?.startTime) ? new Date(row.contest!.startTime! * 1000).toISOString() : null,
+      rank: finite(row.ranking) ? row.ranking : null,
+      problemsSolved: finite(row.problemsSolved) ? row.problemsSolved : null,
+      totalProblems: finite(row.totalProblems) ? row.totalProblems : null,
+      finishTimeMinutes: finite(row.finishTimeInSeconds) ? row.finishTimeInSeconds / 60 : null,
+      ratingBefore: previousRating,
+      ratingAfter: currentRating,
+      ratingDelta,
+      predictedRating: null,
+      predictedDelta: null,
+      predictedRank: null,
+      status: "FINALIZED",
+      source: "LEETCODE",
+      refreshedAt,
+      attended: true
+    }
+  })
+
+  return items.reverse().slice(0, limit)
+}
+
 export async function loadContestLifecycle(username: string): Promise<ContestLifecycleItem[]> {
   const refreshedAt = new Date().toISOString()
   const [officialResponse, entrantHubRes, pastResponse] = await Promise.all([

@@ -130,6 +130,8 @@ export default function SolveCelebration() {
   const [problemTitle, setProblemTitle] = useState("")
   const [type, setType] = useState<"VICTORY" | "DEFEAT" | null>(null)
   const [themeName, setThemeName] = useState("gta")
+  const [zenithInsightPrompt, setZenithInsightPrompt] = useState(false)
+  const [insightText, setInsightText] = useState("")
 
   const currentTheme = THEMES[themeName] || THEMES.gta
 
@@ -166,29 +168,37 @@ export default function SolveCelebration() {
         setProblemTitle(title)
         setType(newType)
 
-        chrome.storage.sync.get(["celebrationOverlay", "celebrationSound", "celebrationTheme"], (res) => {
-
-          const isOverlay = res.celebrationOverlay !== undefined ? res.celebrationOverlay : true
-          const isSound = res.celebrationSound !== undefined ? res.celebrationSound : true
-          const theme = res.celebrationTheme || "gta"
-
-          setThemeName(theme)
-          const activeTheme = THEMES[theme] || THEMES.gta
-
-          if (isOverlay) {
-            setMounted(true)
-            setTimeout(() => setVisible(true), 50)
+        chrome.storage.local.get(["algovault.isZenith"], (localRes) => {
+          const isZenith = !!localRes["algovault.isZenith"];
+          if (newType === "VICTORY" && isZenith) {
+            setZenithInsightPrompt(true);
           }
 
-          if (isSound) {
-            playSound(newType === "VICTORY" ? activeTheme.audio.victory : activeTheme.audio.defeat)
-          }
+          chrome.storage.sync.get(["celebrationOverlay", "celebrationSound", "celebrationTheme"], (res) => {
+            const isOverlay = res.celebrationOverlay !== undefined ? res.celebrationOverlay : true
+            const isSound = res.celebrationSound !== undefined ? res.celebrationSound : true
+            const theme = res.celebrationTheme || "gta"
 
-          // Auto-close overlay after 5 seconds
-          setTimeout(() => {
-            setVisible(false)
-            setTimeout(() => setMounted(false), 500)
-          }, 4500)
+            setThemeName(theme)
+            const activeTheme = THEMES[theme] || THEMES.gta
+
+            if (isOverlay || (newType === "VICTORY" && isZenith)) {
+              setMounted(true)
+              setTimeout(() => setVisible(true), 50)
+            }
+
+            if (isSound) {
+              playSound(newType === "VICTORY" ? activeTheme.audio.victory : activeTheme.audio.defeat)
+            }
+
+            // Auto-close overlay after 5 seconds only if not Zenith victory
+            if (!(newType === "VICTORY" && isZenith)) {
+              setTimeout(() => {
+                setVisible(false)
+                setTimeout(() => setMounted(false), 500)
+              }, 4500)
+            }
+          })
         })
       }
     }
@@ -229,37 +239,73 @@ export default function SolveCelebration() {
         }`}
         onClick={(e) => e.stopPropagation()}
       >
-        <h1 className={`text-4xl md:text-5xl mb-2 ${currentTheme.titleClass} ${currentTheme.titleColor[key]}`}>
-          {currentTheme.title[key]}
-        </h1>
+        {!zenithInsightPrompt ? (
+          <>
+            <h1 className={`text-4xl md:text-5xl mb-2 ${currentTheme.titleClass} ${currentTheme.titleColor[key]}`}>
+              {currentTheme.title[key]}
+            </h1>
 
-        <h2 className={`text-xl md:text-2xl mb-5 drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)] ${currentTheme.subClass} ${currentTheme.subColor[key]}`}>
-          {currentTheme.subtitle[key]}
-        </h2>
+            <h2 className={`text-xl md:text-2xl mb-5 drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)] ${currentTheme.subClass} ${currentTheme.subColor[key]}`}>
+              {currentTheme.subtitle[key]}
+            </h2>
 
-        {/* Themed Banner Image */}
-        <div className="my-3.5 border-4 border-white/10 rounded-2xl overflow-hidden bg-zinc-900/50 shadow-2xl max-w-[480px] w-full">
-          <img 
-            src={type === "VICTORY" ? currentTheme.images.victory : currentTheme.images.defeat} 
-            className="w-full h-auto object-cover" 
-            alt={type}
-          /> 
-        </div>
+            {/* Themed Banner Image */}
+            <div className="my-3.5 border-4 border-white/10 rounded-2xl overflow-hidden bg-zinc-900/50 shadow-2xl max-w-[480px] w-full">
+              <img 
+                src={type === "VICTORY" ? currentTheme.images.victory : currentTheme.images.defeat} 
+                className="w-full h-auto object-cover" 
+                alt={type}
+              /> 
+            </div>
 
-        {/* Problem metadata details banner */}
-        <div className="bg-zinc-900/70 border border-zinc-800/80 px-4.5 py-2 rounded-full text-[10px] text-zinc-400 font-mono tracking-wide mb-6 mt-4 select-text">
-          {type === "VICTORY" ? "🏆 ACCEPTED" : "❌ ATTEMPT FAILED"}: <span className="text-zinc-200 font-semibold">{problemTitle}</span>
-        </div>
+            {/* Problem metadata details banner */}
+            <div className="bg-zinc-900/70 border border-zinc-800/80 px-4.5 py-2 rounded-full text-[10px] text-zinc-400 font-mono tracking-wide mb-6 mt-4 select-text">
+              {type === "VICTORY" ? "🏆 ACCEPTED" : "❌ ATTEMPT FAILED"}: <span className="text-zinc-200 font-semibold">{problemTitle}</span>
+            </div>
 
-        <button
-          onClick={() => {
-            setVisible(false)
-            setTimeout(() => setMounted(false), 500)
-          }}
-          className="text-[9px] text-zinc-500 font-mono hover:text-[#dfa054] transition-colors uppercase tracking-widest outline-none cursor-pointer"
-        >
-          [ Click anywhere or press ESC to dismiss ]
-        </button>
+            <button
+              onClick={() => {
+                setVisible(false)
+                setTimeout(() => setMounted(false), 500)
+              }}
+              className="text-[9px] text-zinc-500 font-mono hover:text-[#dfa054] transition-colors uppercase tracking-widest outline-none cursor-pointer"
+            >
+              [ Click anywhere or press ESC to dismiss ]
+            </button>
+          </>
+        ) : (
+          <div className="bg-zinc-950/95 border border-[#dfa054]/50 shadow-[0_0_40px_rgba(223,160,84,0.25)] p-8 rounded-xl w-[450px] backdrop-blur-xl">
+            <h1 className="text-2xl text-[#dfa054] font-serif font-bold mb-4 tracking-widest uppercase">Zenith Quest Complete</h1>
+            <p className="text-zinc-300 text-sm mb-6 font-mono leading-relaxed">What was the key insight that unlocked this problem? Formulate it clearly to encode it into your long-term memory.</p>
+            <textarea 
+              autoFocus
+              value={insightText}
+              onChange={(e) => setInsightText(e.target.value)}
+              className="w-full h-28 bg-zinc-900 border border-zinc-700 rounded-lg p-3 text-zinc-200 focus:outline-none focus:border-[#dfa054] focus:ring-1 focus:ring-[#dfa054] transition-all mb-5 text-sm font-mono resize-none"
+              placeholder="The key trick was realizing that..."
+            />
+            <button 
+              onClick={() => {
+                chrome.storage.local.set({
+                  "algovault.isZenith": false,
+                  "algovault.zenithGrade": "S_PLUS"
+                }, () => {
+                  if (document.fullscreenElement) {
+                    document.exitFullscreen().catch(() => {});
+                  }
+                  setVisible(false);
+                  setTimeout(() => {
+                    setMounted(false);
+                    location.reload();
+                  }, 500);
+                });
+              }}
+              className="w-full bg-[#dfa054]/10 hover:bg-[#dfa054]/20 text-[#dfa054] border border-[#dfa054]/30 py-3 rounded-lg font-bold tracking-widest text-xs uppercase transition-all shadow-[0_0_15px_rgba(223,160,84,0.1)] hover:shadow-[0_0_25px_rgba(223,160,84,0.25)] cursor-pointer"
+            >
+              Commit Insight & Exit Zenith
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

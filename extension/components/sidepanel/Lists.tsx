@@ -413,38 +413,91 @@ export const Lists = () => {
         </div>
       ) : (
         // ZeroTrac Interactive List Rendering
-        <div className="grid gap-3.5">
-          <Card className="border-sky-500/15 bg-sky-500/[0.035] p-4">
-            <div className="flex items-center justify-between gap-3">
+        <div className="grid gap-3.5 animate-fadeIn">
+          {/* Header Banner */}
+          <div className="relative overflow-hidden rounded-xl border border-sky-500/20 bg-gradient-to-r from-sky-950/40 via-zinc-950/80 to-zinc-950 p-4 shadow-lg">
+            <div className="flex items-center justify-between gap-3 relative z-10">
               <div>
-                <div className="panel-label">ZeroTrac explorer</div>
-                <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">Find a contest-rated problem by range, contest, or topic keyword. Ratings are sourced from ZeroTrac.</p>
+                <div className="flex items-center gap-2">
+                  <span className="panel-label text-sky-400">ZeroTrac Explorer</span>
+                  <span className="text-[9px] bg-sky-400/10 text-sky-300 border border-sky-400/20 px-1.5 py-0.5 rounded font-mono font-bold">Elo Ratings</span>
+                </div>
+                <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-400 font-sans">
+                  Browse <strong className="text-zinc-200">{zerotracData.length.toLocaleString()}</strong> contest-rated problems. Filter by difficulty range, contest number, or Q1–Q4 index.
+                </p>
               </div>
-              <span className="shrink-0 rounded-full border border-sky-400/20 bg-sky-400/10 px-2 py-1 text-[10px] font-mono text-sky-300">{zerotracData.length}</span>
+              <div className="shrink-0 text-right font-mono">
+                <div className="text-xs font-bold text-sky-400 tabular-nums">{filteredZerotrac.length}</div>
+                <div className="text-[9px] text-zinc-500 uppercase tracking-wider">Filtered</div>
+              </div>
             </div>
-          </Card>
-          {/* ZeroTrac Advanced Filters Form */}
-          <Card className="p-4 flex flex-col gap-3.5 font-sans border-zinc-800 bg-zinc-900/10">
-            <div className="grid grid-cols-3 gap-3.5">
-              <div>
-                <label className="text-[9px] font-bold text-zinc-500 block mb-1.5 font-mono uppercase tracking-wider">Keyword</label>
-                <input 
-                  type="text" 
-                  placeholder="e.g. sum" 
-                  className="w-full bg-zinc-950/40 border border-zinc-800/80 rounded-lg px-3 py-2 text-xs text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-[#dfa054] focus:ring-1 focus:ring-[#dfa054]/20 transition-all font-mono"
-                  value={keyword}
-                  onChange={(e) => {
-                    setKeyword(e.target.value)
+          </div>
+
+          {/* Quick Rating Presets */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none font-mono text-[9.5px]">
+            <span className="text-[9px] uppercase font-bold text-zinc-500 tracking-wider shrink-0 mr-1">Bands:</span>
+            {[
+              { label: "All", min: 800, max: 3500 },
+              { label: "1200–1500 (Easy)", min: 1200, max: 1500 },
+              { label: "1500–1800 (Med)", min: 1500, max: 1800 },
+              { label: "1800–2100 (Hard)", min: 1800, max: 2100 },
+              { label: "2100+ (Master)", min: 2100, max: 3500 },
+            ].map((preset) => {
+              const isActive = ratingMin === preset.min && ratingMax === preset.max
+              return (
+                <button
+                  key={preset.label}
+                  onClick={() => {
+                    setRatingMin(preset.min)
+                    setRatingMax(preset.max)
                     setCurrentPage(1)
                   }}
-                />
+                  className={`shrink-0 px-2.5 py-1 rounded-md font-semibold transition-all border ${
+                    isActive
+                      ? "bg-sky-500/15 border-sky-500/40 text-sky-300 shadow-sm"
+                      : "bg-zinc-950/60 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* ZeroTrac Advanced Filters Form */}
+          <Card className="p-3.5 flex flex-col gap-3 font-sans border-zinc-800/80 bg-zinc-950/50 shadow-md">
+            {/* Search & Contest Inputs */}
+            <div className="grid grid-cols-12 gap-2.5">
+              <div className="col-span-5">
+                <label className="text-[9px] font-bold text-zinc-400 block mb-1 font-mono uppercase tracking-wider">Search Problem</label>
+                <div className="relative">
+                  <input 
+                    type="text" 
+                    placeholder="Title or slug..." 
+                    className="w-full bg-zinc-900/80 border border-zinc-800 rounded-lg pl-3 pr-6 py-1.5 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-sky-500/50 focus:ring-1 focus:ring-sky-500/20 transition-all font-mono"
+                    value={keyword}
+                    onChange={(e) => {
+                      setKeyword(e.target.value)
+                      setCurrentPage(1)
+                    }}
+                  />
+                  {keyword && (
+                    <button 
+                      onClick={() => setKeyword("")}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 text-xs"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
               </div>
-              <div>
-                <label className="text-[9px] font-bold text-zinc-500 block mb-1.5 font-mono uppercase tracking-wider">Contest number</label>
+
+              <div className="col-span-4">
+                <label className="text-[9px] font-bold text-zinc-400 block mb-1 font-mono uppercase tracking-wider">Contest</label>
                 <input 
                   type="text" 
                   placeholder="e.g. 408" 
-                  className="w-full bg-zinc-950/40 border border-zinc-800/80 rounded-lg px-3 py-2 text-xs text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-[#dfa054] focus:ring-1 focus:ring-[#dfa054]/20 transition-all font-mono"
+                  className="w-full bg-zinc-900/80 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-sky-500/50 focus:ring-1 focus:ring-sky-500/20 transition-all font-mono"
                   value={contestNumber}
                   onChange={(e) => {
                     setContestNumber(e.target.value)
@@ -452,208 +505,238 @@ export const Lists = () => {
                   }}
                 />
               </div>
-              <div>
-                <label className="text-[9px] font-bold text-zinc-500 block mb-1.5 font-mono uppercase tracking-wider">Contest Index</label>
+
+              <div className="col-span-3">
+                <label className="text-[9px] font-bold text-zinc-400 block mb-1 font-mono uppercase tracking-wider">Index</label>
                 <select
                   value={questionIndexFilter}
                   onChange={(e) => {
                     setQuestionIndexFilter(e.target.value)
                     setCurrentPage(1)
                   }}
-                  className="w-full bg-zinc-950/40 border border-zinc-800/80 rounded-lg px-3 py-2.5 text-xs text-zinc-200 focus:outline-none focus:border-[#dfa054] focus:ring-1 focus:ring-[#dfa054]/20 transition-all font-mono cursor-pointer"
+                  className="w-full bg-zinc-900/80 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-zinc-100 focus:outline-none focus:border-sky-500/50 transition-all font-mono cursor-pointer"
                 >
-                  <option value="all">All (Q1-Q4)</option>
+                  <option value="all">Q1–Q4</option>
                   <option value="Q1">Q1 (Easy)</option>
-                  <option value="Q2">Q2 (Medium 1)</option>
-                  <option value="Q3">Q3 (Medium 2)</option>
+                  <option value="Q2">Q2 (Med 1)</option>
+                  <option value="Q3">Q3 (Med 2)</option>
                   <option value="Q4">Q4 (Hard)</option>
                 </select>
               </div>
             </div>
 
-            <div className="flex justify-between items-end gap-3.5 border-t border-zinc-900/60 pt-3.5">
-              <div className="flex-1">
-                <label className="text-[9px] font-bold text-zinc-500 block mb-1.5 font-mono uppercase tracking-wider">Rating interval</label>
-                <div className="flex items-center gap-2">
-                  <input 
-                    type="number"
-                    value={ratingMin}
-                    onChange={(e) => {
-                      setRatingMin(parseInt(e.target.value) || 0)
-                      setCurrentPage(1)
-                    }}
-                    className="w-20 bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-center text-zinc-300 focus:outline-none focus:border-[#dfa054] font-mono"
-                  />
-                  <span className="text-zinc-600 font-mono">-</span>
-                  <input 
-                    type="number"
-                    value={ratingMax}
-                    onChange={(e) => {
-                      setRatingMax(parseInt(e.target.value) || 0)
-                      setCurrentPage(1)
-                    }}
-                    className="w-20 bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-center text-zinc-300 focus:outline-none focus:border-[#dfa054] font-mono"
-                  />
-                </div>
+            {/* Rating Interval Range & Status Filter */}
+            <div className="flex flex-wrap items-center justify-between gap-2.5 border-t border-zinc-800/60 pt-2.5">
+              <div className="flex items-center gap-2 font-mono">
+                <span className="text-[9px] uppercase font-bold text-zinc-400 tracking-wider">Rating:</span>
+                <input 
+                  type="number"
+                  value={ratingMin}
+                  onChange={(e) => {
+                    setRatingMin(parseInt(e.target.value) || 0)
+                    setCurrentPage(1)
+                  }}
+                  className="w-16 bg-zinc-900 border border-zinc-800 rounded-md px-2 py-1 text-xs text-center text-zinc-200 focus:outline-none focus:border-sky-500 font-mono"
+                />
+                <span className="text-zinc-600 font-bold">–</span>
+                <input 
+                  type="number"
+                  value={ratingMax}
+                  onChange={(e) => {
+                    setRatingMax(parseInt(e.target.value) || 0)
+                    setCurrentPage(1)
+                  }}
+                  className="w-16 bg-zinc-900 border border-zinc-800 rounded-md px-2 py-1 text-xs text-center text-zinc-200 focus:outline-none focus:border-sky-500 font-mono"
+                />
               </div>
 
-              <button 
-                onClick={handleResetFilters}
-                className="bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/25 rounded-lg px-4 py-2 text-[10px] font-bold font-mono tracking-wider uppercase transition-all"
-              >
-                Reset
-              </button>
-            </div>
+              {/* Status Segmented Control */}
+              <div className="flex items-center gap-2">
+                <div className="flex bg-zinc-900 p-0.5 rounded-lg border border-zinc-800">
+                  {(["all", "open", "done"] as const).map((filter) => (
+                    <button
+                      key={filter}
+                      onClick={() => {
+                        setStatusFilter(filter)
+                        setCurrentPage(1)
+                      }}
+                      className={`text-[9px] font-bold px-2.5 py-1 rounded-md uppercase font-mono transition-all ${
+                        statusFilter === filter ? "bg-zinc-800 text-zinc-100 shadow-sm" : "text-zinc-500 hover:text-zinc-300"
+                      }`}
+                    >
+                      {filter === "all" ? "All" : filter === "open" ? "Unsolved" : "Solved"}
+                    </button>
+                  ))}
+                </div>
 
-            {/* Status Pills Selector */}
-            <div className="border-t border-zinc-900 pt-3.5 flex items-center justify-between">
-              <span className="text-[10px] text-zinc-500 font-mono">Status Filter:</span>
-              <div className="flex bg-zinc-950 p-0.5 rounded border border-zinc-800">
-                {(["all", "open", "done"] as const).map((filter) => (
-                  <button
-                    key={filter}
-                    onClick={() => {
-                      setStatusFilter(filter)
-                      setCurrentPage(1)
-                    }}
-                    className={`text-[9px] font-bold px-3 py-1 rounded uppercase font-mono transition-colors ${
-                      statusFilter === filter ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
-                    }`}
-                  >
-                    {filter}
-                  </button>
-                ))}
+                <button 
+                  onClick={handleResetFilters}
+                  className="text-[9px] font-bold font-mono text-zinc-400 hover:text-rose-400 bg-zinc-900 hover:bg-rose-500/10 border border-zinc-800 hover:border-rose-500/30 rounded-lg px-2.5 py-1 transition-all"
+                  title="Reset all filters"
+                >
+                  Reset
+                </button>
               </div>
             </div>
           </Card>
 
           {/* ZeroTrac Matching Results List */}
-          <div className="flex flex-col gap-2.5">
-            <div className="flex justify-between items-center text-[10px] text-zinc-500 font-mono px-1">
-              <span>Matching Problems</span>
-              <span>Count: <span className="text-zinc-300">{filteredZerotrac.length}</span></span>
+          <div className="flex flex-col gap-2">
+            <div className="flex justify-between items-center text-[10px] text-zinc-400 font-mono px-1">
+              <span>Matching Problems ({filteredZerotrac.length})</span>
+              <div className="flex items-center gap-2">
+                <span className="text-zinc-500">Sort by:</span>
+                <select
+                  value={sortBy}
+                  onChange={(e) => handleSort(e.target.value as any)}
+                  className="bg-zinc-950 border border-zinc-800 rounded px-1.5 py-0.5 text-[9.5px] text-zinc-300 focus:outline-none font-mono cursor-pointer"
+                >
+                  <option value="rating">Rating {sortBy === "rating" ? (sortOrder === "asc" ? "↑" : "↓") : ""}</option>
+                  <option value="index">Index {sortBy === "index" ? (sortOrder === "asc" ? "↑" : "↓") : ""}</option>
+                  <option value="contest">Contest {sortBy === "contest" ? (sortOrder === "asc" ? "↑" : "↓") : ""}</option>
+                  <option value="title">Title {sortBy === "title" ? (sortOrder === "asc" ? "↑" : "↓") : ""}</option>
+                  <option value="id">ID {sortBy === "id" ? (sortOrder === "asc" ? "↑" : "↓") : ""}</option>
+                </select>
+                <button
+                  onClick={() => setSortOrder(prev => prev === "asc" ? "desc" : "asc")}
+                  className="text-xs text-zinc-400 hover:text-zinc-200 px-1 py-0.5 rounded border border-zinc-800 bg-zinc-950 font-mono"
+                  title="Toggle sort direction"
+                >
+                  {sortOrder === "asc" ? "▲" : "▼"}
+                </button>
+              </div>
             </div>
 
             {filteredZerotrac.length === 0 ? (
-              <div className="text-center py-8 text-xs text-zinc-600 font-mono bg-zinc-950/10 rounded-xl border border-dashed border-zinc-800">
-                No matching ZeroTrac problems found.
+              <div className="text-center py-10 text-xs text-zinc-500 font-mono bg-zinc-950/40 rounded-xl border border-dashed border-zinc-800 space-y-1">
+                <p className="font-semibold text-zinc-400">No matching ZeroTrac problems found</p>
+                <p className="text-[10px] text-zinc-600">Try adjusting your rating range or search query.</p>
               </div>
             ) : (
-              <div className="flex flex-col gap-3">
-                <div className="overflow-x-auto border border-zinc-900 rounded-xl bg-zinc-950/20 p-2.5">
-                  <table className="w-full text-left border-collapse text-[10px] font-mono">
-                    <thead>
-                      <tr className="border-b border-zinc-900 text-zinc-500 font-semibold select-none">
-                        <th className="py-2.5 px-1 text-center w-[45px] cursor-pointer hover:text-zinc-300 transition-colors" onClick={() => handleSort("id")}>
-                          ID {renderSortIndicator("id")}
-                        </th>
-                        <th className="py-2.5 px-2 cursor-pointer hover:text-zinc-300 transition-colors" onClick={() => handleSort("title")}>
-                          Title {renderSortIndicator("title")}
-                        </th>
-                        <th className="py-2.5 px-2 cursor-pointer hover:text-zinc-300 transition-colors" onClick={() => handleSort("contest")}>
-                          Contest {renderSortIndicator("contest")}
-                        </th>
-                        <th className="py-2.5 px-1 text-center w-[50px] cursor-pointer hover:text-zinc-300 transition-colors" onClick={() => handleSort("index")}>
-                          Index {renderSortIndicator("index")}
-                        </th>
-                        <th className="py-2.5 px-2 text-right w-[60px] cursor-pointer hover:text-zinc-300 transition-colors" onClick={() => handleSort("rating")}>
-                          Rating {renderSortIndicator("rating")}
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-zinc-900/40">
-                      {paginatedItems.map((p, idx) => {
-                        const isSolved = solvedSlugs.has(p.TitleSlug)
-                        
-                        const indexStr = p.ProblemIndex ? String(p.ProblemIndex).trim() : ""
-                        const normalizedIndex = indexStr.replace("Q", "").replace(/^0+/, "")
-                        let indexColor = "text-zinc-400"
-                        if (normalizedIndex === "1") indexColor = "text-emerald-400 font-bold"
-                        else if (normalizedIndex === "2") indexColor = "text-amber-400 font-bold"
-                        else if (normalizedIndex === "3") indexColor = "text-orange-400 font-bold"
-                        else if (normalizedIndex === "4") indexColor = "text-rose-500 font-bold"
+              <div className="flex flex-col gap-2">
+                {/* Modern Card List for Problems */}
+                <div className="flex flex-col gap-1.5">
+                  {paginatedItems.map((p, idx) => {
+                    const isSolved = solvedSlugs.has(p.TitleSlug)
+                    const ratingVal = Math.round(p.Rating || 0)
+                    const problemId = p.ID || p.QuestionID || (p as any).id || (p as any).questionId
 
-                        return (
-                          <tr key={idx} className="hover:bg-zinc-900/20 transition-all duration-200">
-                            {/* Problem ID */}
-                            <td className="py-3 px-1 text-center text-zinc-500 font-mono select-none">
-                              {p.ID || p.QuestionID || ""}
-                            </td>
-                            {/* Problem Title (with solved checkbox indicator) */}
-                            <td className="py-3 px-2">
-                              <div className="flex items-center gap-2 min-w-0">
-                                <span 
-                                  className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 transition-colors ${
-                                    isSolved 
-                                      ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" 
-                                      : "border-zinc-800 bg-zinc-950/30 text-transparent"
-                                  }`}
-                                  title={isSolved ? "Solved" : "Unsolved"}
-                                >
-                                  {isSolved && <span className="text-[8px] leading-none">✔</span>}
+                    // Color code ZeroTrac rating badges:
+                    let ratingBg = "bg-emerald-500/10 text-emerald-400 border-emerald-500/25"
+                    if (ratingVal >= 2300) ratingBg = "bg-purple-500/15 text-purple-300 border-purple-500/30"
+                    else if (ratingVal >= 2000) ratingBg = "bg-rose-500/12 text-rose-400 border-rose-500/25"
+                    else if (ratingVal >= 1700) ratingBg = "bg-orange-500/12 text-orange-400 border-orange-500/25"
+                    else if (ratingVal >= 1400) ratingBg = "bg-amber-500/12 text-amber-400 border-amber-500/25"
+
+                    const indexStr = p.ProblemIndex ? String(p.ProblemIndex).trim() : ""
+                    const normalizedIndex = indexStr.replace("Q", "").replace(/^0+/, "")
+                    let indexBadge = "bg-zinc-800/80 text-zinc-400 border-zinc-700/50"
+                    if (normalizedIndex === "1") indexBadge = "bg-emerald-950/40 text-emerald-400 border-emerald-500/30"
+                    else if (normalizedIndex === "2") indexBadge = "bg-amber-950/40 text-amber-400 border-amber-500/30"
+                    else if (normalizedIndex === "3") indexBadge = "bg-orange-950/40 text-orange-400 border-orange-500/30"
+                    else if (normalizedIndex === "4") indexBadge = "bg-rose-950/40 text-rose-400 border-rose-500/30"
+
+                    return (
+                      <Card 
+                        key={p.TitleSlug || idx}
+                        className={`p-2.5 transition-all duration-200 border group ${
+                          isSolved 
+                            ? "bg-zinc-950/40 border-zinc-900 opacity-75 hover:opacity-100" 
+                            : "bg-zinc-950/70 border-zinc-800/70 hover:border-zinc-700 hover:bg-zinc-900/40 shadow-sm"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2.5">
+                          {/* Left: Question Number + Checkbox + Title + Meta */}
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
+                            {/* Question ID / Number on far left (only rendered when ID exists) */}
+                            {problemId ? (
+                              <span 
+                                className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded text-center shrink-0 min-w-[36px] tabular-nums bg-zinc-900 text-[#dfa054] border border-[#dfa054]/30"
+                                title={`Problem #${problemId}`}
+                              >
+                                #{problemId}
+                              </span>
+                            ) : null}
+
+                            {/* Solved Checkbox */}
+                            <span 
+                              className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 transition-all ${
+                                isSolved 
+                                  ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-400" 
+                                  : "border-zinc-800 bg-zinc-950 text-transparent group-hover:border-zinc-700"
+                              }`}
+                              title={isSolved ? "Solved" : "Unsolved"}
+                            >
+                              {isSolved && <span className="text-[9px] font-bold">✓</span>}
+                            </span>
+
+                            <div className="min-w-0 flex-1">
+                              <a
+                                href={`https://leetcode.com/problems/${p.TitleSlug}/`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className={`truncate text-xs font-semibold hover:text-[#dfa054] transition-colors block ${
+                                  isSolved ? "text-zinc-500 line-through" : "text-zinc-100"
+                                }`}
+                                title={`Open ${p.Title} on LeetCode`}
+                              >
+                                {p.Title}
+                              </a>
+                              <div className="mt-0.5 flex items-center gap-1.5 text-[9.5px] font-mono text-zinc-500">
+                                <span className="truncate max-w-[150px]" title={p.ContestID_en}>
+                                  {p.ContestID_en || p.ContestSlug || "Contest"}
                                 </span>
-                                <a
-                                  href={`https://leetcode.com/problems/${p.TitleSlug}/`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className={`hover:text-[#dfa054] transition-colors truncate font-sans text-xs ${
-                                    isSolved ? "text-zinc-500 line-through font-normal" : "text-zinc-200 font-semibold"
-                                  }`}
-                                  title={`Open ${p.Title} on LeetCode`}
-                                >
-                                  {p.Title}
-                                </a>
                               </div>
-                            </td>
-                            {/* Contest Name */}
-                            <td className="py-3 px-2 text-zinc-400 truncate max-w-[110px]" title={p.ContestID_en}>
-                              {p.ContestID_en || p.ContestSlug || "LeetCode Contest"}
-                            </td>
-                            {/* Problem Index (Q1-Q4) with colored highlights */}
-                            <td className={`py-3 px-1 text-center font-mono ${indexColor}`}>
+                            </div>
+                          </div>
+
+                          {/* Right: Index + Rating Pill */}
+                          <div className="flex items-center gap-2 shrink-0">
+                            {/* Question Index (Q1-Q4) */}
+                            <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border uppercase ${indexBadge}`}>
                               {p.ProblemIndex || "Q?"}
-                            </td>
-                            {/* Elo Rating */}
-                            <td className="py-3 px-2 text-right font-bold text-zinc-300 font-mono">
-                              {Math.round(p.Rating)}
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
+                            </span>
+
+                            {/* Elo Rating Badge */}
+                            <span className={`text-[10.5px] font-mono font-bold px-2 py-0.5 rounded-md border tabular-nums ${ratingBg}`}>
+                              {ratingVal}
+                            </span>
+                          </div>
+                        </div>
+                      </Card>
+                    )
+                  })}
                 </div>
 
-                {/* ZeroTrac style Pagination UI */}
-                <div className="flex flex-wrap items-center justify-between gap-2.5 bg-zinc-950/40 border border-zinc-900 p-2.5 px-3.5 rounded-xl font-mono text-[10px] text-zinc-500">
+                {/* Compact Pagination Bar */}
+                <div className="flex flex-wrap items-center justify-between gap-2 bg-zinc-950/60 border border-zinc-800/80 p-2 px-3 rounded-xl font-mono text-[10px] text-zinc-400">
                   <div className="flex items-center gap-1 shrink-0 select-none">
-                    <span>Total {totalItems}</span>
+                    <span>Showing <strong className="text-zinc-200">{Math.min(totalItems, (activePage - 1) * 15 + 1)}–{Math.min(totalItems, activePage * 15)}</strong> of {totalItems}</span>
                   </div>
                   
-                  {/* Page buttons */}
-                  <div className="flex items-center gap-1.5">
-                    {/* Prev page button */}
+                  {/* Page Navigation */}
+                  <div className="flex items-center gap-1">
                     <button 
                       onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
                       disabled={activePage === 1}
-                      className="px-2 py-0.5 rounded-md text-zinc-400 hover:text-zinc-200 disabled:opacity-40"
+                      className="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-300"
                     >
-                      &lt;
+                      ‹
                     </button>
                     
                     {pageNumbers.map((page, idx) => {
                       if (page === "...") {
-                        return <span key={idx} className="px-1 py-0.5 select-none">...</span>
+                        return <span key={idx} className="px-1 text-zinc-600 select-none">...</span>
                       }
                       const isCurrent = activePage === page
                       return (
                         <button
                           key={idx}
                           onClick={() => setCurrentPage(Number(page))}
-                          className={`px-2 py-0.5 rounded-md font-bold transition-colors ${
+                          className={`px-2 py-0.5 rounded font-bold transition-all ${
                             isCurrent 
-                              ? "bg-zinc-800 text-[#dfa054] border border-zinc-700/60" 
-                              : "text-zinc-500 hover:bg-zinc-900/60 hover:text-zinc-300"
+                              ? "bg-sky-500/20 border border-sky-500/40 text-sky-300" 
+                              : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
                           }`}
                         >
                           {page}
@@ -661,33 +744,13 @@ export const Lists = () => {
                       )
                     })}
 
-                    {/* Next page button */}
                     <button 
                       onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
                       disabled={activePage === totalPages}
-                      className="px-2 py-0.5 rounded-md text-zinc-400 hover:text-zinc-200 disabled:opacity-40"
+                      className="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-300"
                     >
-                      &gt;
+                      ›
                     </button>
-                  </div>
-
-                  {/* Go to page input */}
-                  <div className="flex items-center shrink-0">
-                    <span className="select-none">Go to</span>
-                    <input 
-                      type="text" 
-                      defaultValue={activePage}
-                      key={activePage} // Reset value on page change
-                      className="w-8 bg-zinc-900 border border-zinc-800 rounded-md text-center text-[10px] text-zinc-300 font-mono py-0.5 ml-1.5 focus:outline-none focus:border-[#dfa054]"
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          const val = parseInt((e.target as HTMLInputElement).value)
-                          if (val >= 1 && val <= totalPages) {
-                            setCurrentPage(val)
-                          }
-                        }
-                      }}
-                    />
                   </div>
                 </div>
               </div>

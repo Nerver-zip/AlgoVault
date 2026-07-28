@@ -328,6 +328,7 @@ document.addEventListener("click", (event) => {
     if (isEditorial && currentGrade !== "D" && currentGrade !== "INVALID") {
       event.preventDefault()
       event.stopPropagation()
+      event.stopImmediatePropagation()
       showZenithAlarmModal(
         "Opening editorial.",
         "Your session record will note editorial use.",
@@ -338,6 +339,10 @@ document.addEventListener("click", (event) => {
         },
         () => {
           showZenithToast("Returned to the problem")
+          // If React still navigated us, force return to Description
+          const descTab = document.querySelector('a[href$="/description/"]') as HTMLElement
+          if (descTab) descTab.click()
+          if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {})
         }
       )
       return
@@ -346,6 +351,7 @@ document.addEventListener("click", (event) => {
     if (isDiscussion && !["C", "D", "INVALID"].includes(currentGrade)) {
       event.preventDefault()
       event.stopPropagation()
+      event.stopImmediatePropagation()
       showZenithAlarmModal(
         "Opening discussions.",
         "Your session record will note discussion use.",
@@ -356,6 +362,9 @@ document.addEventListener("click", (event) => {
         },
         () => {
           showZenithToast("Returned to the problem")
+          const descTab = document.querySelector('a[href$="/description/"]') as HTMLElement
+          if (descTab) descTab.click()
+          if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {})
         }
       )
       return

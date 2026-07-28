@@ -60,9 +60,13 @@ public class TopicRatingService {
                     TopicRating.builder().user(user).tag(k).eloRating(1200).peakRating(1200).problemsPlayed(0).build()
                 );
 
+                // Fractional tag attribution: a problem with N tags gives each tag
+                // score/N credit, preventing multi-tag double-counting.
+                double effectiveScore = tags.size() > 1 ? score / tags.size() : score;
+
                 Integer currentElo = tr.getEloRating() != null ? tr.getEloRating() : 1200;
                 Integer currentPlayed = tr.getProblemsPlayed() != null ? tr.getProblemsPlayed() : 0;
-                int newElo = eloEngine.calculateNewElo(currentElo, problemRating, score, currentPlayed);
+                int newElo = eloEngine.calculateNewElo(currentElo, problemRating, effectiveScore, currentPlayed);
                 tr.setEloRating(newElo);
                 Integer peak = tr.getPeakRating() != null ? tr.getPeakRating() : 1200;
                 if (newElo > peak) tr.setPeakRating(newElo);
@@ -126,9 +130,14 @@ public class TopicRatingService {
             boolean isEventualAc = subs.stream().anyMatch(s -> "Accepted".equals(s.getVerdict()));
             double score = isFirstTryAc ? 1.0 : (isEventualAc ? 0.7 : 0.0);
 
+            // Fractional tag attribution for multi-tag problems
+            List<String> tags = subs.get(0).getProblem().getTags();
+            int numTags = (tags != null) ? tags.size() : 1;
+            double effectiveScore = numTags > 1 ? score / numTags : score;
+
             Integer currentElo = tr.getEloRating() != null ? tr.getEloRating() : 1200;
             Integer currentPlayed = tr.getProblemsPlayed() != null ? tr.getProblemsPlayed() : 0;
-            int newElo = eloEngine.calculateNewElo(currentElo, problemRating, score, currentPlayed);
+            int newElo = eloEngine.calculateNewElo(currentElo, problemRating, effectiveScore, currentPlayed);
             tr.setEloRating(newElo);
             Integer peak = tr.getPeakRating() != null ? tr.getPeakRating() : 1200;
             if (newElo > peak) tr.setPeakRating(newElo);

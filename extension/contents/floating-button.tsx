@@ -124,11 +124,11 @@ const FloatingButton = () => {
           onClick={handleOpenPanel}
           className={`flex items-center gap-2 px-3 py-1.5 rounded-full elevated-card text-xs text-zinc-300 font-mono font-medium hover:border-zinc-700 transition-all border ${
             isZenith 
-              ? 'border-cyan-500/50 shadow-[0_0_10px_rgba(6,182,212,0.35)]' 
+              ? (minutes >= 25 ? 'border-amber-500/80 shadow-[0_0_20px_rgba(245,158,11,0.6)] animate-pulse' : 'border-cyan-500/50 shadow-[0_0_10px_rgba(6,182,212,0.35)]') 
               : 'border-zinc-805'
           } shadow-lg cursor-pointer`}
         >
-          <span className={`${isZenith ? 'text-cyan-400' : 'text-[#dfa054]'} text-xs`}>
+          <span className={`${isZenith ? (minutes >= 25 ? 'text-amber-400' : 'text-cyan-400') : 'text-[#dfa054]'} text-xs`}>
             {isZenith ? `⚔️ ${formattedGrade}` : '⚡'}
           </span>
           <span className="tabular-nums">{minutes}:{rem}</span>

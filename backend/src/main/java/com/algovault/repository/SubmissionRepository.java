@@ -48,9 +48,8 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
     @Query("select s from Submission s where s.user.id = :userId and s.problem.actualRating >= :lo and s.problem.actualRating < :hi")
     List<Submission> findByUserIdAndProblemActualRatingBetween(Long userId, Double lo, Double hi);
 
-    @EntityGraph(attributePaths = {"problem"})
-    @Query("select s from Submission s join s.problem.tags t where s.user.id = :userId and t = :tag")
-    List<Submission> findByUserIdAndTag(Long userId, String tag);
+    @Query(value = "select s.* from submissions s join problems p on s.problem_id = p.id where s.user_id = :userId and :tag = ANY(p.tags)", nativeQuery = true)
+    List<Submission> findByUserIdAndTag(@org.springframework.data.repository.query.Param("userId") Long userId, @org.springframework.data.repository.query.Param("tag") String tag);
 
     @Query("select s.leetcodeSubmissionId from Submission s where s.user.id = :userId and s.leetcodeSubmissionId in :ids")
     Set<String> findLeetcodeSubmissionIdsByUserIdAndLeetcodeSubmissionIdIn(Long userId, java.util.Collection<String> ids);

@@ -21,6 +21,8 @@ public class WeaknessResponse {
     public static class WeakTag {
         private String tag;
         private Double masteryScore;
+        private Double rd;
+        private String evidenceLevel;
     }
 
     @Data
