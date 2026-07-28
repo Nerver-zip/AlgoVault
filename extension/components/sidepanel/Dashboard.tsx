@@ -251,6 +251,9 @@ export const Dashboard = () => {
       const card = queue.find((review) => listSlugs.has(review.titleSlug))
       if (card) return { card, listName: list.name }
     }
+    if (queue.length > 0) {
+      return { card: queue[0], listName: "Spaced Revision" }
+    }
     return null
   }, [queue])
   const activeReview = curatedReview?.card
