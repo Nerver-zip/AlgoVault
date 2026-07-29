@@ -318,17 +318,3 @@ Engineered based on Cognitive Load Theory and Deliberate Practice principles:
 - **Metacognitive Insight Capture:** Upon solving a problem (AC), prompts you to state the core logic insight before exiting Zenith mode.
 
 ---
-
-## 🌐 100% Free Cloud Deployment Guide ($0 / month)
-
-You can host AlgoVault's database and backend completely for free so anyone can use the extension with zero setup:
-
-### 1. Free PostgreSQL Database ([Neon.tech](https://neon.tech))
-1. Create a free account on Neon.tech and create a project named `algovault-db`.
-2. Copy your connection URL (e.g. `jdbc:postgresql://ep-xyz.neon.tech/algovault?sslmode=require`).
-
-### 2. Free Docker Web Service ([Render.com](https://render.com))
-1. Create a free web service on Render connected to `Somnath0707/AlgoVault`.
-2. Set Root Directory to `backend` and Runtime to `Docker`.
-3. Add environment variables: `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`.
-4. Render builds your Dockerfile automatically into a live API (`https://algovault-api.onrender.com`).
