@@ -52,7 +52,9 @@ async function backendFetch(path: string, init: RequestInit = {}) {
     throw new Error(body || `Backend request failed: ${res.status}`)
   }
   if (res.status === 204) return null
-  return res.json()
+  const text = await res.text().catch(() => "")
+  if (!text.trim()) return null
+  return JSON.parse(text)
 }
 
 export const fetchPrediction = async (titleSlug: string): Promise<PredictionResult> => {

@@ -20,10 +20,12 @@ export default function SidePanel() {
   const [session, setSession] = useState<ActiveSession | null>(null)
 
   useEffect(() => {
-    chrome.storage.local.get("algovault.requestedTab", (result) => {
+    chrome.storage.local.get(["algovault.requestedTab", "algovault.lastActiveTab"], (result) => {
       if (result["algovault.requestedTab"] === "Lists") {
         setActiveTab("Lists")
         chrome.storage.local.remove("algovault.requestedTab")
+      } else if (result["algovault.lastActiveTab"]) {
+        setActiveTab(result["algovault.lastActiveTab"])
       }
     })
     getUsername().then((value) => setUsername(value || "Set username"))
@@ -54,6 +56,11 @@ export default function SidePanel() {
       chrome.storage.onChanged.removeListener(handleStorageChange)
     }
   }, [])
+
+  const handleTabChange = (tab: Tab) => {
+    setActiveTab(tab)
+    chrome.storage.local.set({ "algovault.lastActiveTab": tab })
+  }
 
   return (
     <div className="min-h-screen bg-av-bg-primary text-zinc-300 p-4 overflow-y-auto overflow-x-hidden font-sans selection:bg-amber-400/20">
@@ -95,7 +102,7 @@ export default function SidePanel() {
         </div>
       </header>
       
-      <TabBar activeTab={activeTab} setActiveTab={setActiveTab} />
+      <TabBar activeTab={activeTab} setActiveTab={handleTabChange} />
       
       <div className="mt-4 pb-8 relative">
         <AnimatePresence mode="wait" initial={false}>

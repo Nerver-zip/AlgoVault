@@ -65,7 +65,7 @@ class RevisionControllerTest {
         Map<String, Integer> body = new HashMap<>();
         body.put("quality", 5);
 
-        ResponseEntity<Void> response = revisionController.reviewCard(request, 10L, body);
+        ResponseEntity<Map<String, String>> response = revisionController.reviewCard(request, 10L, body);
 
         assertNotNull(response);
         assertEquals(200, response.getStatusCodeValue());

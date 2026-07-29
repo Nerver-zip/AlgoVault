@@ -26,6 +26,43 @@ export const Lists = () => {
   // Topic expansion state for study lists
   const [expandedTopics, setExpandedTopics] = useState<Record<string, boolean>>({})
 
+  // 1. Restore cached ZeroTrac & List state on mount
+  useEffect(() => {
+    chrome.storage.local.get("algovault.zerotracState", (res) => {
+      const state = res?.["algovault.zerotracState"]
+      if (state) {
+        if (state.activeList) setActiveList(state.activeList)
+        if (state.keyword !== undefined) setKeyword(state.keyword)
+        if (state.contestNumber !== undefined) setContestNumber(state.contestNumber)
+        if (typeof state.ratingMin === "number") setRatingMin(state.ratingMin)
+        if (typeof state.ratingMax === "number") setRatingMax(state.ratingMax)
+        if (state.statusFilter) setStatusFilter(state.statusFilter)
+        if (state.questionIndexFilter) setQuestionIndexFilter(state.questionIndexFilter)
+        if (state.sortBy) setSortBy(state.sortBy)
+        if (state.sortOrder) setSortOrder(state.sortOrder)
+        if (typeof state.currentPage === "number") setCurrentPage(state.currentPage)
+      }
+    })
+  }, [])
+
+  // 2. Persist state on every change
+  useEffect(() => {
+    chrome.storage.local.set({
+      "algovault.zerotracState": {
+        activeList,
+        keyword,
+        contestNumber,
+        ratingMin,
+        ratingMax,
+        statusFilter,
+        questionIndexFilter,
+        sortBy,
+        sortOrder,
+        currentPage
+      }
+    })
+  }, [activeList, keyword, contestNumber, ratingMin, ratingMax, statusFilter, questionIndexFilter, sortBy, sortOrder, currentPage])
+
   useEffect(() => {
     setLoading(true)
     Promise.all([

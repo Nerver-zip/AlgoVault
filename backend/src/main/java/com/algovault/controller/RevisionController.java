@@ -27,10 +27,10 @@ public class RevisionController {
     }
 
     @PostMapping("/{cardId}")
-    public ResponseEntity<Void> reviewCard(HttpServletRequest request, @PathVariable Long cardId, @RequestBody Map<String, Integer> body) {
+    public ResponseEntity<Map<String, String>> reviewCard(HttpServletRequest request, @PathVariable Long cardId, @RequestBody Map<String, Integer> body) {
         User user = userContextService.resolveUser(request);
         int quality = body != null && body.containsKey("quality") ? body.get("quality") : 4;
         revisionService.reviewCard(user.getId(), cardId, quality);
-        return ResponseEntity.ok().build();
+        return ResponseEntity.ok(Map.of("status", "success"));
     }
 }
