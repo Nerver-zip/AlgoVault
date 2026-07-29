@@ -66,16 +66,14 @@ $$R_u^{\text{new}} = R_u^{\text{old}} + K \times (\text{Score} - P(\text{solve})
 *   $\text{Score} = 1.0$ (Success / Accepted) or $0.0$ (Failure / Rejected).
 *   $K$ is a dynamic scaling factor based on the number of completed problems in the category to control rating volatility.
 
-### 3. Spaced Repetition (Modified SM-2 Scheduling)
-Schedulers compute the optimal interval $I$ in days for problem review based on card repetition count $n$, ease factor $EF$, and topic mastery values:
+### 3. Spaced Repetition (FSRS-4.5 Engine)
+AlgoVault implements the **FSRS-4.5 (Free Spaced Repetition Scheduler)** model published by Ye (2023), replacing legacy SM-2 algorithms with power-law forgetting curves and dynamic difficulty estimation:
 
-$$I(n) = \begin{cases} 
-1 & n = 1 \\ 
-6 & n = 2 \\ 
-I(n-1) \times EF \times \theta_{\text{mastery}} & n > 2 
-\end{cases}$$
-
-*   $\theta_{\text{mastery}}$ represents a tag mastery coefficient that shortens the repetition intervals for weak topics and extends them for strong topics.
+*   **Power-Law Forgetting Curve:** Computes review intervals $I$ via Stability $S$ and desired retention target $R = 0.90$:
+    $$I(S, R) = S \times \left(9 \times \left(\frac{1}{R} - 1\right)\right)^{1/\text{DECAY}}$$
+*   **Difficulty & Mean Reversion:** Card difficulty $D$ adjusts after each review based on recall grade (1 = *Again*, 2 = *Hard*, 3 = *Good*, 4 = *Easy*), reverting toward baseline to prevent "ease hell".
+*   **Topic Weakness Multiplier:** Applies a $0.6\times$ acceleration factor to problems in topics where user mastery lags behind rating.
+*   **Contest Failure Penalty:** Halves review intervals ($0.5\times$) for problems attempted and failed during live contests.
 
 ---
 
@@ -311,4 +309,26 @@ Tracks keyboard metrics (manual typing vs copy-paste detection), tab focus switc
 
 ---
 
+### ⚔️ Zenith Mode (Cinematic Focus & Flow State)
+Engineered based on Cognitive Load Theory and Deliberate Practice principles:
+- **Extraneous Load Reduction:** Strips away navbars, sidebars, topics, and problem tags for complete immersion in deep work.
+- **Intentional Reveal:** Editorial and Solution tabs are hidden by default. Hold the `🔒 Yield & Reveal Solutions` button for 2 seconds to un-hide them, adding deliberate friction before giving up.
+- **Draggable Compact Anchor (`⚔️ ZENITH`):** Position-persistent pill button (`chrome.storage.local`).
+- **Flow State Timer:** Subtle background timer that pulses amber after 25 minutes of continuous focus.
+- **Metacognitive Insight Capture:** Upon solving a problem (AC), prompts you to state the core logic insight before exiting Zenith mode.
 
+---
+
+## 🌐 100% Free Cloud Deployment Guide ($0 / month)
+
+You can host AlgoVault's database and backend completely for free so anyone can use the extension with zero setup:
+
+### 1. Free PostgreSQL Database ([Neon.tech](https://neon.tech))
+1. Create a free account on Neon.tech and create a project named `algovault-db`.
+2. Copy your connection URL (e.g. `jdbc:postgresql://ep-xyz.neon.tech/algovault?sslmode=require`).
+
+### 2. Free Docker Web Service ([Render.com](https://render.com))
+1. Create a free web service on Render connected to `Somnath0707/AlgoVault`.
+2. Set Root Directory to `backend` and Runtime to `Docker`.
+3. Add environment variables: `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`.
+4. Render builds your Dockerfile automatically into a live API (`https://algovault-api.onrender.com`).
