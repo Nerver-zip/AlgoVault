@@ -57,6 +57,10 @@ export interface TagMastery {
   firstAcCount: number;
   successRate: number;
   masteryScore: number;
+  rd?: number;
+  volatility?: number;
+  avgSolveTime?: number | null;
+  rawRating?: number;
   lastSolvedAt?: string;
 }
 
@@ -98,6 +102,13 @@ export interface ZerotracProblem {
   ContestID_en?: string;
   ContestSlug?: string;
   ProblemIndex?: string;
+}
+
+export interface ActiveSession {
+  problemTitle?: string;
+  problemSlug?: string;
+  startTime?: number;
+  [key: string]: any;
 }
 
 export interface SessionData {

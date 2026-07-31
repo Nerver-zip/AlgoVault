@@ -20,10 +20,42 @@ let focusBaseline = 0
 let tabSwitchBaseline = 0
 let pasteBaseline = 0
 let lastActivityTime = Date.now()
-const IDLE_TIMEOUT_MS = 2 * 60 * 1000 // 2 minutes
+const IDLE_TIMEOUT_MS = 8 * 60 * 1000 // 8 minutes thinking/reading grace period on focused tab
 
 let isSolved = false
 let isWindowFocused = !document.hidden && document.hasFocus()
+let isPaused = false
+
+// Read initial paused state
+chrome.storage.local.get(["algovault.timerPaused"], (res) => {
+  isPaused = !!res["algovault.timerPaused"]
+})
+
+function publishLiveTimer() {
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - openedAt.getTime()) / 1000))
+  chrome.storage.local.set({
+    "algovault.liveTimer": {
+      focusSeconds,
+      elapsedSeconds,
+      isPaused,
+      isSolved,
+      slug: trackedSlug
+    }
+  })
+}
+
+function addFocusedTime(wasFocusActiveBefore = true) {
+  if (isSolved || isPaused) return
+  if (wasFocusActiveBefore) {
+    const now = Date.now()
+    // Only add time if we are not idle
+    if (now - lastActivityTime < IDLE_TIMEOUT_MS) {
+      focusSeconds += Math.max(0, Math.floor((now - focusStartedAt) / 1000))
+    }
+  }
+  focusStartedAt = Date.now()
+  publishLiveTimer()
+}
 
 // Zenith Mode State
 let isZenith = false
@@ -73,9 +105,18 @@ if (initialSlug) {
   chrome.storage.local.remove("algovault.sessionState")
 }
 
-// Storage listener to dynamically sync Zenith Mode state changes across script instances
+// Storage listener to dynamically sync Zenith Mode & Pause state changes across script instances
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local") {
+    if (changes["algovault.timerPaused"] !== undefined) {
+      isPaused = !!changes["algovault.timerPaused"].newValue
+      if (isPaused) {
+        addFocusedTime(false)
+      } else {
+        focusStartedAt = Date.now()
+      }
+      publishLiveTimer()
+    }
     if (changes["algovault.isZenith"]) {
       const active = !!changes["algovault.isZenith"].newValue
       isZenith = active
@@ -151,18 +192,6 @@ function currentSlug() {
 function currentTitle() {
   const heading = document.querySelector("a[href*='/problems/']")?.textContent
   return heading?.replace(/^\d+\.\s*/, "").trim() || currentSlug()
-}
-
-function addFocusedTime(wasFocusActiveBefore = true) {
-  if (isSolved) return
-  if (wasFocusActiveBefore) {
-    const now = Date.now()
-    // Only add time if we are not idle
-    if (now - lastActivityTime < IDLE_TIMEOUT_MS) {
-      focusSeconds += Math.max(0, Math.floor((now - focusStartedAt) / 1000))
-    }
-  }
-  focusStartedAt = Date.now()
 }
 
 let sessionStarted = false

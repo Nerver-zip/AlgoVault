@@ -9,6 +9,8 @@ export interface AchievementStats {
   tabSwitches: number
   pasteCount: number
   sessionTimeSeconds: number
+  lcRating?: number
+  hasContestSweep?: boolean
   heatmap: Array<{
     bucketRating: number
     attempted: number
@@ -59,8 +61,8 @@ function clampProgress(current: number, target: number) {
 }
 
 function earnedLabel(stats: AchievementStats) {
-  if (!stats.lastSyncTime) return "Earned from current history"
-  return `Earned by ${new Date(stats.lastSyncTime).toLocaleDateString()}`
+  if (!stats.lastSyncTime) return "Earned from telemetry history"
+  return `Unlocked ${new Date(stats.lastSyncTime).toLocaleDateString()}`
 }
 
 function derive(stats: AchievementStats): DerivedAchievementStats {
@@ -83,76 +85,52 @@ function derive(stats: AchievementStats): DerivedAchievementStats {
 }
 
 const DEFINITIONS: AchievementDefinition[] = [
+  // ── COMMON ──
   {
     id: "first-blood",
     title: "Nah, I'd Win",
     asset: "first-blood.png",
     tier: "common",
     requirement: "Solve your first tracked LeetCode problem.",
-    insight: "The first accepted submission turns the extension from empty UI into personal telemetry.",
+    insight: "The first accepted submission starts your telemetry journey.",
     evaluate: (stats) => ({ current: stats.totalSolved, target: 1, label: `${stats.totalSolved}/1 solved` })
   },
+  {
+    id: "focus-mode",
+    title: "The Godfather",
+    asset: "focus-mode.png",
+    tier: "common",
+    requirement: "Keep focus score at 90 or higher in a practice session.",
+    insight: "Discipline badge for quiet, focused coding sessions.",
+    evaluate: (stats) => ({ current: stats.focusScore, target: 90, label: `focus ${stats.focusScore}/90` })
+  },
+  {
+    id: "night-owl",
+    title: "Night Owl",
+    asset: "night-owl.png",
+    tier: "common",
+    requirement: "Log a 2 hour active study session.",
+    insight: "Endurance badge for long study blocks.",
+    evaluate: (stats) => ({ current: Math.floor(stats.sessionTimeSeconds / 60), target: 120, label: `${Math.floor(stats.sessionTimeSeconds / 60)}/120 min` })
+  },
+
+  // ── RARE ──
   {
     id: "out-67",
     title: "67",
     asset: "67.png",
     tier: "rare",
     requirement: "Reach 67 solved problems.",
-    insight: "A milestone badge for the moment your solved history stops looking casual.",
+    insight: "A milestone badge for when your solve history stops looking casual.",
     evaluate: (stats) => ({ current: stats.totalSolved, target: 67, label: `${stats.totalSolved}/67 solved` })
-  },
-  {
-    id: "problem-slayer",
-    title: "Tribal Chief",
-    asset: "problem-slayer.png",
-    tier: "epic",
-    requirement: "Reach 100 solved problems.",
-    insight: "Triple digits means you now have enough data for meaningful weakness and rating-range analytics.",
-    evaluate: (stats) => ({ current: stats.totalSolved, target: 100, label: `${stats.totalSolved}/100 solved` })
-  },
-  {
-    id: "conqueror",
-    title: "Conqueror",
-    asset: "conqueror.png",
-    tier: "legendary",
-    requirement: "Solve at least one 1800+ rated problem.",
-    insight: "This unlocks when your rating heatmap proves you have taken down a serious bucket.",
-    evaluate: (_, derived) => ({ current: derived.maxSolvedBucket, target: 1800, label: derived.maxSolvedBucket ? `best bucket ${derived.maxSolvedBucket}` : "no rated solve yet" })
-  },
-  {
-    id: "cr7",
-    title: "Conqueror 7",
-    asset: "cr7.png",
-    tier: "epic",
-    requirement: "Build a 7 day solve streak.",
-    insight: "Consistency trophy. It rewards showing up when motivation is not doing the heavy lifting.",
-    evaluate: (stats) => ({ current: stats.currentStreak, target: 7, label: `${stats.currentStreak}/7 day streak` })
-  },
-  {
-    id: "messi",
-    title: "Number 10",
-    asset: "messi.png",
-    tier: "legendary",
-    requirement: "Reach 10 days of streak momentum.",
-    insight: "A playmaker badge for turning daily practice into rhythm.",
-    evaluate: (stats) => ({ current: stats.currentStreak, target: 10, label: `${stats.currentStreak}/10 day streak` })
-  },
-  {
-    id: "all-kill",
-    title: "All Kill",
-    asset: "all-kill.png",
-    tier: "legendary",
-    requirement: "Fully clear a rating bucket with at least 3 attempted problems.",
-    insight: "A ruthless bucket-clear badge. Attempted and solved counts must match in one rating band.",
-    evaluate: (_, derived) => ({ current: derived.perfectBuckets, target: 1, label: `${derived.perfectBuckets}/1 perfect bucket` })
   },
   {
     id: "adapt",
     title: "Nah, I'd Adapt",
     asset: "adapt.png",
-    tier: "epic",
+    tier: "rare",
     requirement: "Solve problems across 5 different rating buckets.",
-    insight: "Range matters. This badge unlocks when your solves are spread instead of clustered.",
+    insight: "Range matters. Solves are spread across diverse rating bands.",
     evaluate: (_, derived) => ({ current: derived.solvedBuckets, target: 5, label: `${derived.solvedBuckets}/5 solved buckets` })
   },
   {
@@ -173,11 +151,36 @@ const DEFINITIONS: AchievementDefinition[] = [
     asset: "fallen-angle.png",
     tier: "rare",
     requirement: "Log 20 non-accepted attempts and still solve 25 problems.",
-    insight: "Failure volume plus solved count means you are not avoiding hard fights.",
+    insight: "Failure volume plus solved count means you are taking on tough challenges.",
     evaluate: (stats) => {
       const misses = Math.max(0, stats.totalSubmissions - stats.totalSolved)
       const current = Math.min(misses / 20, stats.totalSolved / 25)
       return { current, target: 1, label: `${misses}/20 misses, ${stats.totalSolved}/25 solved` }
+    }
+  },
+
+  // ── EPIC ──
+  {
+    id: "problem-slayer",
+    title: "Tribal Chief",
+    asset: "problem-slayer.png",
+    tier: "epic",
+    requirement: "Reach 100 solved problems.",
+    insight: "Triple digits means you have built enough telemetry for weakness profiling.",
+    evaluate: (stats) => ({ current: stats.totalSolved, target: 100, label: `${stats.totalSolved}/100 solved` })
+  },
+  {
+    id: "conqueror",
+    title: "Conqueror",
+    asset: "conqueror.png",
+    tier: "epic",
+    requirement: "Reach Knight Title (1850+ Rating) or solve an 1800+ rated problem.",
+    insight: "Unlocks when your rating or heatmap proves you conquered 1800+ level difficulty.",
+    evaluate: (stats, derived) => {
+      const ratingCurrent = stats.lcRating || 1500
+      const bucketCurrent = derived.maxSolvedBucket
+      const current = Math.max(ratingCurrent, bucketCurrent)
+      return { current, target: 1800, label: current >= 1800 ? "1800+ Conquered" : `${current}/1800 rating` }
     }
   },
   {
@@ -185,11 +188,43 @@ const DEFINITIONS: AchievementDefinition[] = [
     title: "Phoenix",
     asset: "phoenix.png",
     tier: "epic",
-    requirement: "Solve today while holding at least a 3 day streak.",
-    insight: "A comeback flame for keeping the streak alive today, not yesterday.",
+    requirement: "Solve today while holding at least a 3-day streak.",
+    insight: "A comeback flame for keeping your streak alive today.",
     evaluate: (stats) => {
       const current = stats.todaySolves > 0 ? stats.currentStreak : 0
       return { current, target: 3, label: stats.todaySolves > 0 ? `${stats.currentStreak}/3 active streak` : "solve today to ignite" }
+    }
+  },
+
+  // ── LEGENDARY ──
+  {
+    id: "cr7",
+    title: "CR7",
+    asset: "cr7.png",
+    tier: "legendary",
+    requirement: "Reach 700 solved problems on LeetCode.",
+    insight: "SIUUU! 700 problems slain. Elite problem solver status achieved.",
+    evaluate: (stats) => ({ current: stats.totalSolved, target: 700, label: `${stats.totalSolved}/700 solved` })
+  },
+  {
+    id: "messi",
+    title: "Number 10",
+    asset: "messi.png",
+    tier: "legendary",
+    requirement: "Reach 1,000 solved problems on LeetCode.",
+    insight: "The GOAT milestone. 1,000 solved problems. Unmatched mastery.",
+    evaluate: (stats) => ({ current: stats.totalSolved, target: 1000, label: `${stats.totalSolved}/1000 solved` })
+  },
+  {
+    id: "all-kill",
+    title: "All Kill",
+    asset: "all-kill.png",
+    tier: "legendary",
+    requirement: "Solve all 4 problems in a single official contest.",
+    insight: "Full 4/4 contest sweep. Solved every single problem before time ran out.",
+    evaluate: (stats, derived) => {
+      const swept = Boolean(stats.hasContestSweep) || derived.perfectBuckets > 0
+      return { current: swept ? 1 : 0, target: 1, label: swept ? "1/1 contest sweep" : "0/1 contest sweep" }
     }
   },
   {
@@ -197,34 +232,20 @@ const DEFINITIONS: AchievementDefinition[] = [
     title: "Ultra Instinct",
     asset: "ultra-instincts.png",
     tier: "legendary",
-    requirement: "Keep focus 95+ with 0 pastes and 2 or fewer tab switches.",
-    insight: "Clean-room focus badge. It rewards a session where the signal is pure.",
+    requirement: "Keep focus score 95+ with 0 pastes and <= 2 tab switches.",
+    insight: "Clean-room focus badge. Undivided attention in a practice session.",
     evaluate: (stats) => {
       const clean = stats.focusScore >= 95 && stats.pasteCount === 0 && stats.tabSwitches <= 2
-      return { current: clean ? 1 : Math.max(0, stats.focusScore / 95), target: 1, label: `F ${stats.focusScore}, P ${stats.pasteCount}, S ${stats.tabSwitches}` }
+      return { current: clean ? 1 : Math.max(0, stats.focusScore / 95), target: 1, label: `F ${stats.focusScore}, P ${stats.pasteCount}` }
     }
-  },
-  {
-    id: "focus-mode",
-    title: "The Godfather",
-    asset: "focus-mode.png",
-    tier: "rare",
-    requirement: "Keep focus score at 90 or higher.",
-    insight: "Discipline badge. Quiet sessions produce cleaner data and cleaner solves.",
-    evaluate: (stats) => ({ current: stats.focusScore, target: 90, label: `focus ${stats.focusScore}/90` })
-  },
-  {
-    id: "night-owl",
-    title: "Night Owl",
-    asset: "night-owl.png",
-    tier: "common",
-    requirement: "Log a 2 hour active session.",
-    insight: "Endurance badge for long study blocks. Breaks still recommended.",
-    evaluate: (stats) => ({ current: Math.floor(stats.sessionTimeSeconds / 60), target: 120, label: `${Math.floor(stats.sessionTimeSeconds / 60)}/120 min` })
   }
 ]
 
-export function buildAchievementStats(dashboard: any, heatmap: any[] = []): AchievementStats {
+export function buildAchievementStats(dashboard: any, heatmap: any[] = [], contestData: any[] = []): AchievementStats {
+  const hasContestSweep = Array.isArray(contestData) && contestData.some((c: any) => 
+    c.attended === true && (c.problemsSolved === 4 || (c.problemsSolved === c.totalProblems && c.problemsSolved > 0))
+  )
+
   return {
     totalSolved: Number(dashboard?.totalSolved || 0),
     totalSubmissions: Number(dashboard?.totalSubmissions || 0),
@@ -234,6 +255,8 @@ export function buildAchievementStats(dashboard: any, heatmap: any[] = []): Achi
     tabSwitches: Number(dashboard?.tabSwitches || 0),
     pasteCount: Number(dashboard?.pasteCount || 0),
     sessionTimeSeconds: Number(dashboard?.sessionTimeSeconds || 0),
+    lcRating: Number(dashboard?.lcRating || dashboard?.virtualRating || 1500),
+    hasContestSweep,
     heatmap: Array.isArray(heatmap) ? heatmap : [],
     lastSyncTime: dashboard?.lastSyncTime || null
   }

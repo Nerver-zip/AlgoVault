@@ -11,6 +11,7 @@ import { Lists } from "./components/sidepanel/Lists"
 import { Resources } from "./components/sidepanel/Resources"
 import { Settings } from "./components/sidepanel/Settings"
 import { getUsername, storage } from "./lib/storage"
+import type { ActiveSession } from "./lib/types"
 import { ErrorBoundary } from "./components/ui/ErrorBoundary"
 import { motion, AnimatePresence } from "framer-motion"
 
