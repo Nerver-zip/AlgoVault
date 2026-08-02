@@ -28,11 +28,11 @@ AlgoVault is an elite, self-hosted performance telemetry, rating estimation, and
   * Interactive solve breakdown distribution bars ($4/4$, $3/4$, $2/4$, $1/4$, $0/4$) and filter chips (*All*, *Gains*, *Sweeps*, *Milestones*, *Weekly*, *Biweekly*).
   * Expandable contest detail drawers, contest replay timeline scrub bar, and live upcoming contest countdowns across LeetCode, Codeforces, and AtCoder.
 
-* **⚔️ Zenith Cinematic Focus Mode (Deep Work)**:
+* **⚔️ Zenith Mode (Cinematic Focus & Flow State)**:
   * Strips away navbars, sidebars, topics, and problem tags for complete distraction-free flow state.
-  * Intentional Reveal: Editorial and Solution tabs require holding the `🔒 Yield & Reveal` button for 2 seconds to prevent impulse solution peeking.
-  * Flow State Timer that pulses amber after 25 minutes of continuous deep focus.
-  * Metacognitive Insight Capture: Prompts you to state the core algorithmic logic before exiting Zenith mode upon solving a problem.
+  * **Intentional Reveal**: Editorial and Solution tabs require holding the `🔒 Yield & Reveal` button for 2 seconds to prevent impulse solution peeking.
+  * **Flow State Timer**: Subtle background timer that pulses amber after 25 minutes of continuous focus.
+  * **Metacognitive Insight Capture**: Prompts you to state the core algorithmic logic before exiting Zenith mode upon solving a problem.
 
 * **🎯 In-Page LeetCode Problem Rating HUD**:
   * Inject live ZeroTrac contest difficulty ratings (e.g. `1650 Rating`) directly on `leetcode.com/problems/*`.
@@ -65,8 +65,11 @@ AlgoVault is an elite, self-hosted performance telemetry, rating estimation, and
 The main sidepanel dashboard provides daily quests, live-ticking focus session timers, 7-day practice activity charts, and cognitive loading telemetry.
 
 <p align="center">
-  <img src="readme-images/DashBoard.png" alt="AlgoVault Main Dashboard Overview" width="49%" />
-  <img src="readme-images/DashBoard2.png" alt="Dashboard Quests & Live Focus Timer" width="49%" />
+  <img src="readme-images/DashBoard.png" alt="AlgoVault Main Dashboard Overview" width="100%" />
+</p>
+
+<p align="center">
+  <img src="readme-images/DashBoard2.png" alt="Dashboard Quests & Live Focus Timer" width="100%" />
 </p>
 
 ---
@@ -84,13 +87,19 @@ A tactile display case designed with 3D badge parallax tilts (`preserve-3d` and 
 Monitor official LeetCode rating progression graphs, peak ratings, global ranks, solve breakdown distribution bars ($4/4$, $3/4$, $2/4$, $1/4$, $0/4$), and live countdowns for upcoming contests across LeetCode, Codeforces, and AtCoder.
 
 <p align="center">
-  <img src="readme-images/ContestSummary.png" alt="Contest Performance Summary & Rating Bar" width="49%" />
-  <img src="readme-images/all_contestData.png" alt="All Contest Rating Trajectory & History" width="49%" />
+  <img src="readme-images/ContestSummary.png" alt="Contest Performance Summary & Rating Bar" width="100%" />
 </p>
 
 <p align="center">
-  <img src="readme-images/ContestReplay0.png" alt="Contest Replay Timeline Scrub Bar" width="49%" />
-  <img src="readme-images/ReplyOfContest.png" alt="Contest Replay Detailed Analysis" width="49%" />
+  <img src="readme-images/all_contestData.png" alt="All Contest Rating Trajectory & History" width="100%" />
+</p>
+
+<p align="center">
+  <img src="readme-images/ContestReplay0.png" alt="Contest Replay Timeline Scrub Bar" width="100%" />
+</p>
+
+<p align="center">
+  <img src="readme-images/ReplyOfContest.png" alt="Contest Replay Detailed Analysis" width="100%" />
 </p>
 
 <p align="center">
@@ -112,8 +121,11 @@ Visualizes your solve conversion rate and attempt volume across official contest
 Models your cognitive skill per tag using Glicko-2 ratings, Rating Deviation ($\text{RD}$), and Volatility ($\sigma$). Automatically detects weak topic areas where your solve probability lags behind your target rating.
 
 <p align="center">
-  <img src="readme-images/Mastery2.png" alt="Glicko-2 Topic Mastery Radar & Rating Bands" width="49%" />
-  <img src="readme-images/Practice.png" alt="Weakness Discovery & Targeted Recommendations" width="49%" />
+  <img src="readme-images/Mastery2.png" alt="Glicko-2 Topic Mastery Radar & Rating Bands" width="100%" />
+</p>
+
+<p align="center">
+  <img src="readme-images/Practice.png" alt="Weakness Discovery & Targeted Recommendations" width="100%" />
 </p>
 
 ---
@@ -122,13 +134,19 @@ Models your cognitive skill per tag using Glicko-2 ratings, Rating Deviation ($\
 Interactive step-by-step pattern visualizers (Monotonic Stack, Sliding Window, Two Pointers) paired with comprehensive lesson modules directly inside the sidepanel.
 
 <p align="center">
-  <img src="readme-images/PatternHome.png" alt="Pattern Curriculum Board Home" width="49%" />
-  <img src="readme-images/Patterns.png" alt="Curriculum Pattern Overview" width="49%" />
+  <img src="readme-images/PatternHome.png" alt="Pattern Curriculum Board Home" width="100%" />
 </p>
 
 <p align="center">
-  <img src="readme-images/LearnPattern.png" alt="Interactive Pattern Lesson Module" width="49%" />
-  <img src="readme-images/LeranPatern1.png" alt="Pattern Step-by-Step Simulator" width="49%" />
+  <img src="readme-images/Patterns.png" alt="Curriculum Pattern Overview" width="100%" />
+</p>
+
+<p align="center">
+  <img src="readme-images/LearnPattern.png" alt="Interactive Pattern Lesson Module" width="100%" />
+</p>
+
+<p align="center">
+  <img src="readme-images/LeranPatern1.png" alt="Pattern Step-by-Step Simulator" width="100%" />
 </p>
 
 <p align="center">
@@ -141,8 +159,11 @@ Interactive step-by-step pattern visualizers (Monotonic Stack, Sliding Window, T
 Track problem completion across **NeetCode 150**, **Striver SDE Sheet**, and filter problems dynamically by ZeroTrac difficulty ratings.
 
 <p align="center">
-  <img src="readme-images/neetcode150.png" alt="NeetCode 150 Curriculum List" width="49%" />
-  <img src="readme-images/StriverSde.png" alt="Striver SDE Sheet List" width="49%" />
+  <img src="readme-images/neetcode150.png" alt="NeetCode 150 Curriculum List" width="100%" />
+</p>
+
+<p align="center">
+  <img src="readme-images/StriverSde.png" alt="Striver SDE Sheet List" width="100%" />
 </p>
 
 <p align="center">
@@ -151,17 +172,52 @@ Track problem completion across **NeetCode 150**, **Striver SDE Sheet**, and fil
 
 ---
 
-### 🎮 In-Page Submission Celebrations & Settings
+### 🎯 In-Page LeetCode Problem Rating Overlays
+AlgoVault injects live difficulty ratings, target metrics, and ZeroTrac ratings directly onto LeetCode problem pages.
+
+<p align="center">
+  <img src="readme-images/rating_tags.png" alt="In-Page Problem Rating & Tags Overlay" width="100%" />
+</p>
+
+<p align="center">
+  <img src="readme-images/rating_to_target.png" alt="Target Solve Metric & Rating Difference HUD" width="100%" />
+</p>
+
+<p align="center">
+  <img src="readme-images/zerotrac_integration.png" alt="ZeroTrac Problem Rating Integration" width="100%" />
+</p>
+
+<p align="center">
+  <img src="readme-images/hide_account.png" alt="Page Layout Cleanup & Blind Mode" width="100%" />
+</p>
+
+---
+
+### 🎮 Submission Verdict Celebrations & Settings
 AlgoVault triggers GTA (*Mission Passed* / *Wasted*) and Minecraft (*Level Up* / *You Died*) celebration modals on submission verdicts, configurable via the extension settings panel.
 
 <p align="center">
-  <img src="extension/assets/gta-accepted-img.png" alt="GTA Mission Passed Celebration" width="49%" />
-  <img src="extension/assets/gta-rejected-img.png" alt="GTA Wasted Failure Overlay" width="49%" />
+  <img src="readme-images/mission_passed.png" alt="GTA Mission Passed Celebration Modal" width="100%" />
+</p>
+
+<p align="center">
+  <img src="readme-images/mission_failed.png" alt="GTA Wasted Failure Modal" width="100%" />
 </p>
 
 <p align="center">
   <img src="readme-images/Setting.png" alt="Extension Settings & Synchronization Panel" width="100%" />
 </p>
+
+---
+
+## ⚔️ Zenith Mode (Cinematic Focus & Flow State)
+
+Engineered based on Cognitive Load Theory and Deliberate Practice principles:
+- **Extraneous Load Reduction:** Strips away navbars, sidebars, topics, and problem tags for complete immersion in deep work.
+- **Intentional Reveal:** Editorial and Solution tabs are hidden by default. Hold the `🔒 Yield & Reveal Solutions` button for 2 seconds to un-hide them, adding deliberate friction before giving up.
+- **Draggable Compact Anchor (`⚔️ ZENITH`):** Position-persistent pill button (`chrome.storage.local`).
+- **Flow State Timer:** Subtle background timer that pulses amber after 25 minutes of continuous focus.
+- **Metacognitive Insight Capture:** Upon solving a problem (AC), prompts you to state the core logic insight before exiting Zenith mode.
 
 ---
 
