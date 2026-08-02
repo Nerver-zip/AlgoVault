@@ -137,6 +137,10 @@ public class DashboardService {
     }
 
     private int computeCurrentStreak(List<LocalDateTime> acceptedDates) {
+        if (acceptedDates == null || acceptedDates.isEmpty()) {
+            return 0;
+        }
+
         Set<LocalDate> acceptedDays = acceptedDates.stream()
             .map(LocalDateTime::toLocalDate)
             .collect(Collectors.toCollection(HashSet::new));

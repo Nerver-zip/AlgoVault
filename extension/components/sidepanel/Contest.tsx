@@ -21,7 +21,9 @@ import {
   X,
   ArrowUpRight,
   ArrowDownRight,
-  Info
+  Info,
+  Crown,
+  Swords
 } from "lucide-react"
 import { Card } from "../ui/Card"
 import { fetchContests } from "../../lib/api/backend"
@@ -44,6 +46,10 @@ interface RankingInfo {
   attendedContestsCount?: number 
   topPercentage?: number 
   globalRanking?: number 
+  badge?: {
+    name?: string
+    icon?: string
+  }
 }
 
 interface RankingHistory { 
@@ -96,6 +102,156 @@ function getMetricBadgeColor(val?: string) {
   if (upper === "MEDIUM") return "bg-amber-500/10 border-amber-500/20 text-amber-400"
   if (upper === "LOW") return "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
   return "bg-zinc-900 border-zinc-800 text-zinc-500"
+}
+
+const BadgeIcon = ({ name, icon }: { name: string; icon?: string | null }) => {
+  const [imgFailed, setImgFailed] = useState(false)
+
+  const resolvedUrl = useMemo(() => {
+    if (!icon) return null
+    if (icon.startsWith("http://") || icon.startsWith("https://")) return icon
+    if (icon.startsWith("/")) return `https://leetcode.com${icon}`
+    return `https://leetcode.com/${icon}`
+  }, [icon])
+
+  if (resolvedUrl && !imgFailed) {
+    return (
+      <img
+        src={resolvedUrl}
+        className="w-4 h-4 object-contain shrink-0"
+        alt={name}
+        onError={() => setImgFailed(true)}
+      />
+    )
+  }
+
+  if (name.toLowerCase() === "guardian") {
+    return <Crown size={13} className="text-rose-400 fill-rose-400/20 shrink-0" />
+  }
+  if (name.toLowerCase() === "knight") {
+    return <Shield size={13} className="text-amber-400 fill-amber-400/20 shrink-0" />
+  }
+  return <Trophy size={13} className="text-sky-400 shrink-0" />
+}
+
+function getRealTimeBadge(rankingInfo: RankingInfo | null, currentRating: number) {
+  const topPct = rankingInfo?.topPercentage
+  const officialName = rankingInfo?.badge?.name?.toLowerCase()
+  const officialIcon = rankingInfo?.badge?.icon
+
+  // Check 1: Guardian status (Top 1% or official Guardian badge)
+  if (officialName === "guardian" || (topPct != null && topPct <= 1.0)) {
+    return {
+      name: "Guardian",
+      color: "#f43f5e",
+      bg: "rgba(244,63,94,0.1)",
+      border: "rgba(244,63,94,0.25)",
+      icon: officialIcon || "https://assets.leetcode.com/static_assets/public/images/badges/guardian.png",
+      detail: topPct != null ? `Top ${topPct.toFixed(2)}% globally (Top 1% Rank)` : "Official Guardian Badge",
+      isOfficial: true
+    }
+  }
+
+  // Check 2: Knight status (Top 5% or official Knight badge)
+  if (officialName === "knight" || (topPct != null && topPct <= 5.0)) {
+    return {
+      name: "Knight",
+      color: "#f59e0b",
+      bg: "rgba(245,158,11,0.1)",
+      border: "rgba(245,158,11,0.25)",
+      icon: officialIcon || "https://assets.leetcode.com/static_assets/public/images/badges/knight.png",
+      detail: topPct != null ? `Top ${topPct.toFixed(2)}% globally (Top 5% Rank)` : "Official Knight Badge",
+      isOfficial: true
+    }
+  }
+
+  // Check 3: Contender
+  const dist = topPct != null ? (topPct - 5.0).toFixed(2) : null
+  return {
+    name: "Contender",
+    color: "#38bdf8",
+    bg: "rgba(56,189,248,0.1)",
+    border: "rgba(56,189,248,0.25)",
+    icon: null,
+    detail: dist ? `${dist}% away from Knight (Top 5%)` : "Regular Contest Participant",
+    isOfficial: false
+  }
+}
+
+function renderMilestoneHeader(milestone: { type: string; label: string }) {
+  const configs: Record<string, { bg: string; border: string; text: string; icon: React.ReactNode }> = {
+    guardian: {
+      bg: "bg-rose-500/15 text-rose-300 border-rose-500/30",
+      border: "border-rose-500/50 bg-gradient-to-r from-rose-950/40 via-zinc-950 to-zinc-950 shadow-[0_0_15px_rgba(244,63,94,0.12)]",
+      text: "GUARDIAN TITLE UNLOCKED · TOP 1% GLOBALLY",
+      icon: <BadgeIcon name="Guardian" icon="https://assets.leetcode.com/static_assets/public/images/badges/guardian.png" />
+    },
+    knight: {
+      bg: "bg-amber-500/15 text-amber-300 border-amber-500/30",
+      border: "border-amber-500/50 bg-gradient-to-r from-amber-950/40 via-zinc-950 to-zinc-950 shadow-[0_0_15px_rgba(245,158,11,0.12)]",
+      text: "KNIGHT TITLE UNLOCKED · TOP 5% GLOBALLY",
+      icon: <BadgeIcon name="Knight" icon="https://assets.leetcode.com/static_assets/public/images/badges/knight.png" />
+    },
+    peak: {
+      bg: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+      border: "border-emerald-500/40 bg-gradient-to-r from-emerald-950/30 via-zinc-950 to-zinc-950",
+      text: milestone.label.toUpperCase(),
+      icon: <Flame size={12} className="text-emerald-400" />
+    },
+    first: {
+      bg: "bg-purple-500/15 text-purple-300 border-purple-500/30",
+      border: "border-purple-500/40 bg-gradient-to-r from-purple-950/30 via-zinc-950 to-zinc-950",
+      text: milestone.label.toUpperCase(),
+      icon: <Sparkles size={12} className="text-purple-400" />
+    },
+    count_10: {
+      bg: "bg-sky-500/15 text-sky-300 border-sky-500/30",
+      border: "border-sky-500/40 bg-gradient-to-r from-sky-950/30 via-zinc-950 to-zinc-950",
+      text: "10TH CONTEST MILESTONE · VETERAN",
+      icon: <Trophy size={12} className="text-sky-400" />
+    },
+    count_25: {
+      bg: "bg-indigo-500/15 text-indigo-300 border-indigo-500/30",
+      border: "border-indigo-500/40 bg-gradient-to-r from-indigo-950/30 via-zinc-950 to-zinc-950",
+      text: "25TH CONTEST MILESTONE · EXPERT",
+      icon: <Award size={12} className="text-indigo-400" />
+    },
+    count_50: {
+      bg: "bg-amber-500/15 text-amber-300 border-amber-500/30",
+      border: "border-amber-500/40 bg-gradient-to-r from-amber-950/30 via-zinc-950 to-zinc-950",
+      text: "50TH CONTEST MILESTONE · MASTER",
+      icon: <Shield size={12} className="text-amber-400" />
+    },
+    count_100: {
+      bg: "bg-rose-500/15 text-rose-300 border-rose-500/30",
+      border: "border-rose-500/50 bg-gradient-to-r from-rose-950/40 via-zinc-950 to-zinc-950 shadow-[0_0_15px_rgba(244,63,94,0.12)]",
+      text: "100TH CONTEST MILESTONE · LEGEND",
+      icon: <Trophy size={12} className="text-rose-400" />
+    },
+    sweep: {
+      bg: "bg-rose-500/25 text-rose-200 border-rose-500/60 shadow-[0_0_15px_rgba(244,63,94,0.35)] font-mono font-bold tracking-wider",
+      border: "border-2 border-rose-500/80 bg-gradient-to-r from-rose-950/70 via-red-950/40 to-zinc-950 shadow-[0_0_25px_rgba(244,63,94,0.25)]",
+      text: "⚔️ ALL KILL · PERFECT 4/4 DOMINATION",
+      icon: <Swords size={14} className="text-rose-400 animate-pulse" />
+    }
+  }
+
+  const cfg = configs[milestone.type] || {
+    bg: "bg-amber-400/10 text-amber-300 border-amber-400/20",
+    border: "border-amber-500/30 bg-zinc-950",
+    text: milestone.label,
+    icon: <Trophy size={12} className="text-amber-400" />
+  }
+
+  return {
+    cardStyle: cfg.border,
+    badge: (
+      <div className={`mb-2.5 flex items-center gap-1.5 text-[9px] font-mono font-bold border px-2 py-0.8 rounded w-fit uppercase tracking-wider ${cfg.bg}`}>
+        {cfg.icon}
+        <span>{cfg.text}</span>
+      </div>
+    )
+  }
 }
 
 export const Contest = () => {
@@ -327,6 +483,9 @@ export const Contest = () => {
     chron.forEach((c, idx) => {
       const slug = c.contestSlug
       const rating = Math.round(c.ratingAfter || 0)
+      const isSweep = c.problemsSolved === (c.totalProblems || 4) && (c.problemsSolved || 0) > 0
+      const isPB = rating > maxRatingSoFar && idx > 0
+      if (rating > maxRatingSoFar) maxRatingSoFar = rating
 
       if (idx === 0) {
         map[slug] = { type: "first", label: "First Contest Attended" }
@@ -342,17 +501,14 @@ export const Contest = () => {
         map[slug] = { type: "guardian", label: "Guardian Title Unlocked (2180+)" }
       }
 
-      if (rating > maxRatingSoFar && idx > 0) {
-        maxRatingSoFar = rating
-        if (!map[slug]) {
-          map[slug] = { type: "peak", label: `Personal Best (${rating})` }
+      // ALL KILL > Personal Best (RED CARD)
+      if (isSweep) {
+        map[slug] = { 
+          type: "sweep", 
+          label: isPB ? `ALL KILL · PERFECT 4/4 DOMINATION (PB ${rating})` : "ALL KILL · PERFECT 4/4 DOMINATION" 
         }
-      }
-
-      if (c.problemsSolved === (c.totalProblems || 4) && c.problemsSolved > 0) {
-        if (!map[slug]) {
-          map[slug] = { type: "sweep", label: "Full Sweep (4/4 Solved)" }
-        }
+      } else if (isPB && !map[slug]) {
+        map[slug] = { type: "peak", label: `Personal Best (${rating})` }
       }
     })
 
@@ -452,7 +608,18 @@ export const Contest = () => {
           </button>
         </div>
 
-        {error && <div className="text-xs text-red-400 border border-red-900/50 bg-red-950/20 p-2.5 rounded-md">{error}</div>}
+        {/* PURPOSE BANNER: WHY CONTEST TRACKING EXISTS */}
+        <section className="rounded-xl border border-amber-500/20 bg-amber-950/10 p-3.5 space-y-1.5 mt-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-amber-400 font-mono font-bold text-[11px] uppercase tracking-wider">
+              <Trophy size={13} /> The Official Performance Ledger
+            </div>
+            <span className="text-[9px] font-mono text-amber-400/60 uppercase">Why this exists</span>
+          </div>
+          <p className="text-[10px] text-zinc-400 leading-relaxed font-sans">
+            Practice mode measures how well you code when relaxed. <strong className="text-zinc-200">Contest History measures performance under real-time competitive pressure.</strong> It tracks your true rating volatility, 4/4 sweeps, and global percentile growth.
+          </p>
+        </section>
 
         {/* ═══════════ STATS TAB (Clean & Aligned UI) ═══════════ */}
         {activeTab === "stats" && (
@@ -460,39 +627,42 @@ export const Contest = () => {
             {/* HERO PROFILE CARD */}
             {(() => {
               const currentRating = Math.round(rankingInfo?.rating || 1500)
-              
-              const badge = currentRating >= 2180
-                ? { name: "Guardian", color: "#f43f5e", bg: "rgba(244,63,94,0.1)", border: "rgba(244,63,94,0.25)" }
-                : currentRating >= 1850 
-                  ? { name: "Knight", color: "#f59e0b", bg: "rgba(245,158,11,0.1)", border: "rgba(245,158,11,0.25)" }
-                  : { name: "Contender", color: "#38bdf8", bg: "rgba(56,189,248,0.1)", border: "rgba(56,189,248,0.25)" }
+              const badge = getRealTimeBadge(rankingInfo, currentRating)
 
               return (
                 <section className="relative overflow-hidden rounded-xl border border-zinc-800/80 bg-zinc-950/60 p-4 shadow-sm">
-                  <div className="flex items-center gap-3.5">
-                    <img 
-                      src={profile?.userAvatar || "https://assets.leetcode.com/users/default_avatar.jpg"} 
-                      className="w-12 h-12 rounded-xl border border-zinc-800 bg-zinc-950 object-cover shrink-0" 
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src = "https://assets.leetcode.com/users/default_avatar.jpg"
-                      }}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-sm text-zinc-100 truncate">{profile?.realName || username || "LeetCode Coder"}</span>
-                        <span className="text-[8px] bg-zinc-900 text-zinc-400 border border-zinc-800 px-1.5 py-0.5 rounded font-mono font-bold uppercase">{profile?.countryCode || "US"}</span>
-                        {username && (
-                          <a href={`https://leetcode.com/${username}/`} target="_blank" rel="noreferrer" className="text-zinc-500 hover:text-zinc-200 transition">
-                            <ExternalLink size={12} />
-                          </a>
-                        )}
+                  <div className="flex items-center justify-between gap-3.5">
+                    <div className="flex items-center gap-3.5 min-w-0 flex-1">
+                      <img 
+                        src={profile?.userAvatar || "https://assets.leetcode.com/users/default_avatar.jpg"} 
+                        className="w-12 h-12 rounded-xl border border-zinc-800 bg-zinc-950 object-cover shrink-0" 
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src = "https://assets.leetcode.com/users/default_avatar.jpg"
+                        }}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm text-zinc-100 truncate">{profile?.realName || username || "LeetCode Coder"}</span>
+                          <span className="text-[8px] bg-zinc-900 text-zinc-400 border border-zinc-800 px-1.5 py-0.5 rounded font-mono font-bold uppercase">{profile?.countryCode || "US"}</span>
+                          {username && (
+                            <a href={`https://leetcode.com/${username}/`} target="_blank" rel="noreferrer" className="text-zinc-500 hover:text-zinc-200 transition">
+                              <ExternalLink size={12} />
+                            </a>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 mt-1.5">
+                          <span className="text-[10px] text-zinc-400 font-mono">@{username || "username"}</span>
+                          <div className="flex items-center gap-1.5 rounded px-2 py-0.5 text-[9px] font-mono font-bold uppercase" style={{ backgroundColor: badge.bg, color: badge.color, border: `1px solid ${badge.border}` }}>
+                            <BadgeIcon name={badge.name} icon={badge.icon} />
+                            <span>{badge.name}</span>
+                          </div>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2 mt-1.5">
-                        <span className="text-[10px] text-zinc-400 font-mono">@{username || "username"}</span>
-                        <span className="rounded px-2 py-0.5 text-[9px] font-mono font-bold uppercase" style={{ backgroundColor: badge.bg, color: badge.color, border: `1px solid ${badge.border}` }}>
-                          {badge.name}
-                        </span>
-                      </div>
+                    </div>
+
+                    <div className="text-right shrink-0">
+                      <span className="text-[8px] font-mono text-zinc-500 block uppercase font-bold tracking-wider">Badge Status</span>
+                      <span className="text-[10px] font-mono text-zinc-400 block mt-0.5 max-w-[140px] leading-tight">{badge.detail}</span>
                     </div>
                   </div>
                 </section>
@@ -581,8 +751,8 @@ export const Contest = () => {
                     </div>
 
                     <div className="grid grid-cols-5 gap-1 pt-1 text-center font-mono">
-                      <button onClick={() => { setFilterMode("sweeps"); setActiveTab("history"); }} className="rounded bg-zinc-900/60 border border-zinc-800 p-1 hover:border-emerald-500/40 transition">
-                        <div className="text-[7.5px] uppercase font-bold text-emerald-400">4 Solved</div>
+                      <button onClick={() => { setFilterMode("sweeps"); setActiveTab("history"); }} className="rounded bg-zinc-900/60 border border-zinc-800 p-1 hover:border-rose-500/40 transition">
+                        <div className="text-[7.5px] uppercase font-bold text-rose-400">ALL KILL ⚔️</div>
                         <div className="text-xs font-bold text-zinc-100">{contestStats.allKilled}x</div>
                       </button>
 
@@ -721,16 +891,59 @@ export const Contest = () => {
               </div>
 
               {showBadgeInfo && (
-                <div className="mt-3 pt-3 border-t border-zinc-800/80 space-y-2 text-[11px] text-zinc-400 leading-relaxed font-sans">
-                  <div className="flex items-start gap-2">
-                    <span className="text-amber-400 font-mono font-bold shrink-0">Knight:</span>
-                    <span>Top <strong>25%</strong> of active contest participants (~<strong>1850+ rating</strong>).</span>
+                <div className="mt-3 pt-3 border-t border-zinc-800/80 space-y-2.5 text-[11px] text-zinc-400 leading-relaxed font-sans">
+                  {/* REAL KNIGHT BADGE ROW */}
+                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-amber-950/20 border border-amber-500/30">
+                    <div className="flex items-center gap-2.5">
+                      <BadgeIcon name="Knight" icon="https://assets.leetcode.com/static_assets/public/images/badges/knight.png" />
+                      <div>
+                        <div className="font-mono font-bold text-amber-400 text-xs flex items-center gap-1.5">
+                          <span>Knight Badge</span>
+                          <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1.5 py-0.2 rounded">Top 5%</span>
+                        </div>
+                        <p className="text-[10px] text-zinc-400">Awarded to top 5.0% active contest competitors.</p>
+                      </div>
+                    </div>
+
+                    {rankingInfo?.topPercentage != null && (
+                      <div className="text-right shrink-0 font-mono text-[9.5px]">
+                        {rankingInfo.topPercentage <= 5.0 ? (
+                          <span className="text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded">UNLOCKED ✓</span>
+                        ) : (
+                          <span className="text-amber-300 font-bold">{(rankingInfo.topPercentage - 5.0).toFixed(2)}% away</span>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <div className="flex items-start gap-2">
-                    <span className="text-rose-400 font-mono font-bold shrink-0">Guardian:</span>
-                    <span>Top <strong>5%</strong> of active contest participants (~<strong>2180+ rating</strong>).</span>
+
+                  {/* REAL GUARDIAN BADGE ROW */}
+                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-rose-950/20 border border-rose-500/30">
+                    <div className="flex items-center gap-2.5">
+                      <BadgeIcon name="Guardian" icon="https://assets.leetcode.com/static_assets/public/images/badges/guardian.png" />
+                      <div>
+                        <div className="font-mono font-bold text-rose-400 text-xs flex items-center gap-1.5">
+                          <span>Guardian Badge</span>
+                          <span className="text-[9px] bg-rose-500/20 text-rose-300 border border-rose-500/40 px-1.5 py-0.2 rounded">Top 1%</span>
+                        </div>
+                        <p className="text-[10px] text-zinc-400">Awarded to top 1.0% elite contest competitors.</p>
+                      </div>
+                    </div>
+
+                    {rankingInfo?.topPercentage != null && (
+                      <div className="text-right shrink-0 font-mono text-[9.5px]">
+                        {rankingInfo.topPercentage <= 1.0 ? (
+                          <span className="text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded">UNLOCKED ✓</span>
+                        ) : (
+                          <span className="text-rose-300 font-bold">{(rankingInfo.topPercentage - 1.0).toFixed(2)}% away</span>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <p className="text-[10px] text-zinc-500 pt-1 font-mono">LeetCode updates official badge records 3–4 days after rating calculation.</p>
+
+                  <div className="flex items-center justify-between text-[9.5px] text-zinc-500 pt-1 font-mono">
+                    <span>Official LeetCode GraphQL metrics</span>
+                    <span>Updated 3–4 days post-contest</span>
+                  </div>
                 </div>
               )}
             </div>
@@ -791,13 +1004,14 @@ export const Contest = () => {
 
                 <button
                   onClick={() => setFilterMode("sweeps")}
-                  className={`px-2 py-0.8 rounded-md border transition ${
+                  className={`px-2 py-0.8 rounded-md border transition flex items-center gap-1 ${
                     filterMode === "sweeps" 
-                      ? "bg-amber-950/60 text-amber-300 border-amber-500/40 font-bold" 
-                      : "bg-zinc-900/60 text-zinc-400 border-zinc-800/80 hover:text-amber-400"
+                      ? "bg-rose-950/80 text-rose-300 border-rose-500/60 font-bold shadow-[0_0_12px_rgba(244,63,94,0.25)]" 
+                      : "bg-zinc-900/60 text-zinc-400 border-zinc-800/80 hover:text-rose-400"
                   }`}
                 >
-                  Sweeps (4/4)
+                  <Swords size={11} className="text-rose-400" />
+                  <span>ALL KILL (4/4)</span>
                 </button>
 
                 <button
@@ -865,20 +1079,16 @@ export const Contest = () => {
                   const isExpanded = expandedCard === contest.contestSlug
                   const isSweep = contest.problemsSolved === (contest.totalProblems || 4) && (contest.problemsSolved || 0) > 0
 
+                  const mInfo = milestone ? renderMilestoneHeader(milestone) : null
+
                   return (
                     <Card 
                       key={contest.contestSlug} 
                       className={`py-3 px-3.5 border transition-all duration-200 ${
-                        milestone 
-                          ? "border-amber-500/30 bg-zinc-950" 
-                          : "border-zinc-800/80 bg-zinc-950/40 hover:border-zinc-700/80"
+                        mInfo ? mInfo.cardStyle : "border-zinc-800/80 bg-zinc-950/40 hover:border-zinc-700/80"
                       }`}
                     >
-                      {milestone && (
-                        <div className="mb-2 flex items-center gap-1.5 text-[9px] font-mono font-bold text-amber-300 bg-amber-400/10 border border-amber-400/20 px-2 py-0.5 rounded w-fit">
-                          <span>{milestone.label}</span>
-                        </div>
-                      )}
+                      {mInfo && mInfo.badge}
 
                       <div className="flex justify-between gap-3 items-start">
                         <div className="min-w-0 flex-1">
@@ -894,8 +1104,9 @@ export const Contest = () => {
                             </a>
 
                             {isSweep && (
-                              <span className="text-[8px] font-mono font-bold uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.2 rounded">
-                                Sweep
+                              <span className="text-[8px] font-mono font-bold uppercase bg-rose-500/20 text-rose-300 border border-rose-500/40 px-1.5 py-0.5 rounded shadow-[0_0_8px_rgba(244,63,94,0.25)] flex items-center gap-1">
+                                <Swords size={9} className="text-rose-400" />
+                                <span>ALL KILL</span>
                               </span>
                             )}
                           </div>
@@ -905,7 +1116,7 @@ export const Contest = () => {
                               <>
                                 <span className="text-zinc-300">Rank #{contest.rank?.toLocaleString() ?? "n/a"}</span>
                                 <span className="text-zinc-600">•</span>
-                                <span className={isSweep ? "text-emerald-400 font-semibold" : "text-zinc-300"}>
+                                <span className={isSweep ? "text-rose-400 font-semibold" : "text-zinc-300"}>
                                   {contest.problemsSolved ?? "?"}/{contest.totalProblems ?? 4} Solved
                                 </span>
                                 {contest.finishTimeMinutes != null && (

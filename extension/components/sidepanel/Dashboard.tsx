@@ -356,6 +356,57 @@ export const Dashboard = () => {
     }
   }
 
+  const productivityInsight = useMemo(() => {
+    if (liveSession) {
+      return {
+        badge: "SESSION RUNNING",
+        badgeColor: "text-emerald-400 border-emerald-400/30 bg-emerald-400/10",
+        headline: "You're in the zone. Work one problem at a time.",
+        subtext: "Focus timer is actively recording — stay deliberate and present."
+      }
+    }
+
+    const solves = data?.todaySolves || 0
+    const minutes = activity.todayMinutes || 0
+    const dueReviews = queue.length
+
+    if (solves >= 3) {
+      return {
+        badge: "INSANE PRODUCTIVITY",
+        badgeColor: "text-amber-400 border-amber-400/30 bg-amber-400/10",
+        headline: `Crushing it today — ${solves} problems solved!`,
+        subtext: `${formatDuration(minutes * 60)} of focused practice recorded. Your momentum is building.`
+      }
+    }
+
+    if (solves >= 1) {
+      return {
+        badge: "PRODUCTIVE DAY",
+        badgeColor: "text-emerald-400 border-emerald-400/30 bg-emerald-400/10",
+        headline: `Solid work — ${solves} solve${solves > 1 ? "s" : ""} logged today.`,
+        subtext: dueReviews > 0 
+          ? `${dueReviews} review card${dueReviews > 1 ? "s" : ""} waiting in queue to keep memory sharp.` 
+          : "Your daily practice target is complete. Keep pushing or rest up."
+      }
+    }
+
+    if (dueReviews > 0) {
+      return {
+        badge: "CARDS OVERDUE",
+        badgeColor: "text-rose-400 border-rose-400/30 bg-rose-400/10",
+        headline: `${dueReviews} review card${dueReviews > 1 ? "s" : ""} due for recall today.`,
+        subtext: "Clear your overdue cards first to prevent memory decay on key patterns."
+      }
+    }
+
+    return {
+      badge: "READY TO TRAIN",
+      badgeColor: "text-sky-400 border-sky-400/30 bg-sky-400/10",
+      headline: "Your training queue is clear and ready.",
+      subtext: "Sequential plan: recall existing patterns, practice target gaps, then stretch."
+    }
+  }, [liveSession, data?.todaySolves, activity.todayMinutes, queue.length])
+
   if (loading && !data) {
     return <div className="space-y-3 p-3"><Skeleton className="h-40 rounded-2xl" /><Skeleton className="h-28 rounded-2xl" /><Skeleton className="h-28 rounded-2xl" /></div>
   }
@@ -364,124 +415,192 @@ export const Dashboard = () => {
     return <div className="p-4"><Card className="border-red-500/30"><p className="text-sm font-semibold text-red-300">Dashboard unavailable</p><p className="mt-1 text-xs text-zinc-400">{error || "Connect your account and sync a submission to start."}</p></Card></div>
   }
 
-  const headline = liveSession
-    ? `You are in a practice session. Keep the next step small and deliberate.`
-    : openActions > 0
-      ? `${openActions} useful ${openActions === 1 ? "action" : "actions"} are ready for today.`
-      : "Your review queue is clear. A short, focused practice session is enough."
+  return <main className="mx-auto max-w-2xl space-y-3.5 px-1 pb-6 pt-1 font-sans">
 
-  return <main className="mx-auto max-w-2xl space-y-4 px-1 pb-6 pt-1 font-sans">
-    <section className="relative overflow-hidden rounded-2xl border border-zinc-800 bg-[#121214] p-5 shadow-md">
-      <div className="relative">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="panel-label text-amber-400">Today · {new Date().toLocaleDateString(undefined, { month: "long", day: "numeric" })}</p>
-            <h1 className="mt-2 text-xl font-semibold tracking-tight text-zinc-100">A calm plan, based on your actual data.</h1>
-            <p className="mt-1.5 max-w-md text-sm leading-relaxed text-zinc-400">{headline}</p>
-          </div>
-          <div className="rounded-xl border border-zinc-700/80 bg-zinc-950/50 px-3 py-2 text-right shrink-0 font-mono">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Today</p>
-            <p className="mt-0.5 text-lg font-semibold tabular-nums text-zinc-100">{data.todaySolves || 0} <span className="text-xs font-medium text-zinc-500">solved</span></p>
-          </div>
-        </div>
+    {/* ═══════════ HERO — TODAY'S OVERVIEW ═══════════ */}
+    <section className="relative overflow-hidden rounded-2xl border border-zinc-800/80 bg-[#0d0d0f]">
+      {/* Warm ambient gradient overlay */}
+      <div 
+        className="absolute inset-0 pointer-events-none opacity-60" 
+        style={{
+          background: 'radial-gradient(ellipse 70% 50% at 85% 10%, rgba(251,191,36,0.09), transparent), radial-gradient(ellipse 60% 60% at 10% 90%, rgba(168,85,247,0.06), transparent)'
+        }} 
+      />
 
-        <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-zinc-800/80 pt-4 text-xs font-mono text-zinc-400">
-          <span className="inline-flex items-center gap-1.5"><Clock3 size={13} className="text-amber-400" /> {formatDuration(activity.todayMinutes)} tracked</span>
-          <span className="inline-flex items-center gap-1.5"><Flame size={13} className="text-orange-400" /> {data.currentStreak || 0}-day solve streak</span>
-          <span className="text-zinc-600">{refreshing ? "Updating plan…" : relativeSync(lastSync)}</span>
-        </div>
-      </div>
-    </section>
-
-    <section className="rounded-2xl border border-zinc-800 bg-[#101012] p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="panel-label">Focus session</p>
-          <p className="mt-1 text-xs text-zinc-400">{liveSession ? "Session is running — work one problem at a time." : "Use this only when you want your focus time recorded."}</p>
-        </div>
-        {liveSession ? <span className="font-mono text-lg font-semibold tabular-nums text-emerald-400">{formatDuration(sessionSeconds)}</span> : <button onClick={startSession} className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-100 px-3 py-2 text-[11px] font-bold text-zinc-950 hover:bg-white transition"><Play size={12} fill="currentColor" /> Start</button>}
-      </div>
-      {liveSession && <div className="mt-3 flex gap-2 border-t border-zinc-800 pt-3"><button onClick={resetSession} className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-zinc-700 py-2 text-[11px] font-semibold text-zinc-300 hover:bg-zinc-800"><RotateCcw size={12} /> Restart</button><button onClick={endSession} className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-red-900/50 py-2 text-[11px] font-semibold text-red-300 hover:bg-red-950/30"><Square size={11} fill="currentColor" /> End session</button></div>}
-    </section>
-
-    <section className="overflow-hidden rounded-2xl border border-zinc-800 bg-[#121214]">
-      <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3.5">
-        <div>
-          <p className="panel-label">Today’s quest</p>
-          <p className="mt-1 text-xs text-zinc-500">Review, reinforce one topic, then stretch.</p>
-        </div>
-        <span className="text-xs font-mono font-medium text-zinc-500">{completedActions}/{actions.filter(Boolean).length || 0} complete</span>
-      </div>
-      <div className="divide-y divide-zinc-800">
-        <article className="bg-amber-500/[0.03] p-4">
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 rounded-lg bg-amber-400/15 p-2 text-amber-400 shrink-0"><Sparkles size={15} /></div>
-            <div className="min-w-0 flex-1">
-              <p className="panel-label text-amber-400">Curated review {activeReview ? `· ${curatedReview?.listName}` : ""}</p>
-              <h2 className="mt-1 truncate text-sm font-semibold text-zinc-100">{activeReview?.title || "No curated review is due"}</h2>
-              <p className="mt-1 text-xs text-zinc-400">{activeReview ? `Due for recall after ${Math.round(activeReview.intervalDays || 1)} day${Math.round(activeReview.intervalDays || 1) === 1 ? "" : "s"}. Curated sheets always take priority.` : "Your due cards are either complete or outside your curated sheets."}</p>
-            </div>
-            {activeReview && <ActionButton href={`https://leetcode.com/problems/${activeReview.titleSlug}/`} tone="amber">Review</ActionButton>}
-          </div>
-          {activeReview && <div className="mt-3 border-t border-amber-500/15 pt-3">{reviewing ? <><p className="mb-2 text-[11px] text-zinc-400">How well did you recall the approach?</p><div className="grid grid-cols-4 gap-2">{[[1, "Forgot"], [3, "Hard"], [4, "Good"], [5, "Easy"]].map(([quality, label]) => <button key={label as string} disabled={reviewSubmitting} onClick={() => submitReview(quality as number)} className="rounded-md border border-zinc-700 bg-zinc-950/60 py-1.5 text-[11px] font-medium text-zinc-300 hover:border-amber-400/50 hover:text-amber-200 disabled:opacity-50">{label as string}</button>)}</div></> : <button onClick={() => setReviewing(true)} className="text-[11px] font-semibold text-amber-400 hover:underline">Log recall quality after reviewing <ArrowUpRight className="inline" size={12} /></button>}</div>}
-        </article>
-
-        <article className={`p-4 ${hasPracticeSignal ? "bg-emerald-500/[0.03]" : "bg-[#121214]"}`}>
-          <div className="flex items-start gap-3">
-            <div className={`mt-0.5 rounded-lg p-2 shrink-0 ${hasPracticeSignal ? "bg-emerald-400/15 text-emerald-400" : "bg-blue-400/15 text-blue-400"}`}>{hasPracticeSignal ? <Check size={15} /> : <Target size={15} />}</div>
-            <div className="min-w-0 flex-1">
-              <p className="panel-label">{hasPracticeSignal ? "Practice logged" : "Recommended practice"}</p>
-              <h2 className={`mt-1 truncate text-sm font-semibold ${hasPracticeSignal ? "text-emerald-200" : "text-zinc-100"}`}>{hasPracticeSignal ? "You solved a problem today" : recommendedPractice?.title || "Choose one problem you can explain afterward"}</h2>
-              <p className="mt-1 text-xs text-zinc-400">{hasPracticeSignal ? "Your sync recorded at least one accepted problem today." : recommendedPractice ? `${recommendedPractice.tag || "Practice target"}${recommendedPractice.difficulty ? ` · ${recommendedPractice.difficulty}` : ""}. Selected from weakness profile.` : "Sync more solve history to receive a tailored recommendation."}</p>
-            </div>
-            {!hasPracticeSignal && recommendedPractice && <ActionButton href={`https://leetcode.com/problems/${recommendedPractice.titleSlug}/`} tone="blue">Practice</ActionButton>}
-          </div>
-        </article>
-
-        <article className="bg-[#121214] p-4">
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 rounded-lg bg-purple-400/15 p-2 text-purple-400 shrink-0"><Circle size={15} /></div>
-            <div className="min-w-0 flex-1">
-              <p className="panel-label">Optional stretch</p>
-              <h2 className="mt-1 truncate text-sm font-semibold text-zinc-100">{stretchProblem?.title || "Set a stretch problem when you are ready"}</h2>
-              <p className="mt-1 text-xs text-zinc-400">{stretchProblem && planningRange ? `${Math.round(stretchProblem.rating)} ZeroTrac rating · ${planningRange.source}. Treat this as a planning aid, not a prediction.` : planningRange ? `Your current practice band is ${planningRange.low}–${planningRange.high} (${planningRange.source}).` : "Add contest history or solve data to surface a well-matched stretch problem."}</p>
-            </div>
-            {stretchProblem && <ActionButton href={`https://leetcode.com/problems/${stretchProblem.slug}/`}>Attempt</ActionButton>}
-          </div>
-        </article>
-      </div>
-    </section>
-
-    <section className="grid gap-3 sm:grid-cols-[1.35fr_1fr]">
-      <Card className="rounded-2xl p-4 bg-[#121214]">
+      <div className="relative px-5 pt-5 pb-4">
+        {/* Date + Productivity Badge Row */}
         <div className="flex items-center justify-between">
-          <div>
-            <p className="panel-label">Tracked practice · last 7 days</p>
-            <p className="mt-1 text-xs text-zinc-500">Recorded focus session minutes.</p>
+          <p className="text-[9px] font-bold font-mono uppercase tracking-[0.2em] text-amber-400/80">
+            {new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
+          </p>
+          <div className="flex items-center gap-2">
+            <span className={`px-2 py-0.5 rounded text-[8px] font-mono font-bold uppercase border ${productivityInsight.badgeColor}`}>
+              {productivityInsight.badge}
+            </span>
+            <span className="text-[8px] font-mono text-zinc-600">{refreshing ? "syncing…" : relativeSync(lastSync)}</span>
           </div>
-          <span className="text-xs font-mono font-medium text-zinc-400">{formatDuration(activity.days.reduce((total, day) => total + day.minutes, 0) * 60)}</span>
         </div>
-        <div className="mt-4 flex h-20 items-end justify-between gap-2">
-          {activity.days.map((day) => (
-            <div key={day.key} className="flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1.5">
-              <span className="text-[10px] font-mono tabular-nums text-zinc-500">{day.minutes ? (day.minutes >= 60 ? `${(day.minutes / 60).toFixed(1)}h` : `${day.minutes}m`) : ""}</span>
-              <div title={`${formatDuration(day.minutes * 60)} tracked practice`} className={`w-full max-w-7 rounded-t-sm ${day.key === today ? "bg-amber-400" : "bg-zinc-700"}`} style={{ height: `${day.minutes ? Math.max(10, (day.minutes / maxMinutes) * 100) : 3}%` }} />
-              <span className="text-[10px] font-mono text-zinc-500">{day.label}</span>
+
+        {/* Main Content Row */}
+        <div className="mt-3.5 flex items-end justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <h1 className="text-[17px] font-semibold tracking-tight text-zinc-100 leading-snug">
+              {productivityInsight.headline}
+            </h1>
+            <p className="mt-1 text-[11px] leading-relaxed text-zinc-500 max-w-[320px]">
+              {productivityInsight.subtext}
+            </p>
+          </div>
+
+          {/* Today's Counter — Hero Number */}
+          <div className="shrink-0 text-right">
+            <span className="block text-[38px] font-bold font-mono tabular-nums tracking-tighter text-zinc-100 leading-none">
+              {data.todaySolves || 0}
+            </span>
+            <span className="block mt-1 text-[8px] font-bold font-mono uppercase tracking-[0.2em] text-zinc-600">
+              solved today
+            </span>
+          </div>
+        </div>
+
+        {/* Stat Strip */}
+        <div className="mt-4 flex items-center gap-4 border-t border-zinc-800/50 pt-3">
+          <span className="inline-flex items-center gap-1.5 text-[10px] font-mono text-zinc-500">
+            <Clock3 size={11} className="text-amber-400/80" />
+            <span className="tabular-nums text-zinc-300 font-semibold">{formatDuration(activity.todayMinutes * 60)}</span> tracked
+          </span>
+          <span className="inline-flex items-center gap-1.5 text-[10px] font-mono text-zinc-500">
+            <Flame size={11} className="text-orange-400/80" />
+            <span className="tabular-nums text-zinc-300 font-semibold">{data.currentStreak || 0}</span>-day streak
+          </span>
+          <span className="inline-flex items-center gap-1.5 text-[10px] font-mono text-zinc-500">
+            <Target size={11} className="text-purple-400/70" />
+            <span className="tabular-nums text-zinc-300 font-semibold">{data.todaySubmissions || 0}</span> submissions
+          </span>
+        </div>
+      </div>
+
+      {/* Focus Session Strip */}
+      <div className="border-t border-zinc-800/50 px-5 py-2.5 flex items-center justify-between gap-3 bg-black/30">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${liveSession ? "bg-emerald-400 animate-pulse" : "bg-zinc-700"}`} />
+          <span className="text-[10px] font-mono text-zinc-400 truncate">
+            {liveSession ? "Session running" : "Focus timer"}
+          </span>
+        </div>
+        {liveSession ? (
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-sm font-semibold tabular-nums text-emerald-400">{formatDuration(sessionSeconds)}</span>
+            <button onClick={resetSession} className="rounded-md border border-zinc-700/60 p-1.5 text-zinc-400 hover:text-zinc-200 hover:border-zinc-600 transition" title="Restart Session"><RotateCcw size={10} /></button>
+            <button onClick={endSession} className="rounded-md border border-red-900/40 p-1.5 text-red-400/80 hover:text-red-300 hover:border-red-800/60 transition" title="End Session"><Square size={9} fill="currentColor" /></button>
+          </div>
+        ) : (
+          <button onClick={startSession} className="inline-flex items-center gap-1 rounded-md border border-zinc-700/60 bg-zinc-800/40 px-2.5 py-1 text-[9px] font-bold font-mono uppercase tracking-wider text-zinc-300 hover:text-white hover:border-zinc-500 transition">
+            <Play size={9} fill="currentColor" /> Start
+          </button>
+        )}
+      </div>
+    </section>
+
+    {/* ═══════════ TODAY'S QUEST ═══════════ */}
+    <section className="overflow-hidden rounded-2xl border border-zinc-800/60 bg-[#0d0d0f]">
+      <div className="flex items-center justify-between border-b border-zinc-800/40 px-4 py-3">
+        <p className="text-[9px] font-bold font-mono uppercase tracking-[0.2em] text-zinc-500">Today's quest</p>
+        <span className="text-[9px] font-mono font-bold tabular-nums text-zinc-600">{completedActions}/{actions.filter(Boolean).length || 0} complete</span>
+      </div>
+
+      <div className="divide-y divide-zinc-800/30">
+        {/* Step 1: Review */}
+        <article className="p-4 flex items-start gap-3.5">
+          <div className="mt-0.5 flex h-7 w-7 items-center justify-center rounded-lg bg-amber-400/10 shrink-0">
+            <Sparkles size={13} className="text-amber-400" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[8px] font-bold font-mono uppercase tracking-[0.2em] text-amber-400/70">Review{activeReview ? ` · ${curatedReview?.listName}` : ""}</p>
+            <h2 className="mt-1 truncate text-[13px] font-semibold text-zinc-100">{activeReview?.title || "No curated review is due"}</h2>
+            <p className="mt-0.5 text-[10px] leading-relaxed text-zinc-500">{activeReview ? `Due for recall after ${Math.round(activeReview.intervalDays || 1)}d. Curated sheets take priority.` : "All due cards are complete."}</p>
+          </div>
+          {activeReview && <ActionButton href={`https://leetcode.com/problems/${activeReview.titleSlug}/`} tone="amber">Review</ActionButton>}
+        </article>
+        {activeReview && <div className="px-4 pb-3 border-t border-amber-400/10">{reviewing ? <><p className="mb-2 pt-3 text-[10px] text-zinc-500">How well did you recall it?</p><div className="grid grid-cols-4 gap-1.5">{[[1, "Forgot"], [3, "Hard"], [4, "Good"], [5, "Easy"]].map(([q, l]) => <button key={l as string} disabled={reviewSubmitting} onClick={() => submitReview(q as number)} className="rounded-md border border-zinc-800 bg-black/30 py-1.5 text-[10px] font-mono font-medium text-zinc-400 hover:border-amber-400/40 hover:text-amber-300 disabled:opacity-40 transition">{l as string}</button>)}</div></> : <button onClick={() => setReviewing(true)} className="pt-3 text-[10px] font-semibold text-amber-400/70 hover:text-amber-300 transition">Log recall quality <ArrowUpRight className="inline" size={10} /></button>}</div>}
+
+        {/* Step 2: Practice */}
+        <article className={`p-4 flex items-start gap-3.5 ${hasPracticeSignal ? "bg-emerald-500/[0.02]" : ""}`}>
+          <div className={`mt-0.5 flex h-7 w-7 items-center justify-center rounded-lg shrink-0 ${hasPracticeSignal ? "bg-emerald-400/10" : "bg-sky-400/10"}`}>
+            {hasPracticeSignal ? <Check size={13} className="text-emerald-400" /> : <Target size={13} className="text-sky-400" />}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[8px] font-bold font-mono uppercase tracking-[0.2em] text-zinc-500">{hasPracticeSignal ? "Practice done" : "Recommended practice"}</p>
+            <h2 className={`mt-1 truncate text-[13px] font-semibold ${hasPracticeSignal ? "text-emerald-300" : "text-zinc-100"}`}>{hasPracticeSignal ? "Solved today" : recommendedPractice?.title || "Pick any problem you can explain after"}</h2>
+            <p className="mt-0.5 text-[10px] leading-relaxed text-zinc-500">{hasPracticeSignal ? "At least one accepted submission today." : recommendedPractice ? `${recommendedPractice.tag || "Target"}${recommendedPractice.difficulty ? ` · ${recommendedPractice.difficulty}` : ""}` : "Sync history for tailored picks."}</p>
+          </div>
+          {!hasPracticeSignal && recommendedPractice && <ActionButton href={`https://leetcode.com/problems/${recommendedPractice.titleSlug}/`} tone="blue">Solve</ActionButton>}
+        </article>
+
+        {/* Step 3: Stretch */}
+        <article className="p-4 flex items-start gap-3.5">
+          <div className="mt-0.5 flex h-7 w-7 items-center justify-center rounded-lg bg-purple-400/10 shrink-0">
+            <Circle size={13} className="text-purple-400" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[8px] font-bold font-mono uppercase tracking-[0.2em] text-zinc-500">Stretch</p>
+            <h2 className="mt-1 truncate text-[13px] font-semibold text-zinc-100">{stretchProblem?.title || "Set when ready"}</h2>
+            <p className="mt-0.5 text-[10px] leading-relaxed text-zinc-500">{stretchProblem && planningRange ? `${Math.round(stretchProblem.rating)} rating · ${planningRange.source}` : planningRange ? `Band: ${planningRange.low}–${planningRange.high}` : "Add contest data for a matched problem."}</p>
+          </div>
+          {stretchProblem && <ActionButton href={`https://leetcode.com/problems/${stretchProblem.slug}/`}>Attempt</ActionButton>}
+        </article>
+      </div>
+    </section>
+
+    {/* ═══════════ ACTIVITY + STATS ═══════════ */}
+    <section className="grid gap-3 sm:grid-cols-[1.35fr_1fr]">
+      <div className="rounded-2xl border border-zinc-800/60 bg-[#0d0d0f] p-4">
+        <div className="flex items-center justify-between">
+          <p className="text-[9px] font-bold font-mono uppercase tracking-[0.2em] text-zinc-500">Last 7 days</p>
+          <span className="text-[10px] font-mono font-bold tabular-nums text-zinc-400">{formatDuration(activity.days.reduce((t, d) => t + d.minutes, 0) * 60)}</span>
+        </div>
+        <div className="mt-4 flex h-[72px] items-end justify-between gap-1.5">
+          {activity.days.map((day) => {
+            const isToday = day.key === today
+            const barH = day.minutes ? Math.max(8, (day.minutes / maxMinutes) * 100) : 2
+            return (
+              <div key={day.key} className="flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1">
+                {day.minutes > 0 && (
+                  <span className="text-[8px] font-mono font-bold tabular-nums text-zinc-400">
+                    {day.minutes >= 60 ? `${(day.minutes / 60).toFixed(1)}h` : `${day.minutes}m`}
+                  </span>
+                )}
+                <div
+                  className={`w-full rounded-sm transition-all ${isToday ? "bg-amber-400" : day.minutes > 0 ? "bg-zinc-700" : "bg-zinc-800/40"}`}
+                  style={{ height: `${barH}%`, maxWidth: 28 }}
+                  title={`${formatDuration(day.minutes * 60)}`}
+                />
+                <span className={`text-[8px] font-mono ${isToday ? "text-amber-400 font-bold" : "text-zinc-600"}`}>{day.label}</span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-zinc-800/60 bg-[#0d0d0f] p-4 flex flex-col justify-between">
+        <p className="text-[9px] font-bold font-mono uppercase tracking-[0.2em] text-zinc-500">At a glance</p>
+        <div className="mt-3 space-y-2.5">
+          {[
+            { label: "Total solved", value: data.totalSolved || 0 },
+            { label: "Submissions today", value: data.todaySubmissions || 0 },
+            { label: "Streak", value: data.currentStreak || 0, suffix: "d" },
+          ].map((stat, i, arr) => (
+            <div key={stat.label} className={`flex items-baseline justify-between ${i < arr.length - 1 ? "border-b border-zinc-800/30 pb-2" : ""}`}>
+              <span className="text-[10px] text-zinc-500">{stat.label}</span>
+              <span className="text-[15px] font-bold font-mono tabular-nums text-zinc-100">
+                {stat.value}{stat.suffix && <span className="text-[9px] font-medium text-zinc-500 ml-0.5">{stat.suffix}</span>}
+              </span>
             </div>
           ))}
         </div>
-      </Card>
-      
-      <Card className="rounded-2xl p-4 bg-[#121214]">
-        <p className="panel-label">At a glance</p>
-        <div className="mt-3 space-y-3 font-mono">
-          <div className="flex items-baseline justify-between border-b border-zinc-800 pb-2"><span className="text-xs text-zinc-500 font-sans">Total solved</span><span className="text-lg font-semibold tabular-nums text-zinc-100">{data.totalSolved || 0}</span></div>
-          <div className="flex items-baseline justify-between border-b border-zinc-800 pb-2"><span className="text-xs text-zinc-500 font-sans">Today’s submissions</span><span className="text-lg font-semibold tabular-nums text-zinc-100">{data.todaySubmissions || 0}</span></div>
-          <div className="flex items-baseline justify-between"><span className="text-xs text-zinc-500 font-sans">Current streak</span><span className="text-lg font-semibold tabular-nums text-zinc-100">{data.currentStreak || 0}<span className="ml-1 text-[10px] font-medium text-zinc-500 font-sans">days</span></span></div>
-        </div>
-      </Card>
+      </div>
     </section>
 
-    {error && <p className="px-1 text-xs text-red-300 font-mono">{error}</p>}
+    {error && <p className="px-1 text-[10px] text-red-400/80 font-mono">{error}</p>}
   </main>
 }

@@ -13,8 +13,16 @@ import { fetchUserStatus } from "../../lib/api/leetcode"
 import { getSettings, updateSettings, exportUserData } from "../../lib/api/backend"
 
 interface SyncStatus {
-  message: string;
-  type: "success" | "error" | "loading" | "info";
+  message?: string;
+  type?: "success" | "error" | "loading" | "info";
+  status?: string;
+  count?: number;
+  subCount?: number;
+  hasMore?: boolean;
+  nextOffset?: number;
+  success?: boolean;
+  problem?: string;
+  timestamp?: number;
 }
 
 export const Settings = () => {
@@ -390,7 +398,7 @@ export const Settings = () => {
                 SYNC COMPLETED SUCCESSFULLY
             </div>
         )}
-        {syncStatus?.status !== 'RUNNING' && syncHasMore?.hasMore && (
+        {syncStatus?.status !== 'RUNNING' && (syncHasMore as any)?.hasMore && (
             <div className="mt-3 p-3 bg-zinc-950 border border-zinc-800 rounded-lg flex flex-col gap-2">
                 <div className="text-[10px] text-zinc-400 font-mono leading-relaxed">
                     LeetCode still reports older pages after the last run. Continue from the saved offset.
@@ -400,13 +408,13 @@ export const Settings = () => {
                         chrome.runtime.sendMessage({ 
                             action: "sync_history", 
                             username: username, 
-                            startOffset: syncHasMore.nextOffset 
+                            startOffset: (syncHasMore as any).nextOffset 
                         });
                         setSyncStatus({ status: 'RUNNING', message: 'Resuming older sync...', count: 0, subCount: 0 });
                     }}
                     className="w-full bg-zinc-800 hover:bg-zinc-800 text-zinc-200 hover:text-white font-semibold text-[10px] py-1.5 px-3 rounded border border-zinc-700 font-mono tracking-wider uppercase"
                 >
-                    Sync next history batch (starting at {syncHasMore.nextOffset + 1})
+                    Sync next history batch (starting at {((syncHasMore as any).nextOffset || 0) + 1})
                 </button>
             </div>
         )}
@@ -477,9 +485,11 @@ export const Settings = () => {
               {gitSyncStatus.message && gitSyncStatus.message !== "Success" && (
                 <div className="mt-0.5 text-zinc-400 break-all">Error: {gitSyncStatus.message}</div>
               )}
-              <div className="text-zinc-600 mt-1.5 text-[8px] text-right">
-                {new Date(gitSyncStatus.timestamp).toLocaleTimeString()}
-              </div>
+              {gitSyncStatus.timestamp && (
+                <div className="text-zinc-600 mt-1.5 text-[8px] text-right">
+                  {new Date(gitSyncStatus.timestamp).toLocaleTimeString()}
+                </div>
+              )}
             </div>
           )}
         </div>

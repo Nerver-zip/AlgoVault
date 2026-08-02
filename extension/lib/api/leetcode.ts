@@ -134,6 +134,10 @@ export const fetchContestHistory = async (username: string) => {
         rating
         globalRanking
         topPercentage
+        badge {
+          name
+          icon
+        }
       }
       userContestRankingHistory(username: $username) {
         attended
@@ -150,7 +154,7 @@ export const fetchContestHistory = async (username: string) => {
       }
     }
   `;
-  return fetchGraphQL(query, { username });
+  return fetchGraphQL(query, { username: username.trim() });
 };
 
 export const fetchContestQuestions = async (contestSlug: string) => {
