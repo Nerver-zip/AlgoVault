@@ -1,69 +1,102 @@
-import { useEffect, useMemo, useState } from "react"
-import { ArrowUpRight, Check, Circle, Clock3, Flame, Play, RotateCcw, Sparkles, Square, Target } from "lucide-react"
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
+import {
+  Activity,
+  ArrowUpRight,
+  Brain,
+  Check,
+  ChevronRight,
+  Clock3,
+  Flame,
+  Pause,
+  Play,
+  RefreshCw,
+  Square,
+  Target,
+  TrendingUp,
+  WifiOff,
+} from "lucide-react"
 import { Card } from "../ui/Card"
 import { Skeleton } from "../ui/Skeleton"
-import { fetchAllSessions, fetchDashboard, fetchRevisionQueue, fetchWeakness, reviewRevisionCard } from "../../lib/api/backend"
-import { getLastSync, getUsername, setCachedDashboard, setCachedWeakness } from "../../lib/storage"
+import {
+  fetchAllSessions,
+  fetchDashboard,
+  fetchRevisionQueue,
+  fetchWeakness,
+  reviewRevisionCard
+} from "../../lib/api/backend"
+import {
+  clearCurrentSession,
+  getCurrentSession,
+  getLastSync,
+  getLiveTimer,
+  getTodaySnapshot,
+  getUsername,
+  setCachedDashboard,
+  setCachedWeakness,
+  setTodaySnapshot
+} from "../../lib/storage"
 import { normalizeZerotracPayload } from "../../lib/zerotrac"
 import { STUDY_LISTS } from "../../lib/study-lists"
-import type { DashboardData, SessionData } from "../../lib/types"
+import type {
+  ActiveSession,
+  DashboardData,
+  EvidenceBadge,
+  LiveTimerState,
+  PrimaryAction,
+  QuestStep,
+  RevisionQueueItem,
+  SessionData,
+  TodaySnapshot,
+  UserContestRanking,
+  WeaknessRecommendation,
+  WeaknessSnapshot,
+  ZerotracProblem
+} from "../../lib/types"
 
-type RevisionCard = {
-  id: number
-  title: string
-  titleSlug: string
-  confidence?: number
-  intervalDays?: number
+const TODAY_SNAPSHOT_VERSION = 2
+const STALE_AFTER_MS = 15 * 60 * 1000
+const MIN_SOLVES_FOR_STRETCH = 25
+
+type BackgroundResponse<T> = {
+  ok?: boolean
+  data?: T
+  error?: string
 }
 
-type Recommendation = {
-  title: string
-  titleSlug: string
-  tag?: string
-  difficulty?: string
-  actualRating?: number
-}
+type QuestId = QuestStep["id"]
 
-type WeaknessData = {
-  weakTags?: Array<{ tag: string; masteryScore?: number }>
-  recommendations?: Recommendation[]
-}
-
-type RatedProblem = {
-  title: string
-  slug: string
-  rating: number
-  contest?: string
-}
-
-type TodaySnapshot = {
-  data: DashboardData
-  queue: RevisionCard[]
-  weakness: WeaknessData | null
-  sessions: SessionData[]
-  solved: string[]
-  zerotrac: any[] | null
-  ranking: any
-  savedAt: number
+interface DayActivity {
+  key: string
+  label: string
+  dateLabel: string
+  focusSeconds: number
+  solves: number
+  sessions: number
 }
 
 function message<T>(payload: Record<string, unknown>): Promise<T> {
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(payload, (response) => {
-      if (chrome.runtime.lastError) reject(chrome.runtime.lastError)
-      else resolve(response as T)
+    chrome.runtime.sendMessage(payload, (response: T) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message))
+        return
+      }
+      resolve(response)
     })
   })
 }
 
 function parseDate(value: unknown): Date | null {
-  if (!value) return null
-  if (Array.isArray(value)) {
-    const [year, month, day, hour = 0, minute = 0, second = 0] = value as number[]
+  if (typeof value === "string" || typeof value === "number") {
+    const parsed = new Date(value)
+    return Number.isNaN(parsed.valueOf()) ? null : parsed
+  }
+  if (Array.isArray(value) && value.every((part) => typeof part === "number")) {
+    const [year, month, day, hour = 0, minute = 0, second = 0] = value
+    if (!year || !month || !day) return null
     return new Date(year, month - 1, day, hour, minute, second)
   }
-  const date = new Date(value as string)
-  return Number.isNaN(date.valueOf()) ? null : date
+  return null
 }
 
 function dateKey(date: Date) {
@@ -71,51 +104,154 @@ function dateKey(date: Date) {
 }
 
 function formatDuration(seconds: number) {
-  const minutes = Math.floor(seconds / 60)
+  const safeSeconds = Math.max(0, Math.floor(seconds))
+  const minutes = Math.floor(safeSeconds / 60)
   const hours = Math.floor(minutes / 60)
   if (hours) return `${hours}h ${minutes % 60}m`
   return `${minutes}m`
 }
 
-function relativeSync(timestamp: number | null) {
-  if (!timestamp) return "Sync status unavailable"
+function formatLiveTimer(seconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(seconds))
+  const mins = Math.floor(safeSeconds / 60)
+  const secs = safeSeconds % 60
+  const hours = Math.floor(mins / 60)
+  const displayMins = mins % 60
+
+  if (hours > 0) {
+    return `${hours}:${String(displayMins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
+  }
+  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
+}
+
+function formatCompactDuration(seconds: number) {
+  const minutes = Math.max(0, Math.round(seconds / 60))
+  if (minutes >= 60) return `${(minutes / 60).toFixed(minutes % 60 === 0 ? 0 : 1)}h`
+  return `${minutes}m`
+}
+
+function relativeTime(timestamp: number | null) {
+  if (!timestamp) return "Not synced yet"
   const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60_000))
   if (minutes < 1) return "Synced just now"
   if (minutes < 60) return `Synced ${minutes}m ago`
-  return `Synced ${Math.floor(minutes / 60)}h ago`
+  if (minutes < 24 * 60) return `Synced ${Math.floor(minutes / 60)}h ago`
+  return `Synced ${Math.floor(minutes / (24 * 60))}d ago`
 }
 
-const ActionButton = ({ href, children, tone = "zinc" }: { href: string; children: React.ReactNode; tone?: "zinc" | "amber" | "blue" }) => {
+function isStale(timestamp: number | null) {
+  return !timestamp || Date.now() - timestamp > STALE_AFTER_MS
+}
+
+function normalizeTimer(timer: LiveTimerState | null, session: ActiveSession | null): LiveTimerState | null {
+  if (timer) {
+    return {
+      ...timer,
+      activeFocusSeconds: Math.max(0, timer.activeFocusSeconds ?? timer.focusSeconds ?? 0),
+      status: timer.status ?? (timer.isPaused ? "paused" : "running"),
+      isPaused: timer.isPaused ?? timer.status === "paused",
+      updatedAt: timer.updatedAt ?? Date.now()
+    }
+  }
+  if (!session?.id || session.endedAt) return null
+  return {
+    activeFocusSeconds: Math.max(0, session.focusSeconds ?? 0),
+    focusSeconds: Math.max(0, session.focusSeconds ?? 0),
+    status: "running",
+    isPaused: false,
+    sessionId: session.id,
+    mode: session.mode,
+    updatedAt: Date.now()
+  }
+}
+
+function selectStudyProblem(solved: Set<string>) {
+  for (const list of STUDY_LISTS) {
+    const problem = list.problems.find((candidate) => !solved.has(candidate.slug))
+    if (problem) return { list, problem }
+  }
+  return null
+}
+
+function evidenceTone(level?: string): EvidenceBadge["tone"] {
+  if (level === "STRONG") return "emerald"
+  if (level === "MODERATE") return "blue"
+  return "zinc"
+}
+
+function evidenceLabel(level?: string) {
+  if (level === "STRONG") return "Evidence: strong"
+  if (level === "MODERATE") return "Evidence: moderate"
+  if (level === "PRELIMINARY") return "Evidence: preliminary"
+  return "Evidence: building"
+}
+
+function ActionButton({
+  href,
+  onClick,
+  children,
+  tone = "zinc",
+  disabled = false,
+  className: extraClassName = ""
+}: {
+  href?: string
+  onClick?: () => void
+  children: ReactNode
+  tone?: "zinc" | "amber" | "blue"
+  disabled?: boolean
+  className?: string
+}) {
   const tones = {
     zinc: "border-zinc-700 bg-zinc-100 text-zinc-950 hover:bg-white",
     amber: "border-amber-400/50 bg-amber-400 text-zinc-950 hover:bg-amber-300",
-    blue: "border-blue-400/50 bg-blue-400 text-zinc-950 hover:bg-blue-300"
+    blue: "border-sky-400/50 bg-sky-400 text-zinc-950 hover:bg-sky-300"
   }
-  return <a href={href} target="_blank" rel="noreferrer" className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-2 text-[11px] font-bold transition-colors ${tones[tone]}`}>{children} <ArrowUpRight size={13} /></a>
+  const className = `inline-flex min-h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-3 text-[11px] font-bold transition-colors ${tones[tone]} ${disabled ? "cursor-not-allowed opacity-45" : ""} ${extraClassName}`
+
+  if (href) {
+    return <a href={href} target="_blank" rel="noreferrer" className={className}>{children} <ArrowUpRight size={13} /></a>
+  }
+  return <button type="button" onClick={onClick} disabled={disabled} className={className}>{children}</button>
 }
 
-interface UserContestRanking { rating?: number; attendedContestsCount?: number; globalRanking?: number; topPercentage?: number; }
-interface LiveSession { isActive?: boolean; startTime?: number; titleSlug?: string; }
-interface ZerotracRecord { titleSlug?: string; TitleSlug?: string; rating?: number; Rating?: number; Title?: string; title?: string; title_slug?: string; ContestSlug?: string; contestSlug?: string; }
+function Badge({ badge }: { badge: EvidenceBadge }) {
+  const tone = {
+    amber: "border-amber-400/25 bg-amber-400/[0.08] text-amber-300",
+    blue: "border-sky-400/25 bg-sky-400/[0.08] text-sky-300",
+    emerald: "border-emerald-400/25 bg-emerald-400/[0.08] text-emerald-300",
+    zinc: "border-zinc-700/80 bg-zinc-900/70 text-zinc-400"
+  }[badge.tone]
+  return <span className={`rounded-full border px-2 py-0.5 text-[8px] font-mono font-semibold ${tone}`}>{badge.label}</span>
+}
+
+function QuestIcon({ id, status }: { id: QuestId; status: QuestStep["status"] }) {
+  const className = status === "complete" ? "text-emerald-400" : id === "review" ? "text-amber-400" : id === "practice" ? "text-sky-400" : "text-violet-400"
+  const shell = status === "complete" ? "bg-emerald-400/10" : id === "review" ? "bg-amber-400/10" : id === "practice" ? "bg-sky-400/10" : "bg-violet-400/10"
+  const icon = status === "complete" ? <Check size={14} /> : id === "review" ? <Brain size={14} /> : id === "practice" ? <Target size={14} /> : <TrendingUp size={14} />
+  return <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${shell} ${className}`}>{icon}</div>
+}
 
 export const Dashboard = () => {
   const [data, setData] = useState<DashboardData | null>(null)
-  const [queue, setQueue] = useState<RevisionCard[]>([])
-  const [weakness, setWeakness] = useState<WeaknessData | null>(null)
+  const [queue, setQueue] = useState<RevisionQueueItem[]>([])
+  const [weakness, setWeakness] = useState<WeaknessSnapshot | null>(null)
   const [sessions, setSessions] = useState<SessionData[]>([])
   const [solved, setSolved] = useState<Set<string>>(new Set())
-  const [zerotrac, setZerotrac] = useState<ZerotracRecord[] | null>(null)
+  const [zerotrac, setZerotrac] = useState<ZerotracProblem[]>([])
   const [ranking, setRanking] = useState<UserContestRanking | null>(null)
-  const [liveSession, setLiveSession] = useState<LiveSession | null>(null)
-  const [sessionSeconds, setSessionSeconds] = useState(0)
+  const [currentSession, setCurrentSessionState] = useState<ActiveSession | null>(null)
+  const [liveTimer, setLiveTimerState] = useState<LiveTimerState | null>(null)
   const [lastSync, setLastSync] = useState<number | null>(null)
+  const [snapshotSavedAt, setSnapshotSavedAt] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [reviewing, setReviewing] = useState(false)
+  const [reviewOpen, setReviewOpen] = useState(false)
   const [reviewSubmitting, setReviewSubmitting] = useState(false)
+  const [reviewedToday, setReviewedToday] = useState(false)
+  const [sessionActionPending, setSessionActionPending] = useState(false)
 
-  const applySnapshot = (snapshot: TodaySnapshot) => {
+  const applySnapshot = useCallback((snapshot: TodaySnapshot) => {
     setData(snapshot.data)
     setQueue(snapshot.queue)
     setWeakness(snapshot.weakness)
@@ -123,484 +259,492 @@ export const Dashboard = () => {
     setSolved(new Set(snapshot.solved))
     setZerotrac(snapshot.zerotrac)
     setRanking(snapshot.ranking)
-  }
+    setSnapshotSavedAt(snapshot.savedAt)
+  }, [])
 
-  const refresh = async () => {
-    const username = await getUsername()
+  const refresh = useCallback(async () => {
     setRefreshing(true)
     try {
+      const username = await getUsername()
       const [dashboard, reviews, weak, allSessions, solvedResponse, zerotracResponse, rankingResponse] = await Promise.all([
         fetchDashboard(),
-        fetchRevisionQueue().catch(() => []),
-        fetchWeakness().catch(() => null),
-        fetchAllSessions().catch(() => []),
-        message<any>({ action: "get_solved_problem_slugs" }).catch(() => null),
-        message<any>({ action: "get_zerotrac" }).catch(() => null),
-        message<any>({ action: "get_user_contest_history", payload: { username } }).catch(() => null)
+        fetchRevisionQueue().catch((): RevisionQueueItem[] => []),
+        fetchWeakness().catch((): WeaknessSnapshot | null => null),
+        fetchAllSessions().catch((): SessionData[] => []),
+        message<BackgroundResponse<string[]>>({ action: "get_solved_problem_slugs" }).catch((): BackgroundResponse<string[]> => ({})),
+        message<unknown>({ action: "get_zerotrac" }).catch((): unknown => null),
+        username
+          ? message<BackgroundResponse<{ userContestRanking?: UserContestRanking }>>({ action: "get_user_contest_history", payload: { username } }).catch((): BackgroundResponse<{ userContestRanking?: UserContestRanking }> => ({}))
+          : Promise.resolve<BackgroundResponse<{ userContestRanking?: UserContestRanking }>>({})
       ])
+
       const snapshot: TodaySnapshot = {
+        schemaVersion: TODAY_SNAPSHOT_VERSION,
         data: dashboard,
-        queue: Array.isArray(reviews) ? reviews : [],
+        queue: reviews,
         weakness: weak,
-        sessions: Array.isArray(allSessions) ? allSessions : [],
-        solved: solvedResponse?.ok ? solvedResponse.data : [],
+        sessions: allSessions,
+        solved: solvedResponse.ok && Array.isArray(solvedResponse.data) ? solvedResponse.data : [],
         zerotrac: normalizeZerotracPayload(zerotracResponse),
-        ranking: rankingResponse?.ok ? rankingResponse.data?.userContestRanking : null,
+        ranking: rankingResponse.ok ? rankingResponse.data?.userContestRanking ?? null : null,
         savedAt: Date.now()
       }
       applySnapshot(snapshot)
-      chrome.storage.local.set({ "algovault.todaySnapshot": snapshot })
-      setCachedDashboard(dashboard)
-      if (weak) setCachedWeakness(weak)
+      await setTodaySnapshot(snapshot)
+      await setCachedDashboard(dashboard)
+      if (weak) await setCachedWeakness(weak)
       setError(null)
-    } catch (refreshError: any) {
-      console.error("Dashboard refresh failed", refreshError)
-      if (!data) setError(refreshError?.message || "Could not load your dashboard")
+    } catch (refreshError: unknown) {
+      const message = refreshError instanceof Error ? refreshError.message : "Could not refresh your command center."
+      setError(message)
     } finally {
       setLoading(false)
       setRefreshing(false)
     }
-  }
+  }, [applySnapshot])
+
+  const readSessionState = useCallback(async () => {
+    const [session, timer] = await Promise.all([getCurrentSession(), getLiveTimer()])
+    setCurrentSessionState(session)
+    setLiveTimerState(normalizeTimer(timer, session))
+  }, [])
 
   useEffect(() => {
-    Promise.all([
-      new Promise<TodaySnapshot | null>((resolve) => chrome.storage.local.get("algovault.todaySnapshot", (stored) => resolve(stored?.["algovault.todaySnapshot"] || null))),
-      getLastSync()
-    ]).then(([snapshot, cachedSync]) => {
+    let mounted = true
+    void Promise.all([getTodaySnapshot(), getLastSync()]).then(([snapshot, syncedAt]) => {
+      if (!mounted) return
       if (snapshot?.data) {
         applySnapshot(snapshot)
         setLoading(false)
       }
-      setLastSync(cachedSync)
-    }).finally(refresh)
+      setLastSync(syncedAt)
+    }).finally(() => {
+      if (mounted) void refresh()
+    })
 
-    const listener = (event: any) => event.action === "dashboard_refresh" && refresh()
-    chrome.runtime.onMessage.addListener(listener)
-    return () => chrome.runtime.onMessage.removeListener(listener)
-  }, [])
-
-  // ── Live-ticking session timer ──
-  // Instead of reading stale focusSeconds from chrome.storage every second,
-  // we read the session start time once and compute elapsed locally.
-  const [sessionStartTime, setSessionStartTime] = useState<number | null>(null)
-
-  useEffect(() => {
-    // Read initial session state from storage
-    const readSession = () => chrome.storage.local.get(
-      ["algovault.currentSession", "algovault.sessionState", "algovault.liveTimer"],
-      (stored) => {
-        const current = stored?.["algovault.currentSession"]
-        const state = stored?.["algovault.sessionState"]
-        const live = stored?.["algovault.liveTimer"]
-        const session = current || live || null
-        setLiveSession(session)
-
-        if (state?.isSolved) {
-          // Problem was solved — freeze the timer at final time
-          setSessionSeconds(state.finalSeconds || 0)
-          setSessionStartTime(null)
-        } else if (session) {
-          // Active session — compute start time for live ticking
-          // Use the session's startedAt if available, otherwise approximate from focusSeconds
-          if (current?.startedAt) {
-            const started = Array.isArray(current.startedAt)
-              ? new Date(current.startedAt[0], current.startedAt[1] - 1, current.startedAt[2], current.startedAt[3] || 0, current.startedAt[4] || 0, current.startedAt[5] || 0).getTime()
-              : new Date(current.startedAt).getTime()
-            if (!isNaN(started)) {
-              setSessionStartTime(started)
-              setSessionSeconds(Math.max(0, Math.floor((Date.now() - started) / 1000)))
-              return
-            }
-          }
-          // Fallback: use liveTimer's elapsedSeconds or focusSeconds snapshot
-          const snap = live?.elapsedSeconds ?? live?.focusSeconds ?? current?.focusSeconds ?? 0
-          // Reconstruct start time from snapshot so the counter continues live
-          setSessionStartTime(Date.now() - snap * 1000)
-          setSessionSeconds(snap)
-        } else {
-          setSessionStartTime(null)
-          setSessionSeconds(0)
-        }
-      }
-    )
-    readSession()
-
-    // Listen for storage changes to pick up session start/end from content script
+    void readSessionState()
+    const messageListener = (event: { action?: string }) => {
+      if (event.action === "dashboard_refresh") void refresh()
+    }
     const storageListener = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
-      if (area === "local" && (changes["algovault.currentSession"] || changes["algovault.sessionState"] || changes["algovault.liveTimer"])) {
-        readSession()
+      if (area !== "local") return
+      if (changes["algovault.currentSession"] || changes["algovault.liveTimer"]) void readSessionState()
+    }
+    chrome.runtime.onMessage.addListener(messageListener)
+    chrome.storage.onChanged.addListener(storageListener)
+    return () => {
+      mounted = false
+      chrome.runtime.onMessage.removeListener(messageListener)
+      chrome.storage.onChanged.removeListener(storageListener)
+    }
+  }, [applySnapshot, readSessionState, refresh])
+
+  const activeSeconds = liveTimer?.activeFocusSeconds ?? 0
+  const sessionStatus = liveTimer?.status ?? "idle"
+  const sessionIsRunning = Boolean(currentSession && sessionStatus === "running")
+  const sessionIsPaused = Boolean(currentSession && sessionStatus === "paused")
+  const today = dateKey(new Date())
+
+  // Live 1-second ticking interval for active running session
+  useEffect(() => {
+    if (!sessionIsRunning) return
+    const interval = setInterval(() => {
+      setLiveTimerState((prev) => {
+        if (!prev || prev.status !== "running") return prev
+        const nextSecs = (prev.activeFocusSeconds ?? 0) + 1
+        return {
+          ...prev,
+          activeFocusSeconds: nextSecs,
+          focusSeconds: nextSecs,
+          updatedAt: Date.now()
+        }
+      })
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [sessionIsRunning])
+
+  const activeReview = queue[0] ?? null
+  const selectedRecommendation = useMemo<WeaknessRecommendation | null>(() => {
+    return weakness?.recommendations?.find((problem) => !solved.has(problem.titleSlug)) ?? null
+  }, [solved, weakness])
+  const selectedWeakTag = useMemo(() => {
+    if (!selectedRecommendation?.tag) return null
+    return weakness?.weakTags?.find((tag) => tag.tag === selectedRecommendation.tag) ?? null
+  }, [selectedRecommendation?.tag, weakness?.weakTags])
+  const studyContinuation = useMemo(() => selectStudyProblem(solved), [solved])
+
+  const primaryAction = useMemo<PrimaryAction>(() => {
+    if (activeReview) {
+      const interval = Math.max(1, Math.round(activeReview.intervalDays ?? 1))
+      return {
+        kind: "review",
+        eyebrow: "Memory recall",
+        title: activeReview.title,
+        titleSlug: activeReview.titleSlug,
+        explanation: `Due after ${interval} day${interval === 1 ? "" : "s"}. Recall the pattern and invariant before opening the problem.`,
+        expectedMinutes: 5,
+        actionLabel: "Start recall",
+        badges: [
+          { label: "Review due", tone: "amber" },
+          { label: activeReview.reviewCount ? `${activeReview.reviewCount} prior reviews` : "First review", tone: "zinc" }
+        ]
       }
     }
-    chrome.storage.onChanged.addListener(storageListener)
-    return () => chrome.storage.onChanged.removeListener(storageListener)
-  }, [])
+    if (selectedRecommendation) {
+      const level = selectedWeakTag?.evidenceLevel
+      return {
+        kind: "practice",
+        eyebrow: "Target practice",
+        title: selectedRecommendation.title,
+        titleSlug: selectedRecommendation.titleSlug,
+        explanation: selectedRecommendation.tag
+          ? `A focused practice opportunity in ${selectedRecommendation.tag}. Use this as evidence-building, not a verdict about your ability.`
+          : "A recommended problem from your available practice history.",
+        expectedMinutes: 30,
+        actionLabel: "Open problem",
+        badges: [
+          { label: selectedRecommendation.tag ?? "Targeted practice", tone: "blue" },
+          { label: evidenceLabel(level), tone: evidenceTone(level) },
+          ...(selectedWeakTag?.totalAttempted ? [{ label: `${selectedWeakTag.totalAttempted} tagged attempts`, tone: "zinc" as const }] : []),
+          ...(selectedRecommendation.actualRating ? [{ label: `Rating ${Math.round(selectedRecommendation.actualRating)}`, tone: "zinc" as const }] : [])
+        ]
+      }
+    }
+    if (studyContinuation) {
+      return {
+        kind: "track",
+        eyebrow: "Continue your track",
+        title: studyContinuation.problem.title,
+        titleSlug: studyContinuation.problem.slug,
+        explanation: `Continue ${studyContinuation.list.name} with one focused problem. Consistency beats finding the perfect metric.`,
+        expectedMinutes: 25,
+        actionLabel: "Continue track",
+        badges: [
+          { label: studyContinuation.list.name, tone: "blue" },
+          { label: studyContinuation.problem.topic, tone: "zinc" }
+        ]
+      }
+    }
+    return {
+      kind: "baseline",
+      eyebrow: "Build your baseline",
+      title: "Choose a practice track",
+      explanation: "Sync a little history or choose a study track. AlgoVault will earn the right to personalise recommendations from your evidence.",
+      actionLabel: "Choose a track",
+      badges: [{ label: "No personalised data yet", tone: "zinc" }]
+    }
+  }, [activeReview, selectedRecommendation, selectedWeakTag?.evidenceLevel, studyContinuation])
 
-  // Live tick — updates every second when a session is active
-  useEffect(() => {
-    if (!sessionStartTime || !liveSession) return
-    const tick = () => setSessionSeconds(Math.max(0, Math.floor((Date.now() - sessionStartTime) / 1000)))
-    tick()
-    const id = window.setInterval(tick, 1000)
-    return () => window.clearInterval(id)
-  }, [sessionStartTime, liveSession])
+  const stretchProblem = useMemo(() => {
+    const baseRating = ranking?.rating ?? data?.virtualRating ?? null
+    const hasEvidence = (data?.totalSolved ?? 0) >= MIN_SOLVES_FOR_STRETCH
+    if (!baseRating || !hasEvidence) return null
+    const low = Math.round(baseRating + 150)
+    const high = Math.round(baseRating + 250)
+    const candidate = zerotrac.find((problem) => !solved.has(problem.TitleSlug) && problem.Rating >= low && problem.Rating <= high)
+    return candidate ? { problem: candidate, low, high } : null
+  }, [data?.totalSolved, data?.virtualRating, ranking?.rating, solved, zerotrac])
 
-  const today = dateKey(new Date())
+  const targetPracticeSlug = selectedRecommendation?.titleSlug ?? studyContinuation?.problem.slug
+  const targetSolved = Boolean(targetPracticeSlug && solved.has(targetPracticeSlug))
+  const coreComplete = Number(Boolean(activeReview) && reviewedToday) + Number(Boolean(targetPracticeSlug) && targetSolved)
+  const coreAvailable = Number(Boolean(activeReview)) + Number(Boolean(targetPracticeSlug))
+
+  const questSteps = useMemo<QuestStep[]>(() => [
+    {
+      id: "review",
+      status: reviewedToday ? "complete" : activeReview ? "available" : "unavailable",
+      title: activeReview?.title ?? "No review due",
+      description: activeReview
+        ? "Recall the pattern and invariant before checking your old solution."
+        : "Your due review queue is clear.",
+      titleSlug: activeReview?.titleSlug,
+      actionLabel: activeReview ? "Recall" : undefined,
+      badges: activeReview ? [{ label: "Review due", tone: "amber" }] : undefined
+    },
+    {
+      id: "practice",
+      status: targetSolved ? "complete" : selectedRecommendation || studyContinuation ? "available" : "unavailable",
+      title: selectedRecommendation?.title ?? studyContinuation?.problem.title ?? "Choose a practice path",
+      description: targetSolved
+        ? "Your selected practice problem is solved. Capture what changed your approach."
+        : selectedRecommendation?.tag
+          ? `${selectedRecommendation.tag} · ${evidenceLabel(selectedWeakTag?.evidenceLevel).replace("Evidence: ", "")}`
+          : studyContinuation
+            ? `Continue ${studyContinuation.list.name} in ${studyContinuation.problem.topic}.`
+            : "Sync history or choose a study list to get a next action.",
+      titleSlug: selectedRecommendation?.titleSlug ?? studyContinuation?.problem.slug,
+      actionLabel: selectedRecommendation || studyContinuation ? "Practice" : undefined,
+      badges: selectedRecommendation?.actualRating
+        ? [{ label: `Rating ${Math.round(selectedRecommendation.actualRating)}`, tone: "zinc" }]
+        : undefined
+    },
+    {
+      id: "stretch",
+      status: stretchProblem ? "available" : "unavailable",
+      title: stretchProblem?.problem.Title ?? "Stretch is optional",
+      description: stretchProblem
+        ? `Optional challenge in your ${stretchProblem.low}–${stretchProblem.high} range. Attempting is success; solving is not required.`
+        : (data?.totalSolved ?? 0) < MIN_SOLVES_FOR_STRETCH
+          ? `Stretch unlocks after ${MIN_SOLVES_FOR_STRETCH} solved problems with rating evidence.`
+          : "No calibrated stretch candidate is available today.",
+      titleSlug: stretchProblem?.problem.TitleSlug,
+      actionLabel: stretchProblem ? "Attempt" : undefined,
+      badges: stretchProblem ? [{ label: `Rating ${Math.round(stretchProblem.problem.Rating)}`, tone: "zinc" }] : undefined
+    }
+  ], [activeReview, data?.totalSolved, reviewedToday, selectedRecommendation, selectedWeakTag?.evidenceLevel, stretchProblem, studyContinuation, targetSolved])
+
   const activity = useMemo(() => {
-    const minutesByDay: Record<string, number> = {}
+    const days = Array.from({ length: 7 }, (_, index): DayActivity => {
+      const date = new Date()
+      date.setHours(0, 0, 0, 0)
+      date.setDate(date.getDate() - (6 - index))
+      return {
+        key: dateKey(date),
+        label: date.toLocaleDateString(undefined, { weekday: "narrow" }),
+        dateLabel: date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }),
+        focusSeconds: 0,
+        solves: 0,
+        sessions: 0
+      }
+    })
+    const byDay = new Map(days.map((day) => [day.key, day]))
+    const activeSessionId = currentSession?.id
     for (const session of sessions) {
+      if (activeSessionId && session.id === activeSessionId) continue
       const started = parseDate(session.startedAt)
       if (!started) continue
-      const key = dateKey(started)
-      minutesByDay[key] = (minutesByDay[key] || 0) + Math.round((session.focusSeconds || 0) / 60)
+      const bucket = byDay.get(dateKey(started))
+      if (!bucket) continue
+      bucket.focusSeconds += Math.max(0, session.focusSeconds ?? 0)
+      bucket.sessions += 1
     }
+    if (currentSession) {
+      const started = parseDate(currentSession.startedAt)
+      const bucket = started ? byDay.get(dateKey(started)) : byDay.get(today)
+      if (bucket) {
+        bucket.focusSeconds += activeSeconds
+        bucket.sessions += 1
+      }
+    }
+    for (const solve of data?.recentSolves ?? []) {
+      const solvedAt = parseDate(solve.solvedAt)
+      if (!solvedAt) continue
+      const bucket = byDay.get(dateKey(solvedAt))
+      if (bucket) bucket.solves += 1
+    }
+    const todayActivity = byDay.get(today)
+    if (todayActivity && data?.todaySolves) todayActivity.solves = Math.max(todayActivity.solves, data.todaySolves)
+    const weekFocusSeconds = days.reduce((sum, day) => sum + day.focusSeconds, 0)
+    const weekSolves = days.reduce((sum, day) => sum + day.solves, 0)
+    const weekSessions = days.reduce((sum, day) => sum + day.sessions, 0)
+    const strongestDay = [...days].sort((a, b) => b.focusSeconds - a.focusSeconds)[0]
+    return { days, todayActivity, weekFocusSeconds, weekSolves, weekSessions, strongestDay }
+  }, [activeSeconds, currentSession, data?.recentSolves, data?.todaySolves, sessions, today])
 
-    const liveMinutes = Math.round(sessionSeconds / 60)
-    if (liveMinutes > 0) {
-      minutesByDay[today] = Math.max(minutesByDay[today] || 0, liveMinutes)
-    }
+  const primaryActionHref = primaryAction.titleSlug ? `https://leetcode.com/problems/${primaryAction.titleSlug}/` : undefined
+  const maxFocus = Math.max(1, ...activity.days.map((day) => day.focusSeconds))
 
-    const days = Array.from({ length: 7 }, (_, index) => {
-      const day = new Date()
-      day.setHours(0, 0, 0, 0)
-      day.setDate(day.getDate() - (6 - index))
-      const key = dateKey(day)
-      return { key, label: day.toLocaleDateString(undefined, { weekday: "narrow" }), minutes: minutesByDay[key] || 0 }
-    })
-    return { days, todayMinutes: minutesByDay[today] || 0 }
-  }, [sessions, today, sessionSeconds])
+  const startSession = async () => {
+    setSessionActionPending(true)
+    try {
+      const result = await message<BackgroundResponse<ActiveSession>>({ action: "session_start", mode: "PRACTICE" })
+      if (!result.ok || !result.data) throw new Error(result.error || "Unable to start a focus session.")
+      setCurrentSessionState(result.data)
+      await readSessionState()
+      setError(null)
+    } catch (sessionError: unknown) {
+      setError(sessionError instanceof Error ? sessionError.message : "Unable to start a focus session.")
+    } finally {
+      setSessionActionPending(false)
+    }
+  }
 
-  const planningRange = useMemo(() => {
-    if (ranking?.rating && ranking.attendedContestsCount && ranking.attendedContestsCount > 0) {
-      const rating = Math.round(ranking.rating)
-      return { low: rating + 150, high: rating + 250, source: "official contest rating" }
+  const togglePause = async () => {
+    if (!currentSession) return
+    setSessionActionPending(true)
+    try {
+      const action = sessionIsPaused ? "session_resume" : "session_pause"
+      const result = await message<BackgroundResponse<LiveTimerState>>({ action })
+      if (!result.ok) throw new Error(result.error || "Unable to update the focus session.")
+      await readSessionState()
+      setError(null)
+    } catch (sessionError: unknown) {
+      setError(sessionError instanceof Error ? sessionError.message : "Unable to update the focus session.")
+    } finally {
+      setSessionActionPending(false)
     }
-    if (data?.virtualRating) {
-      return { low: data.virtualRating + 150, high: data.virtualRating + 250, source: "planning estimate" }
-    }
-    return null
-  }, [data?.virtualRating, ranking])
+  }
 
-  const recommendedPractice = useMemo(() => {
-    const backendRecommendation = weakness?.recommendations?.find((problem) => !solved.has(problem.titleSlug))
-    if (backendRecommendation) return backendRecommendation
-    return null
-  }, [solved, weakness])
+  const endSession = async () => {
+    setSessionActionPending(true)
+    try {
+      const result = await message<BackgroundResponse<ActiveSession>>({ action: "session_end" })
+      if (!result.ok) throw new Error(result.error || "Unable to end the focus session.")
+      await clearCurrentSession()
+      setCurrentSessionState(null)
+      setLiveTimerState(null)
+      await refresh()
+      setError(null)
+    } catch (sessionError: unknown) {
+      setError(sessionError instanceof Error ? sessionError.message : "Unable to end the focus session.")
+    } finally {
+      setSessionActionPending(false)
+    }
+  }
 
-  const stretchProblem = useMemo<RatedProblem | null>(() => {
-    if (!planningRange || !zerotrac) return null
-    const candidate = zerotrac.find((problem) => {
-      const rating = Number(problem.Rating ?? problem.rating ?? 0)
-      const slug = problem.TitleSlug ?? problem.title_slug ?? problem.titleSlug
-      return slug && !solved.has(slug) && rating >= planningRange.low && rating <= planningRange.high
-    })
-    if (!candidate) return null
-    return {
-      title: candidate.Title ?? candidate.title ?? candidate.TitleSlug ?? candidate.titleSlug ?? "Stretch Problem",
-      slug: (candidate.TitleSlug ?? candidate.title_slug ?? candidate.titleSlug)!,
-      rating: Number(candidate.Rating ?? candidate.rating ?? 0),
-      contest: candidate.ContestSlug ?? candidate.contestSlug
-    }
-  }, [planningRange, solved, zerotrac])
-
-  const curatedReview = useMemo(() => {
-    for (const list of STUDY_LISTS) {
-      const listSlugs = new Set(list.problems.map((problem) => problem.slug))
-      const card = queue.find((review) => listSlugs.has(review.titleSlug))
-      if (card) return { card, listName: list.name }
-    }
-    if (queue.length > 0) {
-      return { card: queue[0], listName: "Spaced Revision" }
-    }
-    return null
-  }, [queue])
-  
-  const activeReview = curatedReview?.card
-  const hasPracticeSignal = (data?.todaySolves || 0) > 0
-  const actions = [Boolean(activeReview), Boolean(recommendedPractice), Boolean(stretchProblem)]
-  const completedActions = actions.filter((available, index) => available && (index === 1 ? hasPracticeSignal : false)).length
-  const openActions = actions.filter(Boolean).length - completedActions
-  const maxMinutes = Math.max(1, ...activity.days.map((day) => day.minutes))
-
-  const startSession = () => message<any>({ action: "session_start", mode: "PRACTICE" }).then((result) => {
-    if (result?.ok) {
-      setLiveSession(result.data)
-      // Start live timer immediately — don't wait for storage
-      setSessionStartTime(Date.now())
-      setSessionSeconds(0)
-    }
-  })
-  const endSession = () => message<any>({ action: "session_end" }).then((result) => {
-    if (result?.ok) {
-      // Clear session state instantly — no refresh flicker
-      setLiveSession(null)
-      setSessionStartTime(null)
-      chrome.storage.local.remove(["algovault.sessionState", "algovault.liveTimer"])
-      // Quiet background refresh to update today's tracked minutes
-      refresh()
-    }
-  })
-  const resetSession = () => message<any>({ action: "session_end" }).then(() => startSession())
+  const openTrackPicker = () => {
+    chrome.storage.local.set({ "algovault.requestedTab": "Lists" })
+  }
 
   const submitReview = async (quality: number) => {
     if (!activeReview) return
     setReviewSubmitting(true)
     try {
       await reviewRevisionCard(activeReview.id, quality)
-      setReviewing(false)
+      setReviewedToday(true)
+      setReviewOpen(false)
       await refresh()
-    } catch (submitError) {
-      console.error("Review submit failed", submitError)
-      setError("Your review was not saved. Please try again.")
+    } catch (reviewError: unknown) {
+      setError(reviewError instanceof Error ? reviewError.message : "Your review was not saved. Please try again.")
     } finally {
       setReviewSubmitting(false)
     }
   }
 
-  const productivityInsight = useMemo(() => {
-    if (liveSession) {
-      return {
-        badge: "SESSION RUNNING",
-        badgeColor: "text-emerald-400 border-emerald-400/30 bg-emerald-400/10",
-        headline: "You're in the zone. Work one problem at a time.",
-        subtext: "Focus timer is actively recording — stay deliberate and present."
-      }
-    }
-
-    const solves = data?.todaySolves || 0
-    const minutes = activity.todayMinutes || 0
-    const dueReviews = queue.length
-
-    if (solves >= 3) {
-      return {
-        badge: "INSANE PRODUCTIVITY",
-        badgeColor: "text-amber-400 border-amber-400/30 bg-amber-400/10",
-        headline: `Crushing it today — ${solves} problems solved!`,
-        subtext: `${formatDuration(minutes * 60)} of focused practice recorded. Your momentum is building.`
-      }
-    }
-
-    if (solves >= 1) {
-      return {
-        badge: "PRODUCTIVE DAY",
-        badgeColor: "text-emerald-400 border-emerald-400/30 bg-emerald-400/10",
-        headline: `Solid work — ${solves} solve${solves > 1 ? "s" : ""} logged today.`,
-        subtext: dueReviews > 0 
-          ? `${dueReviews} review card${dueReviews > 1 ? "s" : ""} waiting in queue to keep memory sharp.` 
-          : "Your daily practice target is complete. Keep pushing or rest up."
-      }
-    }
-
-    if (dueReviews > 0) {
-      return {
-        badge: "CARDS OVERDUE",
-        badgeColor: "text-rose-400 border-rose-400/30 bg-rose-400/10",
-        headline: `${dueReviews} review card${dueReviews > 1 ? "s" : ""} due for recall today.`,
-        subtext: "Clear your overdue cards first to prevent memory decay on key patterns."
-      }
-    }
-
-    return {
-      badge: "READY TO TRAIN",
-      badgeColor: "text-sky-400 border-sky-400/30 bg-sky-400/10",
-      headline: "Your training queue is clear and ready.",
-      subtext: "Sequential plan: recall existing patterns, practice target gaps, then stretch."
-    }
-  }, [liveSession, data?.todaySolves, activity.todayMinutes, queue.length])
-
   if (loading && !data) {
-    return <div className="space-y-3 p-3"><Skeleton className="h-40 rounded-2xl" /><Skeleton className="h-28 rounded-2xl" /><Skeleton className="h-28 rounded-2xl" /></div>
+    return <div className="space-y-3 px-1 pt-1"><Skeleton className="h-52 rounded-2xl" /><Skeleton className="h-72 rounded-2xl" /><Skeleton className="h-48 rounded-2xl" /></div>
   }
 
   if (!data) {
-    return <div className="p-4"><Card className="border-red-500/30"><p className="text-sm font-semibold text-red-300">Dashboard unavailable</p><p className="mt-1 text-xs text-zinc-400">{error || "Connect your account and sync a submission to start."}</p></Card></div>
+    return (
+      <Card className="mx-1 border-zinc-800/80 p-5">
+        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-800/70 text-zinc-300"><WifiOff size={17} /></div>
+        <h2 className="mt-3 text-sm font-semibold text-zinc-100">Your command center is waiting for data.</h2>
+        <p className="mt-1 text-xs leading-relaxed text-zinc-500">Connect LeetCode and run your first sync. We’ll keep the next action simple once there is evidence to use.</p>
+        <button type="button" onClick={() => void refresh()} className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-[11px] font-semibold text-zinc-200 hover:bg-zinc-700"><RefreshCw size={12} /> Retry</button>
+        {error && <p className="mt-3 text-[10px] text-rose-400">{error}</p>}
+      </Card>
+    )
   }
 
-  return <main className="mx-auto max-w-2xl space-y-3.5 px-1 pb-6 pt-1 font-sans">
-
-    {/* ═══════════ HERO — TODAY'S OVERVIEW ═══════════ */}
-    <section className="relative overflow-hidden rounded-2xl border border-zinc-800/80 bg-[#0d0d0f]">
-      {/* Warm ambient gradient overlay */}
-      <div 
-        className="absolute inset-0 pointer-events-none opacity-60" 
-        style={{
-          background: 'radial-gradient(ellipse 70% 50% at 85% 10%, rgba(251,191,36,0.09), transparent), radial-gradient(ellipse 60% 60% at 10% 90%, rgba(168,85,247,0.06), transparent)'
-        }} 
-      />
-
-      <div className="relative px-5 pt-5 pb-4">
-        {/* Date + Productivity Badge Row */}
-        <div className="flex items-center justify-between">
-          <p className="text-[9px] font-bold font-mono uppercase tracking-[0.2em] text-amber-400/80">
-            {new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
-          </p>
-          <div className="flex items-center gap-2">
-            <span className={`px-2 py-0.5 rounded text-[8px] font-mono font-bold uppercase border ${productivityInsight.badgeColor}`}>
-              {productivityInsight.badge}
-            </span>
-            <span className="text-[8px] font-mono text-zinc-600">{refreshing ? "syncing…" : relativeSync(lastSync)}</span>
-          </div>
-        </div>
-
-        {/* Main Content Row */}
-        <div className="mt-3.5 flex items-end justify-between gap-4">
-          <div className="min-w-0 flex-1">
-            <h1 className="text-[17px] font-semibold tracking-tight text-zinc-100 leading-snug">
-              {productivityInsight.headline}
-            </h1>
-            <p className="mt-1 text-[11px] leading-relaxed text-zinc-500 max-w-[320px]">
-              {productivityInsight.subtext}
-            </p>
+  return (
+    <main className="mx-auto max-w-2xl space-y-3.5 px-1 pb-7 pt-1 font-sans">
+      <section className="relative overflow-hidden rounded-2xl border border-zinc-800/80 bg-[#0d0d0f]">
+        <div className="pointer-events-none absolute inset-0 opacity-80" style={{ background: "radial-gradient(ellipse 72% 60% at 95% 0%, rgba(251,191,36,0.11), transparent), radial-gradient(ellipse 50% 60% at 0% 100%, rgba(14,165,233,0.06), transparent)" }} />
+        <div className="relative px-4 pb-4 pt-4 sm:px-5 sm:pt-5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[9px] font-bold font-mono uppercase tracking-[0.18em] text-amber-400/80">Today · {new Date().toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}</p>
+            <div className="flex items-center gap-2">
+              <span className={`inline-flex items-center gap-1 text-[8px] font-mono ${refreshing ? "text-sky-400" : isStale(lastSync ?? snapshotSavedAt) ? "text-amber-400" : "text-zinc-500"}`}>
+                {refreshing && <RefreshCw size={10} className="animate-spin" />}
+                {isStale(lastSync ?? snapshotSavedAt) && !refreshing && <Clock3 size={10} />}
+                {refreshing ? "Refreshing" : relativeTime(lastSync ?? snapshotSavedAt)}
+              </span>
+              <button type="button" onClick={() => void refresh()} className="rounded-md p-1 text-zinc-500 transition hover:bg-zinc-800 hover:text-zinc-200" aria-label="Refresh Today"><RefreshCw size={13} /></button>
+            </div>
           </div>
 
-          {/* Today's Counter — Hero Number */}
-          <div className="shrink-0 text-right">
-            <span className="block text-[38px] font-bold font-mono tabular-nums tracking-tighter text-zinc-100 leading-none">
-              {data.todaySolves || 0}
-            </span>
-            <span className="block mt-1 text-[8px] font-bold font-mono uppercase tracking-[0.2em] text-zinc-600">
-              solved today
-            </span>
-          </div>
-        </div>
-
-        {/* Stat Strip */}
-        <div className="mt-4 flex items-center gap-4 border-t border-zinc-800/50 pt-3">
-          <span className="inline-flex items-center gap-1.5 text-[10px] font-mono text-zinc-500">
-            <Clock3 size={11} className="text-amber-400/80" />
-            <span className="tabular-nums text-zinc-300 font-semibold">{formatDuration(activity.todayMinutes * 60)}</span> tracked
-          </span>
-          <span className="inline-flex items-center gap-1.5 text-[10px] font-mono text-zinc-500">
-            <Flame size={11} className="text-orange-400/80" />
-            <span className="tabular-nums text-zinc-300 font-semibold">{data.currentStreak || 0}</span>-day streak
-          </span>
-          <span className="inline-flex items-center gap-1.5 text-[10px] font-mono text-zinc-500">
-            <Target size={11} className="text-purple-400/70" />
-            <span className="tabular-nums text-zinc-300 font-semibold">{data.todaySubmissions || 0}</span> submissions
-          </span>
-        </div>
-      </div>
-
-      {/* Focus Session Strip */}
-      <div className="border-t border-zinc-800/50 px-5 py-2.5 flex items-center justify-between gap-3 bg-black/30">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${liveSession ? "bg-emerald-400 animate-pulse" : "bg-zinc-700"}`} />
-          <span className="text-[10px] font-mono text-zinc-400 truncate">
-            {liveSession ? "Session running" : "Focus timer"}
-          </span>
-        </div>
-        {liveSession ? (
-          <div className="flex items-center gap-2">
-            <span className="font-mono text-sm font-semibold tabular-nums text-emerald-400">{formatDuration(sessionSeconds)}</span>
-            <button onClick={resetSession} className="rounded-md border border-zinc-700/60 p-1.5 text-zinc-400 hover:text-zinc-200 hover:border-zinc-600 transition" title="Restart Session"><RotateCcw size={10} /></button>
-            <button onClick={endSession} className="rounded-md border border-red-900/40 p-1.5 text-red-400/80 hover:text-red-300 hover:border-red-800/60 transition" title="End Session"><Square size={9} fill="currentColor" /></button>
-          </div>
-        ) : (
-          <button onClick={startSession} className="inline-flex items-center gap-1 rounded-md border border-zinc-700/60 bg-zinc-800/40 px-2.5 py-1 text-[9px] font-bold font-mono uppercase tracking-wider text-zinc-300 hover:text-white hover:border-zinc-500 transition">
-            <Play size={9} fill="currentColor" /> Start
-          </button>
-        )}
-      </div>
-    </section>
-
-    {/* ═══════════ TODAY'S QUEST ═══════════ */}
-    <section className="overflow-hidden rounded-2xl border border-zinc-800/60 bg-[#0d0d0f]">
-      <div className="flex items-center justify-between border-b border-zinc-800/40 px-4 py-3">
-        <p className="text-[9px] font-bold font-mono uppercase tracking-[0.2em] text-zinc-500">Today's quest</p>
-        <span className="text-[9px] font-mono font-bold tabular-nums text-zinc-600">{completedActions}/{actions.filter(Boolean).length || 0} complete</span>
-      </div>
-
-      <div className="divide-y divide-zinc-800/30">
-        {/* Step 1: Review */}
-        <article className="p-4 flex items-start gap-3.5">
-          <div className="mt-0.5 flex h-7 w-7 items-center justify-center rounded-lg bg-amber-400/10 shrink-0">
-            <Sparkles size={13} className="text-amber-400" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-[8px] font-bold font-mono uppercase tracking-[0.2em] text-amber-400/70">Review{activeReview ? ` · ${curatedReview?.listName}` : ""}</p>
-            <h2 className="mt-1 truncate text-[13px] font-semibold text-zinc-100">{activeReview?.title || "No curated review is due"}</h2>
-            <p className="mt-0.5 text-[10px] leading-relaxed text-zinc-500">{activeReview ? `Due for recall after ${Math.round(activeReview.intervalDays || 1)}d. Curated sheets take priority.` : "All due cards are complete."}</p>
-          </div>
-          {activeReview && <ActionButton href={`https://leetcode.com/problems/${activeReview.titleSlug}/`} tone="amber">Review</ActionButton>}
-        </article>
-        {activeReview && <div className="px-4 pb-3 border-t border-amber-400/10">{reviewing ? <><p className="mb-2 pt-3 text-[10px] text-zinc-500">How well did you recall it?</p><div className="grid grid-cols-4 gap-1.5">{[[1, "Forgot"], [3, "Hard"], [4, "Good"], [5, "Easy"]].map(([q, l]) => <button key={l as string} disabled={reviewSubmitting} onClick={() => submitReview(q as number)} className="rounded-md border border-zinc-800 bg-black/30 py-1.5 text-[10px] font-mono font-medium text-zinc-400 hover:border-amber-400/40 hover:text-amber-300 disabled:opacity-40 transition">{l as string}</button>)}</div></> : <button onClick={() => setReviewing(true)} className="pt-3 text-[10px] font-semibold text-amber-400/70 hover:text-amber-300 transition">Log recall quality <ArrowUpRight className="inline" size={10} /></button>}</div>}
-
-        {/* Step 2: Practice */}
-        <article className={`p-4 flex items-start gap-3.5 ${hasPracticeSignal ? "bg-emerald-500/[0.02]" : ""}`}>
-          <div className={`mt-0.5 flex h-7 w-7 items-center justify-center rounded-lg shrink-0 ${hasPracticeSignal ? "bg-emerald-400/10" : "bg-sky-400/10"}`}>
-            {hasPracticeSignal ? <Check size={13} className="text-emerald-400" /> : <Target size={13} className="text-sky-400" />}
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-[8px] font-bold font-mono uppercase tracking-[0.2em] text-zinc-500">{hasPracticeSignal ? "Practice done" : "Recommended practice"}</p>
-            <h2 className={`mt-1 truncate text-[13px] font-semibold ${hasPracticeSignal ? "text-emerald-300" : "text-zinc-100"}`}>{hasPracticeSignal ? "Solved today" : recommendedPractice?.title || "Pick any problem you can explain after"}</h2>
-            <p className="mt-0.5 text-[10px] leading-relaxed text-zinc-500">{hasPracticeSignal ? "At least one accepted submission today." : recommendedPractice ? `${recommendedPractice.tag || "Target"}${recommendedPractice.difficulty ? ` · ${recommendedPractice.difficulty}` : ""}` : "Sync history for tailored picks."}</p>
-          </div>
-          {!hasPracticeSignal && recommendedPractice && <ActionButton href={`https://leetcode.com/problems/${recommendedPractice.titleSlug}/`} tone="blue">Solve</ActionButton>}
-        </article>
-
-        {/* Step 3: Stretch */}
-        <article className="p-4 flex items-start gap-3.5">
-          <div className="mt-0.5 flex h-7 w-7 items-center justify-center rounded-lg bg-purple-400/10 shrink-0">
-            <Circle size={13} className="text-purple-400" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-[8px] font-bold font-mono uppercase tracking-[0.2em] text-zinc-500">Stretch</p>
-            <h2 className="mt-1 truncate text-[13px] font-semibold text-zinc-100">{stretchProblem?.title || "Set when ready"}</h2>
-            <p className="mt-0.5 text-[10px] leading-relaxed text-zinc-500">{stretchProblem && planningRange ? `${Math.round(stretchProblem.rating)} rating · ${planningRange.source}` : planningRange ? `Band: ${planningRange.low}–${planningRange.high}` : "Add contest data for a matched problem."}</p>
-          </div>
-          {stretchProblem && <ActionButton href={`https://leetcode.com/problems/${stretchProblem.slug}/`}>Attempt</ActionButton>}
-        </article>
-      </div>
-    </section>
-
-    {/* ═══════════ ACTIVITY + STATS ═══════════ */}
-    <section className="grid gap-3 sm:grid-cols-[1.35fr_1fr]">
-      <div className="rounded-2xl border border-zinc-800/60 bg-[#0d0d0f] p-4">
-        <div className="flex items-center justify-between">
-          <p className="text-[9px] font-bold font-mono uppercase tracking-[0.2em] text-zinc-500">Last 7 days</p>
-          <span className="text-[10px] font-mono font-bold tabular-nums text-zinc-400">{formatDuration(activity.days.reduce((t, d) => t + d.minutes, 0) * 60)}</span>
-        </div>
-        <div className="mt-4 flex h-[72px] items-end justify-between gap-1.5">
-          {activity.days.map((day) => {
-            const isToday = day.key === today
-            const barH = day.minutes ? Math.max(8, (day.minutes / maxMinutes) * 100) : 2
-            return (
-              <div key={day.key} className="flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1">
-                {day.minutes > 0 && (
-                  <span className="text-[8px] font-mono font-bold tabular-nums text-zinc-400">
-                    {day.minutes >= 60 ? `${(day.minutes / 60).toFixed(1)}h` : `${day.minutes}m`}
-                  </span>
-                )}
-                <div
-                  className={`w-full rounded-sm transition-all ${isToday ? "bg-amber-400" : day.minutes > 0 ? "bg-zinc-700" : "bg-zinc-800/40"}`}
-                  style={{ height: `${barH}%`, maxWidth: 28 }}
-                  title={`${formatDuration(day.minutes * 60)}`}
-                />
-                <span className={`text-[8px] font-mono ${isToday ? "text-amber-400 font-bold" : "text-zinc-600"}`}>{day.label}</span>
+          <div className="mt-5 flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
+            <div className="min-w-0 flex-1">
+              <p className="text-[9px] font-bold font-mono uppercase tracking-[0.18em] text-amber-400/80">{primaryAction.eyebrow}</p>
+              <h1 className="mt-1.5 text-[22px] font-semibold leading-tight tracking-tight text-zinc-50 sm:text-[24px]">{primaryAction.title}</h1>
+              <p className="mt-2 max-w-xl text-[12px] leading-relaxed text-zinc-400">{primaryAction.explanation}</p>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {primaryAction.badges.map((badge) => <Badge key={badge.label} badge={badge} />)}
+                {primaryAction.expectedMinutes && <Badge badge={{ label: `~${primaryAction.expectedMinutes} min`, tone: "zinc" }} />}
               </div>
-            )
+            </div>
+            {primaryAction.kind === "review" ? (
+              <ActionButton onClick={() => setReviewOpen(true)} tone="amber">{primaryAction.actionLabel}</ActionButton>
+            ) : primaryActionHref ? (
+              <ActionButton href={primaryActionHref} tone="blue">{primaryAction.actionLabel}</ActionButton>
+            ) : (
+              <ActionButton onClick={openTrackPicker}>{primaryAction.actionLabel}</ActionButton>
+            )}
+          </div>
+
+          <div className="mt-5 grid grid-cols-3 divide-x divide-zinc-800/60 border-t border-zinc-800/60 pt-3">
+            <div className="pr-3"><span className="block text-[18px] font-bold font-mono tabular-nums text-zinc-100">{data.todaySolves}</span><span className="text-[8px] font-bold font-mono uppercase tracking-[0.14em] text-zinc-600">solved today</span></div>
+            <div className="px-3"><span className="block text-[18px] font-bold font-mono tabular-nums text-zinc-100">{formatCompactDuration(activity.todayActivity?.focusSeconds ?? 0)}</span><span className="text-[8px] font-bold font-mono uppercase tracking-[0.14em] text-zinc-600">active time</span></div>
+            <div className="pl-3"><span className="block text-[18px] font-bold font-mono tabular-nums text-zinc-100">{data.currentStreak}d</span><span className="text-[8px] font-bold font-mono uppercase tracking-[0.14em] text-zinc-600">solve streak</span></div>
+          </div>
+        </div>
+
+        <div className="relative flex flex-wrap items-center justify-between gap-3 border-t border-zinc-800/60 bg-black/25 px-4 py-3 sm:px-5">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${sessionIsRunning ? "bg-emerald-400 animate-pulse" : sessionIsPaused ? "bg-amber-400" : "bg-zinc-700"}`} />
+            <div className="min-w-0">
+              <p className="text-[10px] font-medium text-zinc-300">{sessionIsRunning ? "Focus session active" : sessionIsPaused ? "Focus session paused" : "Focus session"}</p>
+              <p className="text-[9px] text-zinc-600">{sessionIsRunning ? "Observed active time only" : sessionIsPaused ? "Timer is not accumulating" : "Start when you want time recorded"}</p>
+            </div>
+          </div>
+          {currentSession ? (
+            <div className="flex items-center gap-2">
+              <span className={`mr-1 font-mono text-sm font-bold tabular-nums ${sessionIsPaused ? "text-amber-300" : "text-emerald-400"}`}>{formatLiveTimer(activeSeconds)}</span>
+              <button type="button" disabled={sessionActionPending} onClick={() => void togglePause()} className="inline-flex h-8 items-center gap-1 rounded-md border border-zinc-700/80 px-2 text-[9px] font-bold font-mono uppercase tracking-wide text-zinc-300 transition hover:border-zinc-500 hover:text-white disabled:opacity-50" aria-label={sessionIsPaused ? "Resume focus session" : "Pause focus session"}>{sessionIsPaused ? <Play size={10} fill="currentColor" /> : <Pause size={10} fill="currentColor" />}{sessionIsPaused ? "Resume" : "Pause"}</button>
+              <button type="button" disabled={sessionActionPending} onClick={() => void endSession()} className="inline-flex h-8 items-center gap-1 rounded-md border border-rose-900/60 px-2 text-[9px] font-bold font-mono uppercase tracking-wide text-rose-300 transition hover:border-rose-700 hover:text-rose-200 disabled:opacity-50" aria-label="End focus session"><Square size={9} fill="currentColor" /> End</button>
+            </div>
+          ) : (
+            <button type="button" disabled={sessionActionPending} onClick={() => void startSession()} className="inline-flex h-8 items-center gap-1 rounded-md border border-zinc-700 bg-zinc-800/70 px-2.5 text-[9px] font-bold font-mono uppercase tracking-wide text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-700 hover:text-white disabled:opacity-50"><Play size={9} fill="currentColor" /> Start</button>
+          )}
+        </div>
+      </section>
+
+      {reviewOpen && activeReview && (
+        <section className="rounded-2xl border border-amber-400/25 bg-[#15120b] p-4 sm:p-5" aria-live="polite">
+          <div className="flex items-start justify-between gap-3"><div><p className="text-[9px] font-bold font-mono uppercase tracking-[0.16em] text-amber-300">Active recall</p><h2 className="mt-1 text-[15px] font-semibold text-zinc-100">Before opening {activeReview.title}</h2></div><button type="button" onClick={() => setReviewOpen(false)} className="rounded-md p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200" aria-label="Close recall prompt">×</button></div>
+          <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">Name the pattern, state its invariant, and identify one boundary case. Then open the problem only to check your recall.</p>
+          <div className="mt-4 flex flex-wrap items-center gap-2"><ActionButton href={`https://leetcode.com/problems/${activeReview.titleSlug}/`} tone="amber">Open for recall</ActionButton><span className="text-[9px] text-zinc-500">When you are ready, log the quality of your recall below.</span></div>
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {[[1, "Forgot"], [2, "Hard"], [4, "Good"], [5, "Easy"]].map(([quality, label]) => <button key={label as string} type="button" disabled={reviewSubmitting} onClick={() => void submitReview(quality as number)} className="rounded-lg border border-zinc-800 bg-black/30 px-2 py-2 text-[10px] font-mono font-semibold text-zinc-300 transition hover:border-amber-400/45 hover:text-amber-200 disabled:opacity-40">{label as string}</button>)}
+          </div>
+        </section>
+      )}
+
+      <section className="overflow-hidden rounded-2xl border border-zinc-800/70 bg-[#0d0d0f]">
+        <div className="flex items-center justify-between border-b border-zinc-800/60 px-4 py-3 sm:px-5"><div><p className="text-[9px] font-bold font-mono uppercase tracking-[0.18em] text-zinc-500">Today’s practice sequence</p><p className="mt-0.5 text-[10px] text-zinc-600">Two core actions, then an optional stretch.</p></div><span className="text-[10px] font-mono font-bold tabular-nums text-zinc-400">{coreAvailable ? `${coreComplete}/${coreAvailable}` : "Ready"}</span></div>
+        <div className="divide-y divide-zinc-800/50">
+          {questSteps.map((step, index) => {
+            const href = step.titleSlug ? `https://leetcode.com/problems/${step.titleSlug}/` : undefined
+            return <article key={step.id} className={`flex gap-3 p-4 sm:p-5 ${step.status === "complete" ? "bg-emerald-500/[0.025]" : ""}`}>
+              <div className="flex flex-col items-center"><QuestIcon id={step.id} status={step.status} />{index < questSteps.length - 1 && <div className="mt-2 h-full min-h-5 w-px bg-zinc-800/70" />}</div>
+              <div className="min-w-0 flex-1 pb-1"><div className="flex flex-wrap items-center gap-2"><p className="text-[8px] font-bold font-mono uppercase tracking-[0.16em] text-zinc-500">{index + 1}. {step.id === "review" ? "Memory recall" : step.id === "practice" ? "Target practice" : "Optional stretch"}</p>{step.status === "complete" && <span className="text-[8px] font-mono font-bold uppercase text-emerald-400">complete</span>}</div><h2 className={`mt-1 text-[13px] font-semibold ${step.status === "unavailable" ? "text-zinc-500" : "text-zinc-100"}`}>{step.title}</h2><p className="mt-1 text-[10px] leading-relaxed text-zinc-500">{step.description}</p>{step.badges && <div className="mt-2 flex flex-wrap gap-1.5">{step.badges.map((badge) => <Badge key={badge.label} badge={badge} />)}</div>}</div>
+              {step.status === "available" && (step.id === "review" ? <button type="button" onClick={() => setReviewOpen(true)} className="inline-flex h-8 shrink-0 items-center gap-1 self-center rounded-md border border-amber-400/40 bg-amber-400 px-2.5 text-[9px] font-bold text-zinc-950 hover:bg-amber-300">Recall <ChevronRight size={11} /></button> : href ? <ActionButton href={href} tone={step.id === "practice" ? "blue" : "zinc"} className="self-center">{step.actionLabel ?? "Open"}</ActionButton> : null)}
+            </article>
           })}
         </div>
-      </div>
+      </section>
 
-      <div className="rounded-2xl border border-zinc-800/60 bg-[#0d0d0f] p-4 flex flex-col justify-between">
-        <p className="text-[9px] font-bold font-mono uppercase tracking-[0.2em] text-zinc-500">At a glance</p>
-        <div className="mt-3 space-y-2.5">
-          {[
-            { label: "Total solved", value: data.totalSolved || 0 },
-            { label: "Submissions today", value: data.todaySubmissions || 0 },
-            { label: "Streak", value: data.currentStreak || 0, suffix: "d" },
-          ].map((stat, i, arr) => (
-            <div key={stat.label} className={`flex items-baseline justify-between ${i < arr.length - 1 ? "border-b border-zinc-800/30 pb-2" : ""}`}>
-              <span className="text-[10px] text-zinc-500">{stat.label}</span>
-              <span className="text-[15px] font-bold font-mono tabular-nums text-zinc-100">
-                {stat.value}{stat.suffix && <span className="text-[9px] font-medium text-zinc-500 ml-0.5">{stat.suffix}</span>}
-              </span>
-            </div>
-          ))}
+      <section className="grid gap-3 md:grid-cols-[1.4fr_1fr]">
+        <div className="rounded-2xl border border-zinc-800/70 bg-[#0d0d0f] p-4 sm:p-5">
+          <div className="flex items-start justify-between gap-3"><div><p className="text-[9px] font-bold font-mono uppercase tracking-[0.18em] text-zinc-500">Your practice time</p><p className="mt-1 text-[11px] text-zinc-400">{formatDuration(activity.weekFocusSeconds)} active this week · {activity.weekSolves} solved</p></div><Activity size={16} className="text-amber-400/80" /></div>
+          <div className="mt-5 flex h-[106px] items-end justify-between gap-1.5">
+            {activity.days.map((day) => {
+              const isToday = day.key === today
+              const height = day.focusSeconds ? Math.max(8, (day.focusSeconds / maxFocus) * 70) : 3
+              const label = `${day.dateLabel}: ${formatDuration(day.focusSeconds)} active, ${day.solves} solve${day.solves === 1 ? "" : "s"}, ${day.sessions} session${day.sessions === 1 ? "" : "s"}`
+              return <div key={day.key} className="group flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1.5" title={label} aria-label={label}>
+                <span className={`text-[8px] font-mono tabular-nums transition-opacity ${day.focusSeconds ? "text-zinc-400" : "text-transparent"}`}>{formatCompactDuration(day.focusSeconds)}</span>
+                <div className={`w-full rounded-sm transition-all duration-300 group-hover:brightness-125 ${isToday ? "bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.22)]" : day.focusSeconds ? "bg-zinc-600" : "bg-zinc-800/60"}`} style={{ height: `${height}px`, maxWidth: 32 }} />
+                <span className={`text-[8px] font-mono ${isToday ? "font-bold text-amber-300" : "text-zinc-600"}`}>{day.label}</span>
+              </div>
+            })}
+          </div>
+          <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 border-t border-zinc-800/50 pt-3 text-[9px] font-mono text-zinc-500"><span>{activity.weekSessions} focused sessions</span><span>Best day: {activity.strongestDay?.focusSeconds ? `${activity.strongestDay.dateLabel} · ${formatCompactDuration(activity.strongestDay.focusSeconds)}` : "start your first"}</span></div>
         </div>
-      </div>
-    </section>
 
-    {error && <p className="px-1 text-[10px] text-red-400/80 font-mono">{error}</p>}
-  </main>
+        <div className="rounded-2xl border border-zinc-800/70 bg-[#0d0d0f] p-4 sm:p-5">
+          <p className="text-[9px] font-bold font-mono uppercase tracking-[0.18em] text-zinc-500">What you did</p>
+          <div className="mt-4 space-y-3">
+            <div className="flex items-center gap-2.5"><div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-400/10 text-emerald-400"><Check size={13} /></div><div><p className="text-[11px] font-medium text-zinc-200">{data.todaySolves} problem{data.todaySolves === 1 ? "" : "s"} solved today</p><p className="text-[9px] text-zinc-600">{data.todaySubmissions} submission{data.todaySubmissions === 1 ? "" : "s"} recorded</p></div></div>
+            <div className="flex items-center gap-2.5"><div className="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-400/10 text-amber-400"><Clock3 size={13} /></div><div><p className="text-[11px] font-medium text-zinc-200">{formatDuration(activity.todayActivity?.focusSeconds ?? 0)} active practice</p><p className="text-[9px] text-zinc-600">Only explicit focus sessions are counted</p></div></div>
+            <div className="flex items-center gap-2.5"><div className="flex h-7 w-7 items-center justify-center rounded-lg bg-sky-400/10 text-sky-400"><Flame size={13} /></div><div><p className="text-[11px] font-medium text-zinc-200">{data.currentStreak}-day solve streak</p><p className="text-[9px] text-zinc-600">Progress is a record, not a requirement</p></div></div>
+          </div>
+        </div>
+      </section>
+
+      {error && <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-900/40 bg-rose-950/20 px-3 py-2 text-[10px] text-rose-300"><span>{error}</span><button type="button" onClick={() => void refresh()} className="shrink-0 font-semibold underline underline-offset-2">Retry</button></div>}
+    </main>
+  )
 }
