@@ -1,9 +1,5 @@
 # ⚡ AlgoVault
 
-<p align="center">
-  <img src="extension/assets/logo.png" alt="AlgoVault Logo" width="120" />
-</p>
-
 <h3 align="center">Your Competitive Programming Operating System</h3>
 
 <p align="center">
@@ -25,6 +21,44 @@ AlgoVault is an elite, self-hosted performance telemetry, rating estimation, and
 
 ---
 
+## ✨ Key Features & Capabilities
+
+* **📊 Contest Intelligence & Timeline**:
+  * Track official LeetCode rating trajectories, peak ratings, global ranks, and average rating deltas.
+  * Interactive solve breakdown distribution bars ($4/4$, $3/4$, $2/4$, $1/4$, $0/4$) and filter chips (*All*, *Gains*, *Sweeps*, *Milestones*, *Weekly*, *Biweekly*).
+  * Expandable contest detail drawers, contest replay timeline scrub bar, and live upcoming contest countdowns across LeetCode, Codeforces, and AtCoder.
+
+* **⚔️ Zenith Cinematic Focus Mode (Deep Work)**:
+  * Strips away navbars, sidebars, topics, and problem tags for complete distraction-free flow state.
+  * Intentional Reveal: Editorial and Solution tabs require holding the `🔒 Yield & Reveal` button for 2 seconds to prevent impulse solution peeking.
+  * Flow State Timer that pulses amber after 25 minutes of continuous deep focus.
+  * Metacognitive Insight Capture: Prompts you to state the core algorithmic logic before exiting Zenith mode upon solving a problem.
+
+* **🎯 In-Page LeetCode Problem Rating HUD**:
+  * Inject live ZeroTrac contest difficulty ratings (e.g. `1650 Rating`) directly on `leetcode.com/problems/*`.
+  * Target solve time calculation based on difficulty rating and user mastery.
+  * Solve chance percentage estimates and quick pattern hint toggles.
+
+* **🏆 The Trophy Vault & Achievement Showcase**:
+  * 3D parallax trophy tilt physics (`preserve-3d` and Framer Motion spring physics) with specular glare filters.
+  * Custom spotlight beams and floating sparkles for **Legendary** tier badges (*CR7*, *Number 10 / Messi*, *All Kill*, *Guardian*, *Ultra Instinct*).
+  * Interactive particle confetti explosions (`canvas-confetti`) on trophy clicks.
+  * Real-time locked badge progress indicators (e.g., `1850/2180 rating (85%)` or `700/1000 solved (70%)`).
+
+* **🎯 Today's Quests & Live Focus Timer**:
+  * Live-ticking focus session timer with start/pause/end session controls.
+  * Curated Spaced Review cards (FSRS-4.5 algorithm), Recommended Practice, and Stretch Targets.
+  * 7-day activity bar charts and at-a-glance telemetry stats.
+
+* **🎮 Submission Celebration Overlays**:
+  * Authentic GTA (*Mission Passed* / *Wasted*) or Minecraft (*Level Up* / *You Died*) themes with audio chimes on accepted/rejected submissions.
+
+* **🧩 Pattern Simulator & Study Lists**:
+  * Interactive step-by-step pattern simulators (Monotonic Stack, Sliding Window, Two Pointers).
+  * 1-click progress tracking for **NeetCode 150**, **Striver SDE Sheet**, and **ZeroTrac Rating Filters**.
+
+---
+
 ## 📸 Visual Showcase & Feature Tour
 
 ### 📊 Performance Analytics & Live Focus Dashboard
@@ -41,7 +75,7 @@ The main sidepanel dashboard provides daily quests, live-ticking focus session t
 A tactile display case designed with 3D badge parallax tilts (`preserve-3d` and Framer Motion spring physics), tier shelves (**Common**, **Rare**, **Epic**, **Legendary**), custom spotlight beams for legendary achievements (*CR7*, *Number 10 / Messi*, *All Kill*, *Guardian*), and interactive confetti explosions (`canvas-confetti`).
 
 <p align="center">
-  <img src="readme-images/Achivements.png" alt="The Trophy Vault & 3D Badges Showcase" width="98%" />
+  <img src="readme-images/Achivements.png" alt="The Trophy Vault & 3D Badges Showcase" width="100%" />
 </p>
 
 ---
@@ -60,7 +94,7 @@ Monitor official LeetCode rating progression graphs, peak ratings, global ranks,
 </p>
 
 <p align="center">
-  <img src="readme-images/ALlUpcomingcontest.png" alt="Upcoming Contests Schedule & Platform Countdowns" width="98%" />
+  <img src="readme-images/ALlUpcomingcontest.png" alt="Upcoming Contests Schedule & Platform Countdowns" width="100%" />
 </p>
 
 ---
@@ -69,7 +103,7 @@ Monitor official LeetCode rating progression graphs, peak ratings, global ranks,
 Visualizes your solve conversion rate and attempt volume across official contest rating bands with dynamic height Solve vs Attempted comparison charts.
 
 <p align="center">
-  <img src="readme-images/RatingBands.png" alt="Rating Band Matrix & Solve Conversion Heatmap" width="98%" />
+  <img src="readme-images/RatingBands.png" alt="Rating Band Matrix & Solve Conversion Heatmap" width="100%" />
 </p>
 
 ---
@@ -98,7 +132,7 @@ Interactive step-by-step pattern visualizers (Monotonic Stack, Sliding Window, T
 </p>
 
 <p align="center">
-  <img src="readme-images/Pattern0.png" alt="Pattern Exhibit Simulator Visualizer" width="98%" />
+  <img src="readme-images/Pattern0.png" alt="Pattern Exhibit Simulator Visualizer" width="100%" />
 </p>
 
 ---
@@ -107,9 +141,12 @@ Interactive step-by-step pattern visualizers (Monotonic Stack, Sliding Window, T
 Track problem completion across **NeetCode 150**, **Striver SDE Sheet**, and filter problems dynamically by ZeroTrac difficulty ratings.
 
 <p align="center">
-  <img src="readme-images/neetcode150.png" alt="NeetCode 150 Curriculum List" width="32%" />
-  <img src="readme-images/StriverSde.png" alt="Striver SDE Sheet List" width="32%" />
-  <img src="readme-images/ZeroTracList.png" alt="ZeroTrac Rating Filter & Problem List" width="32%" />
+  <img src="readme-images/neetcode150.png" alt="NeetCode 150 Curriculum List" width="49%" />
+  <img src="readme-images/StriverSde.png" alt="Striver SDE Sheet List" width="49%" />
+</p>
+
+<p align="center">
+  <img src="readme-images/ZeroTracList.png" alt="ZeroTrac Rating Filter & Problem List" width="100%" />
 </p>
 
 ---
@@ -123,7 +160,7 @@ AlgoVault triggers GTA (*Mission Passed* / *Wasted*) and Minecraft (*Level Up* /
 </p>
 
 <p align="center">
-  <img src="readme-images/Setting.png" alt="Extension Settings & Synchronization Panel" width="98%" />
+  <img src="readme-images/Setting.png" alt="Extension Settings & Synchronization Panel" width="100%" />
 </p>
 
 ---
