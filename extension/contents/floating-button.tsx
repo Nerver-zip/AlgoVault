@@ -96,7 +96,6 @@ const FloatingButton = () => {
 
   const togglePauseTimer = (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (!session?.id) return
     chrome.runtime.sendMessage({ action: isPaused ? "session_resume" : "session_pause" })
   }
 
@@ -180,13 +179,13 @@ const FloatingButton = () => {
               <span className={`text-xs font-mono font-semibold tabular-nums ${isPaused ? 'text-amber-400' : isZenith ? 'text-cyan-400' : 'text-[#dfa054]'}`}>
                 {pMins}:{pRem}
               </span>
-              {session?.id && <button
+              <button
                 onClick={togglePauseTimer}
                 className="ml-1 px-1.5 py-0.5 rounded border border-zinc-800 bg-zinc-900 text-[9px] font-mono font-bold text-zinc-300 hover:text-white"
                 title={isPaused ? "Resume Timer" : "Pause Timer"}
               >
                 {isPaused ? "▶️" : "⏸️"}
-              </button>}
+              </button>
             </div>
           </div>
 

@@ -561,7 +561,6 @@ export const Dashboard = () => {
   }
 
   const togglePause = async () => {
-    if (!currentSession) return
     setSessionActionPending(true)
     try {
       const action = sessionIsPaused ? "session_resume" : "session_pause"

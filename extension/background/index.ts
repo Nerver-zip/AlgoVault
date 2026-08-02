@@ -214,9 +214,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "session_pause" || message.action === "session_resume") {
     storage.get<ActiveSession>(CURRENT_SESSION_KEY)
       .then(async (session) => {
-        if (!session?.id) throw new Error("Start a focus session before changing the timer.")
         const status = message.action === "session_pause" ? "paused" : "running"
-        const timer = await setLiveTimerStatus(session, status)
+        const timer = await setLiveTimerStatus(session || {}, status)
         sendResponse({ ok: true, data: timer })
       })
       .catch((err) => sendResponse({ ok: false, error: err.message }))
