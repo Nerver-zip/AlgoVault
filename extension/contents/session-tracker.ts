@@ -53,9 +53,8 @@ chrome.storage.local.get(["algovault.timerPaused", "algovault.currentSession"], 
 function publishLiveTimer() {
   const now = Date.now()
   const elapsedSeconds = Math.max(0, Math.floor((now - openedAt.getTime()) / 1000))
-  const currentSegment = (sessionStarted && isWindowFocused && !isPaused && !isSolved && (now - lastActivityTime < IDLE_TIMEOUT_MS))
-    ? Math.max(0, Math.floor((now - focusStartedAt) / 1000))
-    : 0
+  const isTabActive = !document.hidden && !isPaused && !isSolved && (now - lastActivityTime < IDLE_TIMEOUT_MS)
+  const currentSegment = isTabActive ? Math.max(0, Math.floor((now - focusStartedAt) / 1000)) : 0
   const problemFocusSeconds = focusSeconds + currentSegment
   const liveFocusSeconds = sessionStarted ? sessionFocusBaseline + focusSeconds + currentSegment : problemFocusSeconds
 
@@ -65,8 +64,8 @@ function publishLiveTimer() {
     problemFocusSeconds: problemFocusSeconds,
     problemElapsedSeconds: elapsedSeconds,
     elapsedSeconds,
-    status: sessionStarted ? (isPaused ? "paused" : "running") : "running",
-    isPaused: sessionStarted && isPaused,
+    status: isPaused ? "paused" : "running",
+    isPaused: isPaused,
     isSolved,
     sessionId: activeSessionId,
     mode: activeSessionMode,
@@ -703,7 +702,7 @@ const heartbeatInterval = setInterval(() => {
 
 // Continuous 1-second live timer publisher
 const liveTimerInterval = setInterval(() => {
-  if (sessionStarted && !isSolved) {
+  if (!isSolved) {
     publishLiveTimer()
   }
 }, 1000);
