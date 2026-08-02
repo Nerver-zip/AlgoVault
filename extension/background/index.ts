@@ -17,6 +17,7 @@ import {
   fetchZerotracRatingsBackend,
   addToVault
 } from "../lib/api/backend"
+import type { ActiveSession, LiveTimerState } from "../lib/types"
 
 export {}
 
@@ -24,6 +25,49 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error
 
 let isSyncing = false;
 let syncAbortController: AbortController | null = null;
+
+const CURRENT_SESSION_KEY = "algovault.currentSession"
+const LIVE_TIMER_KEY = "algovault.liveTimer"
+const TIMER_PAUSED_KEY = "algovault.timerPaused"
+
+function nonNegativeNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0
+}
+
+async function setLiveTimerStatus(session: ActiveSession, status: "running" | "paused"): Promise<LiveTimerState> {
+  const existing = await storage.get<LiveTimerState>(LIVE_TIMER_KEY)
+  const activeFocusSeconds = Math.max(
+    nonNegativeNumber(existing?.activeFocusSeconds),
+    nonNegativeNumber(existing?.focusSeconds),
+    nonNegativeNumber(session.focusSeconds)
+  )
+  const timer: LiveTimerState = {
+    activeFocusSeconds,
+    focusSeconds: activeFocusSeconds,
+    elapsedSeconds: nonNegativeNumber(existing?.elapsedSeconds),
+    status,
+    isPaused: status === "paused",
+    isSolved: existing?.isSolved,
+    sessionId: session.id,
+    mode: session.mode,
+    slug: existing?.slug,
+    problemStartTime: existing?.problemStartTime,
+    updatedAt: Date.now()
+  }
+  await Promise.all([
+    storage.set(TIMER_PAUSED_KEY, status === "paused"),
+    storage.set(LIVE_TIMER_KEY, timer)
+  ])
+  return timer
+}
+
+async function clearLiveSessionState(): Promise<void> {
+  await Promise.all([
+    storage.remove(CURRENT_SESSION_KEY),
+    storage.remove(LIVE_TIMER_KEY),
+    storage.set(TIMER_PAUSED_KEY, false)
+  ])
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "open_side_panel" && sender.tab) {
@@ -159,8 +203,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return current || startSession(message.mode || settings.sessionMode || "PRACTICE")
       })
       .then(async (data) => {
-        await storage.set("algovault.currentSession", data)
+        await storage.set(CURRENT_SESSION_KEY, data)
+        await setLiveTimerStatus(data, "running")
         sendResponse({ ok: true, data })
+      })
+      .catch((err) => sendResponse({ ok: false, error: err.message }))
+    return true
+  }
+
+  if (message.action === "session_pause" || message.action === "session_resume") {
+    storage.get<ActiveSession>(CURRENT_SESSION_KEY)
+      .then(async (session) => {
+        if (!session?.id) throw new Error("Start a focus session before changing the timer.")
+        const status = message.action === "session_pause" ? "paused" : "running"
+        const timer = await setLiveTimerStatus(session, status)
+        sendResponse({ ok: true, data: timer })
       })
       .catch((err) => sendResponse({ ok: false, error: err.message }))
     return true
@@ -168,8 +225,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === "session_end") {
     endSession()
-      .then((data) => {
-        storage.remove("algovault.currentSession")
+      .then(async (data) => {
+        await clearLiveSessionState()
         sendResponse({ ok: true, data })
       })
       .catch((err) => sendResponse({ ok: false, error: err.message }))
@@ -185,8 +242,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === "session_heartbeat") {
     sendSessionHeartbeat(message.payload)
-      .then((data) => {
-        storage.set("algovault.currentSession", data)
+      .then(async (data) => {
+        if (data) {
+          await storage.set(CURRENT_SESSION_KEY, data)
+        }
         sendResponse({ ok: true, data })
       })
       .catch((err) => sendResponse({ ok: false, error: err.message }))
@@ -231,8 +290,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       sendSubmissionResult(payload)
-        .then((data) => {
-          storage.set("algovault.currentSession", data)
+        .then(async (data) => {
+          if (data) await storage.set(CURRENT_SESSION_KEY, data)
           sendResponse({ ok: true, data })
           // Broadcast to any open sidepanel dashboard to refresh fresh data
           chrome.runtime.sendMessage({ action: "dashboard_refresh" })
