@@ -1,13 +1,10 @@
 import cssText from "data-text:~style.css"
 import type { PlasmoCSConfig, PlasmoGetStyle } from "plasmo"
 import { useEffect, useState } from "react"
-import { Storage } from "@plasmohq/storage"
 
-interface ActiveSession { isActive?: boolean; startTime?: number; titleSlug?: string; mode?: string; focusScore?: number; tabSwitches?: number; pasteCount?: number; }
+interface ActiveSession { id?: number; isActive?: boolean; startTime?: number; titleSlug?: string; mode?: string; focusSeconds?: number; focusScore?: number; tabSwitches?: number; pasteCount?: number; }
 interface SessionState { isSolved?: boolean; finalSeconds?: number; focusScore?: number; tabSwitches?: number; copyPastes?: number; }
-interface LiveTimerState { focusSeconds?: number; elapsedSeconds?: number; isPaused?: boolean; isSolved?: boolean; updatedAt?: number; }
-
-const storage = new Storage()
+interface LiveTimerState { activeFocusSeconds?: number; problemFocusSeconds?: number; problemElapsedSeconds?: number; focusSeconds?: number; elapsedSeconds?: number; status?: "idle" | "running" | "paused"; isPaused?: boolean; isSolved?: boolean; updatedAt?: number; }
 
 export const config: PlasmoCSConfig = {
   matches: ["https://leetcode.com/problems/*", "https://leetcode.com/contest/*/problems/*"]
@@ -23,21 +20,13 @@ const FloatingButton = () => {
   const [session, setSession] = useState<ActiveSession | null>(null)
   const [sessionState, setSessionState] = useState<SessionState | null>(null)
   const [liveTimer, setLiveTimer] = useState<LiveTimerState | null>(null)
-  const [problemStartTime, setProblemStartTime] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
-  const [now, setNow] = useState(Date.now())
 
   // Zenith properties
   const [isZenith, setIsZenith] = useState(false)
   const [zenithGrade, setZenithGrade] = useState("S_PLUS")
   const [zenithFocusScore, setZenithFocusScore] = useState(100)
-
-  // Live 1-second interval ticker so the UI continuously counts up
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [])
 
   // Listen for direct in-tab live timer ticks from session-tracker (bypasses storage event delays)
   useEffect(() => {
@@ -45,9 +34,6 @@ const FloatingButton = () => {
       if (event.data?.type === "AV_LIVE_TIMER_TICK" && event.data?.payload) {
         const p = event.data.payload
         setLiveTimer(p)
-        if (p.problemStartTime) {
-          setProblemStartTime(p.problemStartTime)
-        }
         if (p.isPaused !== undefined) {
           setIsPaused(p.isPaused)
         }
@@ -64,7 +50,6 @@ const FloatingButton = () => {
         "algovault.sessionState",
         "algovault.liveTimer",
         "algovault.timerPaused",
-        "algovault.problemStartTime",
         "algovault.isZenith",
         "algovault.zenithGrade",
         "algovault.zenithFocusScore"
@@ -81,7 +66,6 @@ const FloatingButton = () => {
         setSessionState(state || null)
         setLiveTimer(result["algovault.liveTimer"] || null)
         setIsPaused(!!result["algovault.timerPaused"])
-        setProblemStartTime(result["algovault.problemStartTime"] || null)
         setIsZenith(!!result["algovault.isZenith"])
         setZenithGrade(result["algovault.zenithGrade"] || "S_PLUS")
         setZenithFocusScore(result["algovault.zenithFocusScore"] ?? 100)
@@ -94,7 +78,6 @@ const FloatingButton = () => {
         changes["algovault.sessionState"] ||
         changes["algovault.liveTimer"] ||
         changes["algovault.timerPaused"] ||
-        changes["algovault.problemStartTime"] ||
         changes["algovault.isZenith"] ||
         changes["algovault.zenithGrade"] ||
         changes["algovault.zenithFocusScore"]
@@ -113,9 +96,8 @@ const FloatingButton = () => {
 
   const togglePauseTimer = (e: React.MouseEvent) => {
     e.stopPropagation()
-    const nextState = !isPaused
-    setIsPaused(nextState)
-    chrome.storage.local.set({ "algovault.timerPaused": nextState })
+    if (!session?.id) return
+    chrome.runtime.sendMessage({ action: isPaused ? "session_resume" : "session_pause" })
   }
 
   const handleAbandonZenith = (e: React.MouseEvent) => {
@@ -133,34 +115,24 @@ const FloatingButton = () => {
     }
   }
 
-  // Calculate live active focus seconds and total elapsed seconds
-  let activeSecs = 0
-  let totalElapsedSecs = 0
+  // The tracker publishes only observed, user-started active focus. Never add
+  // wall-clock deltas here: a backgrounded tab must not silently gain time.
+  let totalSecs = 0
+  let problemSecs = 0
 
   if (sessionState?.isSolved) {
-    activeSecs = sessionState.finalSeconds ?? 0
-    totalElapsedSecs = sessionState.finalSeconds ?? 0
+    totalSecs = sessionState.finalSeconds ?? 0
+    problemSecs = liveTimer?.problemFocusSeconds ?? totalSecs
   } else {
-    const startMs = problemStartTime ? new Date(problemStartTime).getTime() : 0
-    totalElapsedSecs = startMs > 0
-      ? Math.max(0, Math.floor((now - startMs) / 1000))
-      : (liveTimer?.elapsedSeconds ?? liveTimer?.focusSeconds ?? 0)
-
-    if (liveTimer?.focusSeconds != null && liveTimer?.updatedAt) {
-      const deltaSecs = isPaused ? 0 : Math.max(0, Math.floor((now - liveTimer.updatedAt) / 1000))
-      activeSecs = liveTimer.focusSeconds + deltaSecs
-    } else if (liveTimer?.focusSeconds != null) {
-      activeSecs = liveTimer.focusSeconds
-    } else {
-      activeSecs = totalElapsedSecs
-    }
+    totalSecs = liveTimer?.activeFocusSeconds ?? liveTimer?.focusSeconds ?? session?.focusSeconds ?? 0
+    problemSecs = liveTimer?.problemFocusSeconds ?? (liveTimer?.activeFocusSeconds ?? 0)
   }
 
-  const minutes = Math.floor(activeSecs / 60)
-  const rem = String(activeSecs % 60).padStart(2, "0")
+  const minutes = Math.floor(totalSecs / 60)
+  const rem = String(totalSecs % 60).padStart(2, "0")
 
-  const elapsedMins = Math.floor(totalElapsedSecs / 60)
-  const elapsedRem = String(totalElapsedSecs % 60).padStart(2, "0")
+  const pMins = Math.floor(problemSecs / 60)
+  const pRem = String(problemSecs % 60).padStart(2, "0")
 
   const formattedGrade = zenithGrade.replace("_PLUS", "+")
 
@@ -181,16 +153,17 @@ const FloatingButton = () => {
                 ? (minutes >= 25 ? 'border-amber-500/80 shadow-[0_0_20px_rgba(245,158,11,0.6)] animate-pulse' : 'border-cyan-500/50 shadow-[0_0_10px_rgba(6,182,212,0.35)]') 
                 : 'border-zinc-805'
           } shadow-lg cursor-pointer`}
-          title={`Active Practice: ${minutes}m ${rem}s | Total Elapsed: ${elapsedMins}m ${elapsedRem}s`}
+          title={`Problem time: ${pMins}m ${pRem}s | Total session: ${minutes}m ${rem}s`}
         >
           <span className={`${isPaused ? 'text-amber-400' : isZenith ? (minutes >= 25 ? 'text-amber-400' : 'text-cyan-400') : 'text-[#dfa054]'} text-xs`}>
             {isPaused ? '⏸️' : isZenith ? `⚔️ ${formattedGrade}` : '⚡'}
           </span>
-          <span className="tabular-nums">{minutes}:{rem}</span>
+          <span className="tabular-nums font-bold">{pMins}:{pRem}</span>
+          <span className="text-[10px] text-zinc-400 font-normal">({minutes}:{rem})</span>
         </button>
       ) : (
         // Expanded Command Surface Layout
-        <div className={`w-[200px] rounded-xl border bg-zinc-950/95 backdrop-blur-xl p-3 shadow-2xl transition-all duration-200 ${
+        <div className={`w-[210px] rounded-xl border bg-zinc-950/95 backdrop-blur-xl p-3 shadow-2xl transition-all duration-200 ${
           isZenith ? 'border-cyan-500/35 shadow-[0_0_15px_rgba(6,182,212,0.2)]' : 'border-zinc-800/80'
         }`}>
           <div className="flex items-center justify-between border-b border-zinc-900 pb-2 mb-2">
@@ -205,33 +178,33 @@ const FloatingButton = () => {
             </div>
             <div className="flex items-center gap-1">
               <span className={`text-xs font-mono font-semibold tabular-nums ${isPaused ? 'text-amber-400' : isZenith ? 'text-cyan-400' : 'text-[#dfa054]'}`}>
-                {minutes}:{rem}
+                {pMins}:{pRem}
               </span>
-              <button
+              {session?.id && <button
                 onClick={togglePauseTimer}
                 className="ml-1 px-1.5 py-0.5 rounded border border-zinc-800 bg-zinc-900 text-[9px] font-mono font-bold text-zinc-300 hover:text-white"
                 title={isPaused ? "Resume Timer" : "Pause Timer"}
               >
                 {isPaused ? "▶️" : "⏸️"}
-              </button>
+              </button>}
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono text-zinc-400 mb-2">
             <div className="flex flex-col items-center bg-zinc-900/40 border border-zinc-900 py-1.5 rounded">
               <span className="text-zinc-500 text-[8px] uppercase tracking-wider font-semibold">
-                Active Focus
+                Problem Time
               </span>
               <span className="font-bold text-emerald-400 mt-0.5 tabular-nums">
-                {minutes}m {rem}s
+                {pMins}m {pRem}s
               </span>
             </div>
             <div className="flex flex-col items-center bg-zinc-900/40 border border-zinc-900 py-1.5 rounded">
               <span className="text-zinc-500 text-[8px] uppercase tracking-wider font-semibold">
-                Total Elapsed
+                Total Session
               </span>
-              <span className="font-bold text-zinc-300 mt-0.5 tabular-nums">
-                {elapsedMins}m {elapsedRem}s
+              <span className="font-bold text-sky-400 mt-0.5 tabular-nums">
+                {minutes}m {rem}s
               </span>
             </div>
           </div>

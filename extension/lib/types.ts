@@ -16,7 +16,8 @@ export interface PredictionResult {
   solveChance: number;
   expectedTimeMinutes: number;
   confidence: 'LOW' | 'MEDIUM' | 'HIGH';
-  breakdown?: Record<string, any>;
+  breakdown?: Record<string, unknown>;
+  insufficientData?: boolean;
 }
 
 export interface DashboardData {
@@ -105,10 +106,18 @@ export interface ZerotracProblem {
 }
 
 export interface ActiveSession {
+  id?: number;
+  mode?: string;
+  startedAt?: string | number[];
+  endedAt?: string | number[];
+  focusSeconds?: number;
+  tabSwitches?: number;
+  pasteCount?: number;
+  focusScore?: number;
+  status?: SessionStatus;
   problemTitle?: string;
   problemSlug?: string;
   startTime?: number;
-  [key: string]: any;
 }
 
 export interface SessionData {
@@ -122,4 +131,108 @@ export interface SessionData {
   tabSwitches: number;
   pasteCount: number;
   focusScore: number;
+}
+
+export type SessionStatus = "idle" | "running" | "paused";
+
+export interface LiveTimerState {
+  /** Focus time observed while a user-started session is active. */
+  activeFocusSeconds: number;
+  /** Focus time observed specifically on the current problem. */
+  problemFocusSeconds?: number;
+  problemElapsedSeconds?: number;
+  /** Kept for existing content-script consumers; not used to reconstruct time in UI. */
+  focusSeconds?: number;
+  elapsedSeconds?: number;
+  status: SessionStatus;
+  isPaused: boolean;
+  isSolved?: boolean;
+  sessionId?: number;
+  mode?: string;
+  slug?: string;
+  problemStartTime?: string;
+  updatedAt: number;
+}
+
+export interface RevisionQueueItem {
+  id: number;
+  title: string;
+  titleSlug: string;
+  confidence?: number;
+  intervalDays?: number;
+  nextReview?: string;
+  lastReviewed?: string;
+  reviewCount?: number;
+}
+
+export interface WeaknessTag {
+  tag: string;
+  masteryScore?: number;
+  rd?: number;
+  evidenceLevel?: "EARLY" | "PRELIMINARY" | "MODERATE" | "STRONG" | string;
+  totalAttempted?: number;
+}
+
+export interface WeaknessRecommendation {
+  title: string;
+  titleSlug: string;
+  tag?: string;
+  difficulty?: string;
+  actualRating?: number;
+  frontendId?: number;
+  acceptanceRate?: number;
+}
+
+export interface WeaknessSnapshot {
+  weakTags?: WeaknessTag[];
+  recommendations?: WeaknessRecommendation[];
+}
+
+export interface UserContestRanking {
+  rating?: number;
+  attendedContestsCount?: number;
+  globalRanking?: number;
+  topPercentage?: number;
+}
+
+export type TodayActionKind = "review" | "practice" | "track" | "baseline";
+
+export interface EvidenceBadge {
+  label: string;
+  tone: "amber" | "blue" | "emerald" | "zinc";
+}
+
+export interface PrimaryAction {
+  kind: TodayActionKind;
+  title: string;
+  titleSlug?: string;
+  eyebrow: string;
+  explanation: string;
+  expectedMinutes?: number;
+  actionLabel: string;
+  badges: EvidenceBadge[];
+}
+
+export interface QuestStep {
+  id: "review" | "practice" | "stretch";
+  status: "available" | "complete" | "unavailable";
+  title: string;
+  description: string;
+  titleSlug?: string;
+  actionLabel?: string;
+  badges?: EvidenceBadge[];
+}
+
+export interface TodaySnapshot {
+  schemaVersion: 2;
+  data: DashboardData;
+  queue: RevisionQueueItem[];
+  weakness: WeaknessSnapshot | null;
+  sessions: SessionData[];
+  solved: string[];
+  zerotrac: ZerotracProblem[];
+  ranking: UserContestRanking | null;
+  savedAt: number;
+  /** Whether the snapshot was collected from an incomplete sync. */
+  isPartial?: boolean;
 }

@@ -10,7 +10,11 @@ export const config: PlasmoCSConfig = {
 let openedAt = new Date()
 chrome.storage.local.set({ "algovault.problemStartTime": openedAt.toISOString() })
 let focusStartedAt = Date.now()
+// This counter is deliberately local to the current content-script epoch. The
+// backend adds it to a persisted baseline on each new epoch, which prevents a
+// page reload from double-counting an already-recorded focus session.
 let focusSeconds = 0
+let sessionFocusBaseline = 0
 let tabSwitches = 0
 let pasteCount = 0
 let lastUrl = location.href
@@ -25,25 +29,47 @@ const IDLE_TIMEOUT_MS = 8 * 60 * 1000 // 8 minutes thinking/reading grace period
 let isSolved = false
 let isWindowFocused = !document.hidden && document.hasFocus()
 let isPaused = false
+let sessionStarted = false
+let activeSessionId: number | undefined
+let activeSessionMode: string | undefined
 
-// Read initial paused state
-chrome.storage.local.get(["algovault.timerPaused"], (res) => {
+// Auto-start focus session when opening a LeetCode problem page
+chrome.storage.local.get(["algovault.timerPaused", "algovault.currentSession"], (res) => {
   isPaused = !!res["algovault.timerPaused"]
+  const current = res["algovault.currentSession"]
+  if (current && typeof current === "object") {
+    activateSession(current as { id?: number; mode?: string; focusSeconds?: number })
+  } else {
+    // Automatically start a focus session when landing on a problem page
+    chrome.runtime.sendMessage({ action: "session_start", mode: "PRACTICE" }, (resp) => {
+      if (resp?.ok && resp.data) {
+        activateSession(resp.data)
+      }
+    })
+  }
+  publishLiveTimer()
 })
 
 function publishLiveTimer() {
   const now = Date.now()
   const elapsedSeconds = Math.max(0, Math.floor((now - openedAt.getTime()) / 1000))
-  const currentSegment = (isWindowFocused && !isPaused && !isSolved && (now - lastActivityTime < IDLE_TIMEOUT_MS))
+  const currentSegment = (sessionStarted && isWindowFocused && !isPaused && !isSolved && (now - lastActivityTime < IDLE_TIMEOUT_MS))
     ? Math.max(0, Math.floor((now - focusStartedAt) / 1000))
     : 0
-  const liveFocusSeconds = focusSeconds + currentSegment
+  const problemFocusSeconds = focusSeconds + currentSegment
+  const liveFocusSeconds = sessionStarted ? sessionFocusBaseline + focusSeconds + currentSegment : problemFocusSeconds
 
   const timerPayload = {
+    activeFocusSeconds: liveFocusSeconds,
     focusSeconds: liveFocusSeconds,
+    problemFocusSeconds: problemFocusSeconds,
+    problemElapsedSeconds: elapsedSeconds,
     elapsedSeconds,
-    isPaused,
+    status: sessionStarted ? (isPaused ? "paused" : "running") : "running",
+    isPaused: sessionStarted && isPaused,
     isSolved,
+    sessionId: activeSessionId,
+    mode: activeSessionMode,
     slug: trackedSlug,
     problemStartTime: openedAt.toISOString(),
     updatedAt: now
@@ -64,7 +90,7 @@ function publishLiveTimer() {
 publishLiveTimer()
 
 function addFocusedTime(wasFocusActiveBefore = true) {
-  if (isSolved || isPaused) return
+  if (!sessionStarted || isSolved || isPaused) return
   if (wasFocusActiveBefore) {
     const now = Date.now()
     // Only add time if we are not idle
@@ -124,17 +150,29 @@ if (initialSlug) {
   chrome.storage.local.remove("algovault.sessionState")
 }
 
-// Storage listener to dynamically sync Zenith Mode & Pause state changes across script instances
+// Storage listener to dynamically sync an explicit focus session, Zenith Mode,
+// and pause state changes across script instances.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local") {
     if (changes["algovault.timerPaused"] !== undefined) {
-      isPaused = !!changes["algovault.timerPaused"].newValue
-      if (isPaused) {
-        addFocusedTime(false)
-      } else {
+      const nextPaused = !!changes["algovault.timerPaused"].newValue
+      if (!isPaused && nextPaused) {
+        // Persist the current focused segment before freezing the timer.
+        addFocusedTime(isWindowFocused)
+      }
+      isPaused = nextPaused
+      if (!isPaused) {
         focusStartedAt = Date.now()
       }
       publishLiveTimer()
+    }
+    if (changes["algovault.currentSession"] !== undefined) {
+      const nextSession = changes["algovault.currentSession"].newValue
+      if (nextSession && typeof nextSession === "object") {
+        activateSession(nextSession as { id?: number; mode?: string; focusSeconds?: number })
+      } else {
+        deactivateSession()
+      }
     }
     if (changes["algovault.isZenith"]) {
       const active = !!changes["algovault.isZenith"].newValue
@@ -213,20 +251,59 @@ function currentTitle() {
   return heading?.replace(/^\d+\.\s*/, "").trim() || currentSlug()
 }
 
-let sessionStarted = false
-const pendingEvents: Array<() => void> = []
+function activateSession(session: { id?: number; mode?: string; focusSeconds?: number }) {
+  const isNewSession = !sessionStarted || activeSessionId !== session.id
+  sessionStarted = true
+  activeSessionId = session.id
+  activeSessionMode = session.mode
+
+  if (!isNewSession) {
+    publishLiveTimer()
+    return
+  }
+
+  // The backend persists the baseline. This script reports only new seconds
+  // from this browser epoch, while the live UI displays baseline + new seconds.
+  sessionFocusBaseline = Math.max(0, session.focusSeconds ?? 0)
+  focusSeconds = 0
+  tabSwitches = 0
+  pasteCount = 0
+  focusBaseline = 0
+  tabSwitchBaseline = 0
+  pasteBaseline = 0
+  openedAt = new Date()
+  focusStartedAt = Date.now()
+  lastActivityTime = Date.now()
+  isWindowFocused = !document.hidden && document.hasFocus()
+  chrome.storage.local.set({ "algovault.problemStartTime": openedAt.toISOString() })
+
+  if (trackedSlug) {
+    sendEvent("OPEN", { url: location.href })
+    heartbeat()
+  } else {
+    publishLiveTimer()
+  }
+}
+
+function deactivateSession() {
+  sessionStarted = false
+  activeSessionId = undefined
+  activeSessionMode = undefined
+  sessionFocusBaseline = 0
+  focusSeconds = 0
+  tabSwitches = 0
+  pasteCount = 0
+  isPaused = false
+  publishLiveTimer()
+}
 
 function runWhenSessionReady(fn: () => void) {
-  if (sessionStarted) {
-    fn()
-  } else {
-    pendingEvents.push(fn)
-  }
+  if (sessionStarted) fn()
 }
 
 function sendEvent(
   eventType: string,
-  metadata: Record<string, any> = {},
+  metadata: Record<string, unknown> = {},
   titleSlug = trackedSlug,
   title = trackedTitle
 ) {
@@ -251,40 +328,32 @@ const heartbeatEpoch = (typeof crypto !== "undefined" && crypto.randomUUID)
 
 function heartbeat(titleSlug = trackedSlug, title = trackedTitle) {
   if (isSolved) return
-  addFocusedTime(isWindowFocused)
-  if (!titleSlug) return
+  if (sessionStarted) addFocusedTime(isWindowFocused)
 
   if (isZenith) {
     const elapsedSeconds = Math.max(1, Math.floor((Date.now() - openedAt.getTime()) / 1000))
-    const score = Math.min(100, Math.round((focusSeconds / elapsedSeconds) * 100))
+    const observedFocusSeconds = sessionFocusBaseline + focusSeconds
+    const score = Math.min(100, Math.round((observedFocusSeconds / elapsedSeconds) * 100))
     chrome.storage.local.set({ "algovault.zenithFocusScore": score })
   }
- 
-  runWhenSessionReady(() => {
-    chrome.runtime.sendMessage({
-      action: "session_heartbeat",
-      payload: {
-        titleSlug,
-        title,
-        openedAt: openedAt.toISOString(),
-        focusSeconds,
-        tabSwitches,
-        pasteCount,
-        problemFocusSeconds: Math.max(0, focusSeconds - focusBaseline),
-        problemTabSwitches: Math.max(0, tabSwitches - tabSwitchBaseline),
-        problemPasteCount: Math.max(0, pasteCount - pasteBaseline),
-        heartbeatEpoch
-      }
-    })
+
+  if (!sessionStarted || !titleSlug) return
+  chrome.runtime.sendMessage({
+    action: "session_heartbeat",
+    payload: {
+      titleSlug,
+      title,
+      openedAt: openedAt.toISOString(),
+      focusSeconds,
+      tabSwitches,
+      pasteCount,
+      problemFocusSeconds: Math.max(0, focusSeconds - focusBaseline),
+      problemTabSwitches: Math.max(0, tabSwitches - tabSwitchBaseline),
+      problemPasteCount: Math.max(0, pasteCount - pasteBaseline),
+      heartbeatEpoch
+    }
   })
 }
-
-chrome.runtime.sendMessage({ action: "session_start" }, () => {
-  sessionStarted = true
-  pendingEvents.forEach(fn => fn())
-  pendingEvents.length = 0
-})
-sendEvent("OPEN", { url: location.href })
 
 function handleInactive(isTabSwitch = false) {
   if (isSolved) return
@@ -496,7 +565,8 @@ window.addEventListener("message", ((event: MessageEvent) => {
     heartbeat()
     isSolved = true
     isWindowFocused = false
-    sendEvent("SOLVED", { focusSeconds, tabSwitches, pasteCount })
+    const observedFocusSeconds = sessionFocusBaseline + focusSeconds
+    sendEvent("SOLVED", { focusSeconds: observedFocusSeconds, tabSwitches, pasteCount })
 
     if (isZenith) {
       if (document.fullscreenElement) {
@@ -505,11 +575,12 @@ window.addEventListener("message", ((event: MessageEvent) => {
       showZenithToast("Quest Cleared! Zenith Mode Deactivated.")
     }
 
-    // Save solving time to local storage so floating-button and overlay panel stop the timer
-    const finalSeconds = Math.max(0, Math.floor((Date.now() - openedAt.getTime()) / 1000))
+    // Save observed active focus, never raw wall-clock duration.
+    const finalSeconds = observedFocusSeconds
     chrome.storage.local.set({ 
       "algovault.sessionState": { isSolved: true, finalSeconds } 
     })
+    publishLiveTimer()
   }
 }), { signal })
 
@@ -632,7 +703,7 @@ const heartbeatInterval = setInterval(() => {
 
 // Continuous 1-second live timer publisher
 const liveTimerInterval = setInterval(() => {
-  if (!isSolved) {
+  if (sessionStarted && !isSolved) {
     publishLiveTimer()
   }
 }, 1000);
