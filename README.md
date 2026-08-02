@@ -6,6 +6,129 @@ AlgoVault is a self-hosted performance telemetry, rating estimation, and algorit
 
 ---
 
+## ✨ Key Features & Capabilities
+
+* **📊 Contest Intelligence & Timeline**:
+  * Track official LeetCode rating trajectories, peak ratings, global ranks, and average rating deltas.
+  * Interactive solve breakdown distribution bars ($4/4$, $3/4$, $2/4$, $1/4$, $0/4$) and filter chips (*All*, *Gains*, *Sweeps*, *Milestones*, *Weekly*, *Biweekly*).
+  * Expandable contest detail drawers and live upcoming contest countdowns across LeetCode, Codeforces, and AtCoder.
+
+* **🏆 The Trophy Vault & Achievement Showcase**:
+  * 3D parallax trophy tilt physics (`preserve-3d` and Framer Motion spring physics) with specular glare filters.
+  * Custom spotlight beams and floating sparkles for **Legendary** tier badges (*CR7*, *Number 10 / Messi*, *All Kill*, *Guardian*, *Ultra Instinct*).
+  * Interactive particle confetti explosions (`canvas-confetti`) on trophy clicks.
+  * Real-time locked badge progress indicators (e.g., `1850/2180 rating (85%)` or `700/1000 solved (70%)`).
+
+* **🎯 Today's Quests & Live Focus Timer**:
+  * Live-ticking focus session timer with start/pause/end session controls.
+  * Curated Spaced Review cards (FSRS-4.5 algorithm), Recommended Practice, and Stretch Targets.
+  * 7-day activity bar charts and at-a-glance telemetry stats.
+
+* **⚔️ Zenith Cinematic Focus Mode**:
+  * Strips away navbars, sidebars, topics, and problem tags for complete immersion in deep work.
+  * Intentional Reveal: Editorial and Solution tabs require holding the `🔒 Yield & Reveal` button for 2 seconds.
+  * Flow State Timer that pulses amber after 25 minutes of continuous focus.
+
+* **🎮 Submission Celebration Overlays**:
+  * Authentic GTA (*Mission Passed* / *Wasted*) or Minecraft (*Level Up* / *You Died*) themes with audio chimes on accepted/rejected submissions.
+
+* **🧩 Pattern Simulator & Study Lists**:
+  * Interactive step-by-step pattern simulators (Monotonic Stack, Sliding Window, Two Pointers).
+  * 1-click progress tracking for **NeetCode 150**, **Striver SDE Sheet**, and **ZeroTrac Rating Filters**.
+
+---
+
+## 📸 Visual Showcase & Feature Tour
+
+### 📊 Performance Analytics & Sidepanel Dashboard
+AlgoVault provides a unified sidepanel dashboard displaying daily quests, active focus session controls, 7-day activity metrics, and cognitive loading telemetry.
+
+<p align="center">
+  <img src="readme-images/extension_overall_showcase.png" alt="AlgoVault Overall Showcase" width="95%" />
+</p>
+
+<p align="center">
+  <img src="readme-images/dashboard_1.png" alt="AlgoVault Dashboard Today" width="49%" />
+  <img src="readme-images/dashboard_2.png" alt="Dashboard Quests & Metrics" width="49%" />
+</p>
+
+---
+
+### 🎮 The Trophy Cabinet & Progress Heatmap
+A premium display case designed with emotional craftsmanship featuring 3D badge parallax tilts, tier shelves (Common, Rare, Epic, Legendary), and a dynamic height Solve vs Attempted rating band chart.
+
+<p align="center">
+  <img src="readme-images/trophy_cabinet.png" alt="Trophy Cabinet Showcase" width="49%" />
+  <img src="readme-images/heatmap.png" alt="Solve vs Attempted Heatmap" width="49%" />
+</p>
+
+---
+
+### ⚔️ Contest Performance & Trajectory Analytics
+Track upcoming contests across platforms, monitor live contest metrics, analyze rating trajectory area graphs, and inspect performance per contest.
+
+<p align="center">
+  <img src="readme-images/upcoming_contests.png" alt="Upcoming Contests Schedule" width="49%" />
+  <img src="readme-images/contest_performance.png" alt="Contest Rating Trajectory" width="49%" />
+</p>
+
+<p align="center">
+  <img src="readme-images/contest_details.png" alt="Contest Details Drawer" width="49%" />
+  <img src="readme-images/study_lists.png" alt="Study Lists & Curriculums" width="49%" />
+</p>
+
+---
+
+### 🏆 Interactive LeetCode Overlays & Rating Badges
+AlgoVault injects beautiful UI overlays directly onto LeetCode problem pages to track tags, ZeroTrac difficulty ratings, solve probability, and target stats.
+
+<p align="center">
+  <img src="readme-images/rating_tags.png" alt="Problem Rating Tags Overlay" width="49%" />
+  <img src="readme-images/rating_to_target.png" alt="Target Rating Metric Overlay" width="49%" />
+</p>
+
+<p align="center">
+  <img src="readme-images/zerotrac_integration.png" alt="ZeroTrac Rating Integration" width="49%" />
+  <img src="readme-images/hide_account.png" alt="Page Cleanup Tweaks" width="49%" />
+</p>
+
+---
+
+### 🧠 Spaced Repetition & Topic Mastery
+Reviews scheduled using the FSRS-4.5 spaced repetition engine aligned with your Glicko-2 Tag Mastery values. Includes automatic detection of topic tags where your solve probability lags behind.
+
+<p align="center">
+  <img src="readme-images/topic_mastery.png" alt="Topic Mastery Glicko-2" width="49%" />
+  <img src="readme-images/weakness.png" alt="Weakness Discovery" width="49%" />
+</p>
+
+---
+
+### 🎬 Submission Celebration & Failure Overlays
+Play Minecraft (*Level Up* / *You Died*) or GTA (*Mission Passed* / *Wasted*) themes with authentic sound effects immediately on accepted/rejected submissions.
+
+<p align="center">
+  <img src="readme-images/mission_passed.png" alt="Mission Passed GTA Overlay" width="49%" />
+  <img src="readme-images/mission_failed.png" alt="Wasted GTA Overlay" width="49%" />
+</p>
+
+---
+
+### 🛡️ Telemetry, Anti-Cheat, & Settings
+Tracks keyboard typing metrics (manual typing vs copy-paste detection), tab focus switches, and browser preference panels.
+
+<p align="center">
+  <img src="readme-images/anti_cheat.png" alt="Anti-Cheat Telemetry" width="49%" />
+  <img src="readme-images/resources.png" alt="Resources & Pattern Visualizer" width="49%" />
+</p>
+
+<p align="center">
+  <img src="readme-images/settings_1.png" alt="Dashboard Sync Settings" width="49%" />
+  <img src="readme-images/settings_2.png" alt="Celebration Overlay Config" width="49%" />
+</p>
+
+---
+
 ## 🏗️ Technical Stack & Architecture
 
 ```mermaid
@@ -38,7 +161,7 @@ graph TD
 
 ### 💻 Chrome Extension (Manifest V3)
 - **Framework:** [Plasmo](https://www.plasmo.com/) browser extension framework with React 18, TypeScript, and TailwindCSS.
-- **Tactile 3D Badge cabinet:** Uses `framer-motion` for physical card translations (`preserve-3d` and `translateZ(24px)`) and responsive mouse-follow specular glare.
+- **Tactile 3D Badge Cabinet:** Uses `framer-motion` for physical card translations (`preserve-3d` and `translateZ(24px)`) and responsive mouse-follow specular glare.
 - **Analytics Charts:** Built using `recharts` but custom-engineered with a nested SVG shape callback (`NestedBarShape`) to draw solved bars inside attempted bars, bypassing default vertical grouping alignment bugs.
 
 ### ☕ Spring Boot Backend Service
@@ -52,9 +175,9 @@ graph TD
 ## 🧮 Mathematical Modeling & Core Calculations
 
 ### 1. Practice Estimate (smoothed comparable first attempts)
-The practice estimate is not a promise of a solve. It starts with a weak rating prior and combines it with the user's **first attempts** on previously attempted problems within ±150 ZeroTrac rating points. A Beta-binomial prior of strength 8 prevents tiny samples from producing extreme percentages:
+The practice estimate is not a promise of a solve. It starts with a weak rating prior and combines it with the user's **first attempts** on previously attempted problems within $\pm 150$ ZeroTrac rating points. A Beta-binomial prior of strength 8 prevents tiny samples from producing extreme percentages:
 
-$$P = \frac{8P_{rating} + \text{first-attempt accepts}}{8 + \text{comparable first attempts}}$$
+$$P = \frac{8P_{\text{rating}} + \text{first-attempt accepts}}{8 + \text{comparable first attempts}}$$
 
 The UI labels estimates with fewer than five comparable problems as low-evidence and only reports an expected time when comparable tracked sessions exist.
 
@@ -93,14 +216,10 @@ To resolve loading delays caused by Plasmo's Parcel module loaders, the extensio
 
 ## 🛠️ Step-by-Step Installation & Local Setup
 
-Choose one of the deployment methods below depending on your preference for containerization.
-
----
-
 ### 🐳 Method A: Containerized Infrastructure (Docker Compose)
-If you have Docker Desktop installed on your machine, this is the fastest way to get the database and caching dependencies running.
+If you have Docker Desktop installed, this is the fastest way to launch database dependencies:
 
-1. **Start Services:** Launch the PostgreSQL and Redis containers in the background:
+1. **Start Services:** Launch PostgreSQL and Redis containers in the background:
    ```bash
    docker-compose up -d postgres redis
    ```
@@ -108,77 +227,65 @@ If you have Docker Desktop installed on your machine, this is the fastest way to
    ```bash
    docker ps
    ```
-   *PostgreSQL will be exposed on port `5432` and Redis on port `6379`.*
+   *PostgreSQL runs on port `5432` and Redis on port `6379`.*
 
 ---
 
-### 💻 Method B: Native Setup Without Docker (By Operating System)
-
-If you prefer to run services natively on your host machine, install the prerequisites and follow the steps for your specific OS.
+### 💻 Method B: Native Setup Without Docker
 
 #### 📋 General Prerequisites
 - **Java 17+** (e.g. [Eclipse Temurin OpenJDK 17](https://adoptium.net/temurin/releases/?version=17))
 - **Node.js 18+** & NPM (e.g. [Node.js Downloads](https://nodejs.org/))
-- **Maven 3.8+** (Optional; a `./mvnw` wrapper script is included in the backend directory)
+- **Maven 3.8+** (Optional; `./mvnw` wrapper included)
 
 ---
 
 #### 🍏 macOS Setup
-1. **Install Dependencies:** Install PostgreSQL and Redis using Homebrew:
+1. **Install Dependencies:**
    ```bash
    brew install postgresql@15 redis
    ```
-2. **Start Services:** Start both services in the background:
+2. **Start Services:**
    ```bash
    brew services start postgresql@15
    brew services start redis
    ```
-3. **Initialize Database:** Create the target `algovault` database in PostgreSQL:
+3. **Initialize Database:**
    ```bash
    createdb algovault
    ```
-   *(By default, this associates the database with your current macOS username, which is supported by Spring Boot's datasource auto-fallback).*
 
 ---
 
 #### 🪟 Windows Setup
-1. **Install PostgreSQL:** 
-   - Download the installer from the [PostgreSQL Official Website](https://www.postgresql.org/download/windows/) (v15 or higher recommended).
-   - Run the installer. During configuration, set the default superuser password (e.g. `algovault_dev`) and note the port (`5432`).
-2. **Install Redis:** 
-   - Windows does not natively support Redis. It is recommended to run Redis via WSL2 (Windows Subsystem for Linux):
-     ```powershell
-     # In PowerShell (as Administrator) to enable WSL:
-     wsl --install
-     ```
-   - Inside your WSL Ubuntu terminal, run:
-     ```bash
-     sudo apt update && sudo apt install redis-server -y
-     sudo service redis-server start
-     ```
-3. **Initialize Database:** 
-   - Open **pgAdmin** (installed alongside PostgreSQL) or open the **SQL Shell (psql)**.
-   - Log in and run the database creation query:
-     ```sql
-     CREATE DATABASE algovault;
-     ```
+1. **Install PostgreSQL:** Download from [PostgreSQL Official Website](https://www.postgresql.org/download/windows/) (v15+ recommended). Set password (e.g. `algovault_dev`).
+2. **Install Redis via WSL2:**
+   ```powershell
+   wsl --install
+   ```
+   Inside WSL Ubuntu:
+   ```bash
+   sudo apt update && sudo apt install redis-server -y
+   sudo service redis-server start
+   ```
+3. **Initialize Database:** In **pgAdmin** or **SQL Shell (psql)**:
+   ```sql
+   CREATE DATABASE algovault;
+   ```
 
 ---
 
 #### 🐧 Linux Setup (Ubuntu/Debian)
-1. **Install Dependencies:** Update packages and install Postgres and Redis:
+1. **Install Dependencies:**
    ```bash
-   sudo apt update
-   sudo apt install postgresql postgresql-contrib redis-server -y
+   sudo apt update && sudo apt install postgresql postgresql-contrib redis-server -y
    ```
-2. **Start Services:** Ensure services are active and set to run on system boot:
+2. **Start Services:**
    ```bash
-   sudo systemctl start postgresql
-   sudo systemctl enable postgresql
-   sudo systemctl start redis-server
-   sudo systemctl enable redis-server
+   sudo systemctl start postgresql && sudo systemctl enable postgresql
+   sudo systemctl start redis-server && sudo systemctl enable redis-server
    ```
-3. **Initialize Database:** Switch to the default postgres system account to create the database:
+3. **Initialize Database:**
    ```bash
    sudo -u postgres createdb algovault
    ```
@@ -187,134 +294,35 @@ If you prefer to run services natively on your host machine, install the prerequ
 
 ### 🚀 Running the Services & Extension
 
-Once your databases are online, launch the backend and extension.
-
 #### 1. Boot up the Spring Boot Backend
-1. Open a terminal and navigate to the `/backend` directory.
-2. If your PostgreSQL database password differs from the default `algovault_dev`, set it in your environment:
+1. Navigate to the `/backend` directory.
+2. Set environment password if different from `algovault_dev`:
    ```bash
-   # Linux/macOS
    export SPRING_DATASOURCE_PASSWORD=your_password
-   # Windows PowerShell
-   $env:SPRING_DATASOURCE_PASSWORD="your_password"
    ```
-3. Compile and boot the application:
+3. Compile and launch:
    ```bash
    # Linux/macOS
    ./mvnw spring-boot:run
    # Windows
    mvnw.cmd spring-boot:run
    ```
-   *Flyway Migrations will automatically construct the relational database schema, mapping the tables from `V1` to `V18` on first run. The API runs on `http://localhost:8080`.*
+   *Flyway Migrations execute schema updates (`V1` to `V18`). API runs on `http://localhost:8080`.*
 
 ---
 
 #### 2. Compile and Load the Chrome Extension
-1. Open a terminal and navigate to the `/extension` directory.
-2. Install the required Node modules:
+1. Navigate to the `/extension` directory.
+2. Install Node dependencies:
    ```bash
    npm install
    ```
-3. Build the production files using the Plasmo CLI:
+3. Build using Plasmo CLI:
    ```bash
    npm run build
    ```
-4. Load the compiled extension into Google Chrome:
-   - Navigate to the URL `chrome://extensions/`
-   - Toggle **Developer Mode** active in the top-right corner.
-   - Click the **Load Unpacked** button in the top-left corner.
-   - Select the target output folder: `extension/build/chrome-mv3-prod/`.
-
----
-
-## 📸 Visual Showcase & Feature Tour
-
-### 📊 Performance Analytics & Dashboard
-AlgoVault provides a unified dashboard showing your performance stats, streaks, active session time, and cognitive loading telemetry, integrating seamlessly directly into the Chrome Side Panel.
-
-<p align="center">
-  <img src="readme-images/extension_overall_showcase.png" alt="AlgoVault Overall Showcase" width="90%" />
-</p>
-
-<p align="center">
-  <img src="readme-images/dashboard_1.png" alt="AlgoVault Dashboard" width="49%" />
-  <img src="readme-images/dashboard_2.png" alt="Dashboard Metrics" width="49%" />
-</p>
-
----
-
-### 🎮 The Trophy Cabinet & Progress Heatmap
-A premium display case designed with emotional craftsmanship featuring 3D badge parallax tilts and categorized layout shelves, paired with a dynamic height Solve vs Attempted categories comparison chart.
-<p align="center">
-  <img src="readme-images/trophy_cabinet.png" alt="Trophy Cabinet" width="49%" />
-  <img src="readme-images/heatmap.png" alt="Solve vs Attempted Heatmap" width="49%" />
-</p>
-
----
-
-### 🏆 Interactive LeetCode Page Overlays
-AlgoVault injects beautiful UI overlays directly onto LeetCode pages to track tags, difficulty ratings, solve probability, and target stats.
-<p align="center">
-  <img src="readme-images/rating_tags.png" alt="Problem Rating Tags" width="49%" />
-  <img src="readme-images/rating_to_target.png" alt="Target Rating Metric" width="49%" />
-</p>
-<p align="center">
-  <img src="readme-images/zerotrac_integration.png" alt="ZeroTrac Rating Integration" width="49%" />
-  <img src="readme-images/hide_account.png" alt="Page Cleanup Tweaks" width="49%" />
-</p>
-
----
-
-### ⚔️ Contest Intelligence & Analytics
-Track upcoming contests, monitor live contest performance metrics, and analyze your rating progression graph.
-<p align="center">
-  <img src="readme-images/upcoming_contests.png" alt="Upcoming Contests" width="49%" />
-  <img src="readme-images/contest_performance.png" alt="Contest Performance Charts" width="49%" />
-</p>
-<p align="center">
-  <img src="readme-images/contest_details.png" alt="Contest Details" width="49%" />
-  <img src="readme-images/study_lists.png" alt="Study Lists" width="49%" />
-</p>
-
----
-
-### 🧠 Spaced Repetition & Weakness Identification
-Reviews scheduled using a modified SM-2 algorithm aligned with your Tag Mastery values. Includes automatic detection of topic tags where your solve probability is low.
-<p align="center">
-  <img src="readme-images/topic_mastery.png" alt="Topic Mastery" width="49%" />
-  <img src="readme-images/weakness.png" alt="Weakness Discovery" width="49%" />
-</p>
-
----
-
-### 🎬 Submission Celebration Overlays
-Play Minecraft (Level Up / You Died) or GTA (Mission Passed / Wasted) themes with authentic sounds and overlays immediately on accepted/rejected submissions.
-<p align="center">
-  <img src="readme-images/mission_passed.png" alt="Mission Passed GTA Overlay" width="49%" />
-  <img src="readme-images/mission_failed.png" alt="Wasted GTA Overlay" width="49%" />
-</p>
-
----
-
-### 🛡️ Telemetry, Anti-Cheat, & Settings
-Tracks keyboard metrics (manual typing vs copy-paste detection), tab focus switches, and browser config panels.
-<p align="center">
-  <img src="readme-images/anti_cheat.png" alt="Anti-Cheat Analytics" width="49%" />
-  <img src="readme-images/resources.png" alt="Resources Hub" width="49%" />
-</p>
-<p align="center">
-  <img src="readme-images/settings_1.png" alt="Dashboard Sync Settings" width="49%" />
-  <img src="readme-images/settings_2.png" alt="Celebration Overlay Config" width="49%" />
-</p>
-
----
-
-### ⚔️ Zenith Mode (Cinematic Focus & Flow State)
-Engineered based on Cognitive Load Theory and Deliberate Practice principles:
-- **Extraneous Load Reduction:** Strips away navbars, sidebars, topics, and problem tags for complete immersion in deep work.
-- **Intentional Reveal:** Editorial and Solution tabs are hidden by default. Hold the `🔒 Yield & Reveal Solutions` button for 2 seconds to un-hide them, adding deliberate friction before giving up.
-- **Draggable Compact Anchor (`⚔️ ZENITH`):** Position-persistent pill button (`chrome.storage.local`).
-- **Flow State Timer:** Subtle background timer that pulses amber after 25 minutes of continuous focus.
-- **Metacognitive Insight Capture:** Upon solving a problem (AC), prompts you to state the core logic insight before exiting Zenith mode.
-
----
+4. Load into Google Chrome:
+   - Open `chrome://extensions/`
+   - Enable **Developer Mode** (top-right toggle).
+   - Click **Load Unpacked** (top-left button).
+   - Select `extension/build/chrome-mv3-prod/`.

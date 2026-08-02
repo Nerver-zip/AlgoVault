@@ -29,25 +29,27 @@ public class WeaknessService {
     public WeaknessResponse getWeakness(Long userId) {
         List<TagMastery> masteries = tagMasteryRepository.findByUserIdOrderByMasteryScoreDesc(userId);
         
-        // Filter out tags with insufficient evidence (< 3 attempts)
-        // and rank by confidence-weighted score: lower masteryScore + higher RD = weaker
+        // Filter tags with at least 1 attempt and rank by weakness.
+        // Lower threshold (1 vs previous 3) ensures new users still see recommendations.
         List<WeaknessResponse.WeakTag> weakTags = masteries.stream()
-            .filter(m -> m.getTotalAttempted() != null && m.getTotalAttempted() >= 3)
+            .filter(m -> m.getTotalAttempted() != null && m.getTotalAttempted() >= 1)
             .sorted((m1, m2) -> {
                 // Rank by masteryScore ascending, then by totalAttempted ascending as tie-breaker
                 int scoreCompare = Double.compare(m1.getMasteryScore(), m2.getMasteryScore());
                 if (scoreCompare != 0) return scoreCompare;
                 return Integer.compare(m1.getTotalAttempted(), m2.getTotalAttempted());
             })
-            .limit(5)
+            .limit(8)
             .map(m -> {
                 String evidenceLevel;
                 if (m.getTotalAttempted() >= 10) {
                     evidenceLevel = "STRONG";
                 } else if (m.getTotalAttempted() >= 5) {
                     evidenceLevel = "MODERATE";
-                } else {
+                } else if (m.getTotalAttempted() >= 3) {
                     evidenceLevel = "PRELIMINARY";
+                } else {
+                    evidenceLevel = "EARLY";
                 }
                 return WeaknessResponse.WeakTag.builder()
                     .tag(m.getTag())
@@ -69,7 +71,8 @@ public class WeaknessService {
         List<WeaknessResponse.RecommendedProblem> recommendations = new ArrayList<>();
         java.util.Set<String> recommendedSlugs = new java.util.HashSet<>();
         for (WeaknessResponse.WeakTag weakTag : weakTags) {
-            // Fetch 40 problems sorted by rating proximity for better variety
+            // Fetch 40 problems sorted by rating proximity for better variety.
+            // The SQL query uses COALESCE to include unrated problems via difficulty estimates.
             List<Problem> problems = problemRepository.findRecommendedUnsolved(userId, weakTag.getTag(), minRating, maxRating, targetRating, 40);
             
             // Fallback: if no problems found in the primary range, widen dramatically
@@ -98,7 +101,7 @@ public class WeaknessService {
 
         return WeaknessResponse.builder()
             .weakTags(weakTags)
-            .recommendations(recommendations.stream().limit(24).collect(Collectors.toList()))
+            .recommendations(recommendations.stream().limit(40).collect(Collectors.toList()))
             .build();
     }
 

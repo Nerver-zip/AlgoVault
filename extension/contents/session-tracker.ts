@@ -32,17 +32,36 @@ chrome.storage.local.get(["algovault.timerPaused"], (res) => {
 })
 
 function publishLiveTimer() {
-  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - openedAt.getTime()) / 1000))
+  const now = Date.now()
+  const elapsedSeconds = Math.max(0, Math.floor((now - openedAt.getTime()) / 1000))
+  const currentSegment = (isWindowFocused && !isPaused && !isSolved && (now - lastActivityTime < IDLE_TIMEOUT_MS))
+    ? Math.max(0, Math.floor((now - focusStartedAt) / 1000))
+    : 0
+  const liveFocusSeconds = focusSeconds + currentSegment
+
+  const timerPayload = {
+    focusSeconds: liveFocusSeconds,
+    elapsedSeconds,
+    isPaused,
+    isSolved,
+    slug: trackedSlug,
+    problemStartTime: openedAt.toISOString(),
+    updatedAt: now
+  }
+
   chrome.storage.local.set({
-    "algovault.liveTimer": {
-      focusSeconds,
-      elapsedSeconds,
-      isPaused,
-      isSolved,
-      slug: trackedSlug
-    }
+    "algovault.liveTimer": timerPayload
   })
+
+  // Broadcast directly via window.postMessage for zero-latency in-tab UI updates
+  window.postMessage({
+    type: "AV_LIVE_TIMER_TICK",
+    payload: timerPayload
+  }, "*")
 }
+
+// Immediately publish live timer on script init
+publishLiveTimer()
 
 function addFocusedTime(wasFocusActiveBefore = true) {
   if (isSolved || isPaused) return
@@ -611,7 +630,14 @@ const heartbeatInterval = setInterval(() => {
   heartbeat()
 }, 30_000);
 
-(window as any).__av_session_intervals.push(routeInterval, heartbeatInterval);
+// Continuous 1-second live timer publisher
+const liveTimerInterval = setInterval(() => {
+  if (!isSolved) {
+    publishLiveTimer()
+  }
+}, 1000);
+
+(window as any).__av_session_intervals.push(routeInterval, heartbeatInterval, liveTimerInterval);
 
 window.addEventListener("beforeunload", () => {
   if (!isSolved) {

@@ -20,7 +20,8 @@ import {
   CheckCircle2, 
   X,
   ArrowUpRight,
-  ArrowDownRight
+  ArrowDownRight,
+  Info
 } from "lucide-react"
 import { Card } from "../ui/Card"
 import { fetchContests } from "../../lib/api/backend"
@@ -497,6 +498,19 @@ export const Contest = () => {
                 </section>
               )
             })()}
+
+            {/* UNRATED / INITIAL BASELINE BANNER */}
+            {(!rankingInfo || !rankingInfo.attendedContestsCount) && (
+              <div className="rounded-xl border border-sky-400/20 bg-sky-950/20 p-3 text-xs">
+                <div className="flex items-center gap-2 font-bold text-sky-400 font-mono text-[11px]">
+                  <Info size={13} /> Initial Rating Baseline (1500)
+                </div>
+                <p className="mt-1 text-[10px] text-zinc-400 leading-relaxed">
+                  LeetCode assigns all new accounts a default starting rating of <span className="text-sky-300 font-mono">1500</span>.
+                  {!username ? " Ensure your LeetCode handle is set in Settings." : ` No official contest participations recorded yet for @${username}. Participate in an upcoming contest to earn an official contest rating!`}
+                </p>
+              </div>
+            )}
 
             {/* PRIMARY METRICS GRID */}
             <div className="grid grid-cols-2 gap-2.5">

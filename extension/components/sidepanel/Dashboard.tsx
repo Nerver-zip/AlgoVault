@@ -179,18 +179,70 @@ export const Dashboard = () => {
     return () => chrome.runtime.onMessage.removeListener(listener)
   }, [])
 
+  // ── Live-ticking session timer ──
+  // Instead of reading stale focusSeconds from chrome.storage every second,
+  // we read the session start time once and compute elapsed locally.
+  const [sessionStartTime, setSessionStartTime] = useState<number | null>(null)
+
   useEffect(() => {
-    const syncSession = () => chrome.storage.local.get(["algovault.currentSession", "algovault.sessionState", "algovault.liveTimer"], (stored) => {
-      const current = stored?.["algovault.currentSession"]
-      const state = stored?.["algovault.sessionState"]
-      const live = stored?.["algovault.liveTimer"]
-      setLiveSession(current || live || null)
-      setSessionSeconds(state?.isSolved ? state.finalSeconds || 0 : (live?.focusSeconds ?? current?.focusSeconds ?? 0))
-    })
-    syncSession()
-    const interval = window.setInterval(syncSession, 1000)
-    return () => window.clearInterval(interval)
+    // Read initial session state from storage
+    const readSession = () => chrome.storage.local.get(
+      ["algovault.currentSession", "algovault.sessionState", "algovault.liveTimer"],
+      (stored) => {
+        const current = stored?.["algovault.currentSession"]
+        const state = stored?.["algovault.sessionState"]
+        const live = stored?.["algovault.liveTimer"]
+        const session = current || live || null
+        setLiveSession(session)
+
+        if (state?.isSolved) {
+          // Problem was solved — freeze the timer at final time
+          setSessionSeconds(state.finalSeconds || 0)
+          setSessionStartTime(null)
+        } else if (session) {
+          // Active session — compute start time for live ticking
+          // Use the session's startedAt if available, otherwise approximate from focusSeconds
+          if (current?.startedAt) {
+            const started = Array.isArray(current.startedAt)
+              ? new Date(current.startedAt[0], current.startedAt[1] - 1, current.startedAt[2], current.startedAt[3] || 0, current.startedAt[4] || 0, current.startedAt[5] || 0).getTime()
+              : new Date(current.startedAt).getTime()
+            if (!isNaN(started)) {
+              setSessionStartTime(started)
+              setSessionSeconds(Math.max(0, Math.floor((Date.now() - started) / 1000)))
+              return
+            }
+          }
+          // Fallback: use liveTimer's elapsedSeconds or focusSeconds snapshot
+          const snap = live?.elapsedSeconds ?? live?.focusSeconds ?? current?.focusSeconds ?? 0
+          // Reconstruct start time from snapshot so the counter continues live
+          setSessionStartTime(Date.now() - snap * 1000)
+          setSessionSeconds(snap)
+        } else {
+          setSessionStartTime(null)
+          setSessionSeconds(0)
+        }
+      }
+    )
+    readSession()
+
+    // Listen for storage changes to pick up session start/end from content script
+    const storageListener = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
+      if (area === "local" && (changes["algovault.currentSession"] || changes["algovault.sessionState"] || changes["algovault.liveTimer"])) {
+        readSession()
+      }
+    }
+    chrome.storage.onChanged.addListener(storageListener)
+    return () => chrome.storage.onChanged.removeListener(storageListener)
   }, [])
+
+  // Live tick — updates every second when a session is active
+  useEffect(() => {
+    if (!sessionStartTime || !liveSession) return
+    const tick = () => setSessionSeconds(Math.max(0, Math.floor((Date.now() - sessionStartTime) / 1000)))
+    tick()
+    const id = window.setInterval(tick, 1000)
+    return () => window.clearInterval(id)
+  }, [sessionStartTime, liveSession])
 
   const today = dateKey(new Date())
   const activity = useMemo(() => {
@@ -269,11 +321,21 @@ export const Dashboard = () => {
   const openActions = actions.filter(Boolean).length - completedActions
   const maxMinutes = Math.max(1, ...activity.days.map((day) => day.minutes))
 
-  const startSession = () => message<any>({ action: "session_start", mode: "PRACTICE" }).then((result) => result?.ok && setLiveSession(result.data))
+  const startSession = () => message<any>({ action: "session_start", mode: "PRACTICE" }).then((result) => {
+    if (result?.ok) {
+      setLiveSession(result.data)
+      // Start live timer immediately — don't wait for storage
+      setSessionStartTime(Date.now())
+      setSessionSeconds(0)
+    }
+  })
   const endSession = () => message<any>({ action: "session_end" }).then((result) => {
     if (result?.ok) {
+      // Clear session state instantly — no refresh flicker
       setLiveSession(null)
-      chrome.storage.local.remove("algovault.sessionState")
+      setSessionStartTime(null)
+      chrome.storage.local.remove(["algovault.sessionState", "algovault.liveTimer"])
+      // Quiet background refresh to update today's tracked minutes
       refresh()
     }
   })

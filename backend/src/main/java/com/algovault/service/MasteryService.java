@@ -117,7 +117,7 @@ public class MasteryService {
 
                 double opponentRating = first.getProblem().getActualRating() != null
                     ? first.getProblem().getActualRating()
-                    : 1500.0;
+                    : inferRatingFromDifficulty(first.getProblem().getDifficulty());
 
                 // Dynamic opponent RD: well-known problems have low RD, uncertain ones high.
                 double baseOpponentRD = computeOpponentRD(first.getProblem());
@@ -125,7 +125,7 @@ public class MasteryService {
                 // Fractional tag attribution: a problem with N tags gives each tag
                 // score/N credit, preventing multi-tag double-counting.
                 int numTags = (first.getProblem().getTags() != null) ? first.getProblem().getTags().size() : 1;
-                double effectiveScore = numTags > 1 ? score / numTags : score;
+                double effectiveScore = numTags > 1 ? score / Math.sqrt(numTags) : score;
                 double effectiveOpponentRD = numTags > 1 ? baseOpponentRD * Math.sqrt(numTags) : baseOpponentRD;
 
                 currentRating = glickoEngine.updateRating(currentRating, List.of(
@@ -134,7 +134,7 @@ public class MasteryService {
             }
 
             if (lastSolvedAt != null) {
-                long monthsSince = java.time.Duration.between(lastSolvedAt, LocalDateTime.now()).toDays() / 30;
+                long monthsSince = Math.min(6, java.time.Duration.between(lastSolvedAt, LocalDateTime.now()).toDays() / 30);
                 for (int m = 0; m < monthsSince; m++) {
                     currentRating = glickoEngine.updateRating(currentRating, Collections.emptyList());
                 }
@@ -263,14 +263,14 @@ public class MasteryService {
 
             double opponentRating = first.getProblem().getActualRating() != null
                 ? first.getProblem().getActualRating()
-                : 1500.0;
+                : inferRatingFromDifficulty(first.getProblem().getDifficulty());
 
             // Dynamic opponent RD based on problem metadata confidence
             double baseOpponentRD = computeOpponentRD(first.getProblem());
 
             // Fractional tag attribution for multi-tag problems
             int numTags = (first.getProblem().getTags() != null) ? first.getProblem().getTags().size() : 1;
-            double effectiveScore = numTags > 1 ? score / numTags : score;
+            double effectiveScore = numTags > 1 ? score / Math.sqrt(numTags) : score;
             double effectiveOpponentRD = numTags > 1 ? baseOpponentRD * Math.sqrt(numTags) : baseOpponentRD;
 
             currentRating = glickoEngine.updateRating(currentRating, List.of(
@@ -279,7 +279,7 @@ public class MasteryService {
         }
 
         if (lastSolvedAt != null) {
-            long monthsSince = java.time.Duration.between(lastSolvedAt, LocalDateTime.now()).toDays() / 30;
+            long monthsSince = Math.min(6, java.time.Duration.between(lastSolvedAt, LocalDateTime.now()).toDays() / 30);
             for (int m = 0; m < monthsSince; m++) {
                 currentRating = glickoEngine.updateRating(currentRating, Collections.emptyList());
             }
@@ -305,6 +305,20 @@ public class MasteryService {
         tm.setLastSolvedAt(lastSolvedAt);
 
         tagMasteryRepository.save(tm);
+    }
+
+    /**
+     * Infers an approximate Elo rating from the difficulty label when no
+     * ZeroTrac/contest rating exists. Based on observed LeetCode distributions.
+     */
+    private double inferRatingFromDifficulty(String difficulty) {
+        if (difficulty == null) return 1500.0;
+        return switch (difficulty.toLowerCase()) {
+            case "easy" -> 1250.0;
+            case "medium" -> 1550.0;
+            case "hard" -> 1950.0;
+            default -> 1500.0;
+        };
     }
 
     /**

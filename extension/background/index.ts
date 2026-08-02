@@ -69,14 +69,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "get_user_contest_history") {
-    fetchContestHistory(message.payload.username)
+    const uname = typeof message.payload?.username === "string" ? message.payload.username.trim() : ""
+    if (!uname) {
+      sendResponse({ ok: false, error: "LeetCode username is not configured in Settings." })
+      return true
+    }
+    fetchContestHistory(uname)
       .then((data) => sendResponse({ ok: true, data: data.data || {} }))
       .catch((err) => sendResponse({ ok: false, error: err.message }))
     return true
   }
 
   if (message.action === "get_user_profile") {
-    fetchUserProfile(message.payload.username)
+    const uname = typeof message.payload?.username === "string" ? message.payload.username.trim() : ""
+    if (!uname) {
+      sendResponse({ ok: false, error: "LeetCode username is not configured in Settings." })
+      return true
+    }
+    fetchUserProfile(uname)
       .then((data) => sendResponse({ ok: true, data: data.data || {} }))
       .catch((err) => sendResponse({ ok: false, error: err.message }))
     return true

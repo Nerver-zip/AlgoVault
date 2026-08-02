@@ -14,11 +14,22 @@ public interface ProblemRepository extends JpaRepository<Problem, Long> {
     Optional<Problem> findByTitleSlug(String titleSlug);
     List<Problem> findByTitleSlugIn(List<String> slugs);
 
+    /**
+     * Recommends unsolved problems for a tag, using actual_rating where available
+     * and falling back to difficulty-based estimates for unrated problems.
+     * COALESCE maps: Easy→1250, Medium→1550, Hard→1950, default→1500.
+     */
     @Query(value = """
         SELECT p.*
         FROM problems p
         WHERE :tag = ANY(p.tags)
-          AND p.actual_rating BETWEEN :minRating AND :maxRating
+          AND COALESCE(p.actual_rating,
+              CASE LOWER(p.difficulty)
+                  WHEN 'easy' THEN 1250
+                  WHEN 'medium' THEN 1550
+                  WHEN 'hard' THEN 1950
+                  ELSE 1500
+              END) BETWEEN :minRating AND :maxRating
           AND (p.is_premium IS NULL OR p.is_premium = false)
           AND NOT EXISTS (
               SELECT 1 FROM submissions s
@@ -26,7 +37,13 @@ public interface ProblemRepository extends JpaRepository<Problem, Long> {
                 AND s.user_id = :userId
                 AND s.verdict = 'Accepted'
           )
-        ORDER BY ABS(p.actual_rating - :targetRating) ASC, p.acceptance_rate DESC NULLS LAST, p.frontend_id ASC
+        ORDER BY ABS(COALESCE(p.actual_rating,
+              CASE LOWER(p.difficulty)
+                  WHEN 'easy' THEN 1250
+                  WHEN 'medium' THEN 1550
+                  WHEN 'hard' THEN 1950
+                  ELSE 1500
+              END) - :targetRating) ASC, p.acceptance_rate DESC NULLS LAST, p.frontend_id ASC
         LIMIT :limit
         """, nativeQuery = true)
     List<Problem> findRecommendedUnsolved(

@@ -5,7 +5,7 @@ import { Storage } from "@plasmohq/storage"
 
 interface ActiveSession { isActive?: boolean; startTime?: number; titleSlug?: string; mode?: string; focusScore?: number; tabSwitches?: number; pasteCount?: number; }
 interface SessionState { isSolved?: boolean; finalSeconds?: number; focusScore?: number; tabSwitches?: number; copyPastes?: number; }
-interface LiveTimerState { focusSeconds?: number; elapsedSeconds?: number; isPaused?: boolean; isSolved?: boolean; }
+interface LiveTimerState { focusSeconds?: number; elapsedSeconds?: number; isPaused?: boolean; isSolved?: boolean; updatedAt?: number; }
 
 const storage = new Storage()
 
@@ -26,11 +26,36 @@ const FloatingButton = () => {
   const [problemStartTime, setProblemStartTime] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
+  const [now, setNow] = useState(Date.now())
 
   // Zenith properties
   const [isZenith, setIsZenith] = useState(false)
   const [zenithGrade, setZenithGrade] = useState("S_PLUS")
   const [zenithFocusScore, setZenithFocusScore] = useState(100)
+
+  // Live 1-second interval ticker so the UI continuously counts up
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  // Listen for direct in-tab live timer ticks from session-tracker (bypasses storage event delays)
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === "AV_LIVE_TIMER_TICK" && event.data?.payload) {
+        const p = event.data.payload
+        setLiveTimer(p)
+        if (p.problemStartTime) {
+          setProblemStartTime(p.problemStartTime)
+        }
+        if (p.isPaused !== undefined) {
+          setIsPaused(p.isPaused)
+        }
+      }
+    }
+    window.addEventListener("message", handleMessage)
+    return () => window.removeEventListener("message", handleMessage)
+  }, [])
 
   useEffect(() => {
     const load = () => {
@@ -108,17 +133,28 @@ const FloatingButton = () => {
     }
   }
 
-  // Calculate high-precision active focus seconds
+  // Calculate live active focus seconds and total elapsed seconds
   let activeSecs = 0
+  let totalElapsedSecs = 0
+
   if (sessionState?.isSolved) {
     activeSecs = sessionState.finalSeconds ?? 0
-  } else if (liveTimer?.focusSeconds != null) {
-    activeSecs = liveTimer.focusSeconds
-  } else if (problemStartTime) {
-    activeSecs = Math.max(0, Math.floor((Date.now() - new Date(problemStartTime).getTime()) / 1000))
-  }
+    totalElapsedSecs = sessionState.finalSeconds ?? 0
+  } else {
+    const startMs = problemStartTime ? new Date(problemStartTime).getTime() : 0
+    totalElapsedSecs = startMs > 0
+      ? Math.max(0, Math.floor((now - startMs) / 1000))
+      : (liveTimer?.elapsedSeconds ?? liveTimer?.focusSeconds ?? 0)
 
-  let totalElapsedSecs = liveTimer?.elapsedSeconds ?? (problemStartTime ? Math.max(0, Math.floor((Date.now() - new Date(problemStartTime).getTime()) / 1000)) : activeSecs)
+    if (liveTimer?.focusSeconds != null && liveTimer?.updatedAt) {
+      const deltaSecs = isPaused ? 0 : Math.max(0, Math.floor((now - liveTimer.updatedAt) / 1000))
+      activeSecs = liveTimer.focusSeconds + deltaSecs
+    } else if (liveTimer?.focusSeconds != null) {
+      activeSecs = liveTimer.focusSeconds
+    } else {
+      activeSecs = totalElapsedSecs
+    }
+  }
 
   const minutes = Math.floor(activeSecs / 60)
   const rem = String(activeSecs % 60).padStart(2, "0")
