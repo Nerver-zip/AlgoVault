@@ -78,18 +78,6 @@ function publishLiveTimer() {
     "algovault.liveTimer": timerPayload
   })
 
-  // Continuously sync total session focus into algovault.currentSession so other tabs/sidepanel never reset
-  if (sessionStarted && liveFocusSeconds > sessionFocusBaseline) {
-    chrome.storage.local.get("algovault.currentSession", (res) => {
-      const curr = res["algovault.currentSession"]
-      if (curr && typeof curr === "object" && (curr.focusSeconds || 0) < liveFocusSeconds) {
-        chrome.storage.local.set({
-          "algovault.currentSession": { ...curr, focusSeconds: liveFocusSeconds }
-        })
-      }
-    })
-  }
-
   // Persist problem-specific focus time in algovault.problemTimes
   if (trackedSlug) {
     const slug = trackedSlug
@@ -283,11 +271,8 @@ function activateSession(session: { id?: number; mode?: string; focusSeconds?: n
   activeSessionId = session.id
   activeSessionMode = session.mode
 
-  const incomingFocus = Math.max(0, session.focusSeconds ?? 0)
-  const currentTotal = sessionFocusBaseline + focusSeconds
-
-  if (incomingFocus > currentTotal || isNewSession) {
-    sessionFocusBaseline = incomingFocus
+  if (isNewSession) {
+    sessionFocusBaseline = Math.max(0, session.focusSeconds ?? 0)
     focusSeconds = 0
     focusStartedAt = Date.now()
   }
@@ -300,17 +285,10 @@ function activateSession(session: { id?: number; mode?: string; focusSeconds?: n
       const existing = pTimes[slug]
       if (existing && typeof existing === "object") {
         if (existing.openedAt) openedAt = new Date(existing.openedAt)
-        if (typeof existing.focusSeconds === "number" && existing.focusSeconds > focusSeconds) {
-          focusSeconds = existing.focusSeconds
-        }
       }
     })
   }
 
-  if (trackedSlug) {
-    sendEvent("OPEN", { url: location.href })
-    heartbeat()
-  }
   publishLiveTimer()
 }
 
