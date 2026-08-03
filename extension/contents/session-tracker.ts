@@ -78,6 +78,33 @@ function publishLiveTimer() {
     "algovault.liveTimer": timerPayload
   })
 
+  // Continuously sync total session focus into algovault.currentSession so other tabs/sidepanel never reset
+  if (sessionStarted && liveFocusSeconds > sessionFocusBaseline) {
+    chrome.storage.local.get("algovault.currentSession", (res) => {
+      const curr = res["algovault.currentSession"]
+      if (curr && typeof curr === "object" && (curr.focusSeconds || 0) < liveFocusSeconds) {
+        chrome.storage.local.set({
+          "algovault.currentSession": { ...curr, focusSeconds: liveFocusSeconds }
+        })
+      }
+    })
+  }
+
+  // Persist problem-specific focus time in algovault.problemTimes
+  if (trackedSlug) {
+    const slug = trackedSlug
+    chrome.storage.local.get("algovault.problemTimes", (res) => {
+      const pTimes = res["algovault.problemTimes"] || {}
+      if (!pTimes[slug] || (pTimes[slug].focusSeconds || 0) < problemFocusSeconds) {
+        pTimes[slug] = {
+          openedAt: openedAt.toISOString(),
+          focusSeconds: problemFocusSeconds
+        }
+        chrome.storage.local.set({ "algovault.problemTimes": pTimes })
+      }
+    })
+  }
+
   // Broadcast directly via window.postMessage for zero-latency in-tab UI updates
   window.postMessage({
     type: "AV_LIVE_TIMER_TICK",
@@ -256,32 +283,35 @@ function activateSession(session: { id?: number; mode?: string; focusSeconds?: n
   activeSessionId = session.id
   activeSessionMode = session.mode
 
-  if (!isNewSession) {
-    publishLiveTimer()
-    return
+  const incomingFocus = Math.max(0, session.focusSeconds ?? 0)
+  const currentTotal = sessionFocusBaseline + focusSeconds
+
+  if (incomingFocus > currentTotal || isNewSession) {
+    sessionFocusBaseline = incomingFocus
+    focusSeconds = 0
+    focusStartedAt = Date.now()
   }
 
-  // The backend persists the baseline. This script reports only new seconds
-  // from this browser epoch, while the live UI displays baseline + new seconds.
-  sessionFocusBaseline = Math.max(0, session.focusSeconds ?? 0)
-  focusSeconds = 0
-  tabSwitches = 0
-  pasteCount = 0
-  focusBaseline = 0
-  tabSwitchBaseline = 0
-  pasteBaseline = 0
-  openedAt = new Date()
-  focusStartedAt = Date.now()
-  lastActivityTime = Date.now()
-  isWindowFocused = !document.hidden && document.hasFocus()
-  chrome.storage.local.set({ "algovault.problemStartTime": openedAt.toISOString() })
+  // Restore problem-specific focus time if available
+  if (trackedSlug) {
+    const slug = trackedSlug
+    chrome.storage.local.get("algovault.problemTimes", (res) => {
+      const pTimes = res["algovault.problemTimes"] || {}
+      const existing = pTimes[slug]
+      if (existing && typeof existing === "object") {
+        if (existing.openedAt) openedAt = new Date(existing.openedAt)
+        if (typeof existing.focusSeconds === "number" && existing.focusSeconds > focusSeconds) {
+          focusSeconds = existing.focusSeconds
+        }
+      }
+    })
+  }
 
   if (trackedSlug) {
     sendEvent("OPEN", { url: location.href })
     heartbeat()
-  } else {
-    publishLiveTimer()
   }
+  publishLiveTimer()
 }
 
 function deactivateSession() {
