@@ -271,25 +271,39 @@ function activateSession(session: { id?: number; mode?: string; focusSeconds?: n
   activeSessionId = session.id
   activeSessionMode = session.mode
 
-  if (isNewSession) {
-    sessionFocusBaseline = Math.max(0, session.focusSeconds ?? 0)
-    focusSeconds = 0
-    focusStartedAt = Date.now()
-  }
+  chrome.storage.local.get("algovault.liveTimer", (res) => {
+    const liveTimer = res["algovault.liveTimer"]
+    const incomingFocus = Math.max(
+      0, 
+      session.focusSeconds ?? 0, 
+      liveTimer?.activeFocusSeconds ?? 0
+    )
+    const currentTotal = sessionFocusBaseline + focusSeconds
+    
+    if (incomingFocus > currentTotal || isNewSession) {
+      sessionFocusBaseline = incomingFocus
+      focusSeconds = 0
+      focusStartedAt = Date.now()
+    }
 
-  // Restore problem-specific focus time if available
-  if (trackedSlug) {
-    const slug = trackedSlug
-    chrome.storage.local.get("algovault.problemTimes", (res) => {
-      const pTimes = res["algovault.problemTimes"] || {}
-      const existing = pTimes[slug]
-      if (existing && typeof existing === "object") {
-        if (existing.openedAt) openedAt = new Date(existing.openedAt)
-      }
-    })
-  }
-
-  publishLiveTimer()
+    // Restore problem-specific focus time if available
+    if (trackedSlug) {
+      const slug = trackedSlug
+      chrome.storage.local.get("algovault.problemTimes", (res) => {
+        const pTimes = res["algovault.problemTimes"] || {}
+        const existing = pTimes[slug]
+        if (existing && typeof existing === "object") {
+          if (existing.openedAt) openedAt = new Date(existing.openedAt)
+          if (typeof existing.focusSeconds === "number" && existing.focusSeconds > focusSeconds) {
+            focusSeconds = existing.focusSeconds
+          }
+        }
+        publishLiveTimer()
+      })
+    } else {
+      publishLiveTimer()
+    }
+  })
 }
 
 function deactivateSession() {
@@ -711,11 +725,29 @@ const heartbeatInterval = setInterval(() => {
 // Continuous 1-second live timer publisher
 const liveTimerInterval = setInterval(() => {
   if (!isSolved) {
-    publishLiveTimer()
+    const isTabActive = !document.hidden && !isPaused && (Date.now() - lastActivityTime < IDLE_TIMEOUT_MS)
+    if (isTabActive || isZenith) {
+      publishLiveTimer()
+    }
   }
 }, 1000);
 
 (window as any).__av_session_intervals.push(routeInterval, heartbeatInterval, liveTimerInterval);
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && sessionStarted) {
+    // When returning to this tab, sync the baseline from storage
+    chrome.storage.local.get(["algovault.currentSession"], (res) => {
+      const current = res["algovault.currentSession"]
+      if (current && typeof current === "object") {
+        activateSession(current as any)
+      }
+    })
+  } else if (document.hidden && sessionStarted && !isPaused && !isSolved) {
+    // When leaving this tab, commit any pending focus time
+    addFocusedTime(isWindowFocused)
+  }
+})
 
 window.addEventListener("beforeunload", () => {
   if (!isSolved) {
