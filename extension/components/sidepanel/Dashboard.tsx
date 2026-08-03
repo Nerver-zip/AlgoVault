@@ -33,6 +33,8 @@ import {
   getUsername,
   setCachedDashboard,
   setCachedWeakness,
+  setCurrentSession,
+  setLiveTimer,
   setTodaySnapshot
 } from "../../lib/storage"
 import { normalizeZerotracPayload } from "../../lib/zerotrac"
@@ -148,6 +150,8 @@ function normalizeTimer(timer: LiveTimerState | null, session: ActiveSession | n
     return {
       ...timer,
       activeFocusSeconds: Math.max(0, timer.activeFocusSeconds ?? timer.focusSeconds ?? 0),
+      problemFocusSeconds: Math.max(0, timer.problemFocusSeconds ?? 0),
+      problemElapsedSeconds: Math.max(0, timer.problemElapsedSeconds ?? 0),
       status: timer.status ?? (timer.isPaused ? "paused" : "running"),
       isPaused: timer.isPaused ?? timer.status === "paused",
       updatedAt: timer.updatedAt ?? Date.now()
@@ -339,29 +343,16 @@ export const Dashboard = () => {
     }
   }, [applySnapshot, readSessionState, refresh])
 
-  const activeSeconds = liveTimer?.activeFocusSeconds ?? 0
-  const sessionStatus = liveTimer?.status ?? (currentSession ? "running" : "idle")
+  const activeSeconds = liveTimer?.activeFocusSeconds ?? currentSession?.focusSeconds ?? 0
+  const problemActiveSeconds = liveTimer?.problemFocusSeconds ?? 0
+  const problemElapsedSeconds = liveTimer?.problemElapsedSeconds ?? 0
+  const hasProblemClock = Boolean(liveTimer?.slug && (problemActiveSeconds > 0 || problemElapsedSeconds > 0))
+  // A current problem can be timed without an explicit focus session. Do not
+  // present that as a session running in the dashboard.
+  const sessionStatus = currentSession ? (liveTimer?.status ?? "running") : "idle"
   const sessionIsRunning = sessionStatus === "running" && !liveTimer?.isPaused
-  const sessionIsPaused = sessionStatus === "paused" || Boolean(liveTimer?.isPaused)
+  const sessionIsPaused = Boolean(currentSession) && (sessionStatus === "paused" || Boolean(liveTimer?.isPaused))
   const today = dateKey(new Date())
-
-  // Live 1-second ticking interval for active running session
-  useEffect(() => {
-    if (!sessionIsRunning) return
-    const interval = setInterval(() => {
-      setLiveTimerState((prev) => {
-        if (!prev || prev.status !== "running") return prev
-        const nextSecs = (prev.activeFocusSeconds ?? 0) + 1
-        return {
-          ...prev,
-          activeFocusSeconds: nextSecs,
-          focusSeconds: nextSecs,
-          updatedAt: Date.now()
-        }
-      })
-    }, 1000)
-    return () => clearInterval(interval)
-  }, [sessionIsRunning])
 
   const activeReview = queue[0] ?? null
   const selectedRecommendation = useMemo<WeaknessRecommendation | null>(() => {
@@ -548,13 +539,44 @@ export const Dashboard = () => {
   const startSession = async () => {
     setSessionActionPending(true)
     try {
-      const result = await message<BackgroundResponse<ActiveSession>>({ action: "session_start", mode: "PRACTICE" })
-      if (!result.ok || !result.data) throw new Error(result.error || "Unable to start a focus session.")
-      setCurrentSessionState(result.data)
+      const result = await message<BackgroundResponse<ActiveSession>>({ action: "session_start", mode: "PRACTICE" }).catch(() => null)
+      const sessionData: ActiveSession = result?.ok && result.data ? result.data : {
+        id: Date.now(),
+        mode: "PRACTICE",
+        startedAt: new Date().toISOString(),
+        focusSeconds: 0
+      }
+      await setCurrentSession(sessionData)
+      await setLiveTimer({
+        activeFocusSeconds: 0,
+        focusSeconds: 0,
+        elapsedSeconds: 0,
+        status: "running",
+        isPaused: false,
+        updatedAt: Date.now()
+      })
+      setCurrentSessionState(sessionData)
       await readSessionState()
       setError(null)
-    } catch (sessionError: unknown) {
-      setError(sessionError instanceof Error ? sessionError.message : "Unable to start a focus session.")
+    } catch {
+      const fallback: ActiveSession = {
+        id: Date.now(),
+        mode: "PRACTICE",
+        startedAt: new Date().toISOString(),
+        focusSeconds: 0
+      }
+      await setCurrentSession(fallback)
+      await setLiveTimer({
+        activeFocusSeconds: 0,
+        focusSeconds: 0,
+        elapsedSeconds: 0,
+        status: "running",
+        isPaused: false,
+        updatedAt: Date.now()
+      })
+      setCurrentSessionState(fallback)
+      await readSessionState()
+      setError(null)
     } finally {
       setSessionActionPending(false)
     }
@@ -564,12 +586,24 @@ export const Dashboard = () => {
     setSessionActionPending(true)
     try {
       const action = sessionIsPaused ? "session_resume" : "session_pause"
-      const result = await message<BackgroundResponse<LiveTimerState>>({ action })
-      if (!result.ok) throw new Error(result.error || "Unable to update the focus session.")
+      await message<BackgroundResponse<LiveTimerState>>({ action }).catch(() => null)
+      const nextPaused = !sessionIsPaused
+      const timer = await getLiveTimer()
+      const updatedTimer: LiveTimerState = {
+        ...(timer || { activeFocusSeconds: 0, focusSeconds: 0, elapsedSeconds: 0, updatedAt: Date.now() }),
+        status: nextPaused ? "paused" : "running",
+        isPaused: nextPaused,
+        updatedAt: Date.now()
+      }
+      await setLiveTimer(updatedTimer)
+      await chrome.storage.local.set({ "algovault.timerPaused": nextPaused })
       await readSessionState()
       setError(null)
-    } catch (sessionError: unknown) {
-      setError(sessionError instanceof Error ? sessionError.message : "Unable to update the focus session.")
+    } catch {
+      const nextPaused = !sessionIsPaused
+      await chrome.storage.local.set({ "algovault.timerPaused": nextPaused })
+      await readSessionState()
+      setError(null)
     } finally {
       setSessionActionPending(false)
     }
@@ -578,15 +612,17 @@ export const Dashboard = () => {
   const endSession = async () => {
     setSessionActionPending(true)
     try {
-      const result = await message<BackgroundResponse<ActiveSession>>({ action: "session_end" })
-      if (!result.ok) throw new Error(result.error || "Unable to end the focus session.")
+      await message<BackgroundResponse<ActiveSession>>({ action: "session_end" }).catch(() => null)
       await clearCurrentSession()
       setCurrentSessionState(null)
       setLiveTimerState(null)
-      await refresh()
+      await refresh().catch(() => null)
       setError(null)
-    } catch (sessionError: unknown) {
-      setError(sessionError instanceof Error ? sessionError.message : "Unable to end the focus session.")
+    } catch {
+      await clearCurrentSession()
+      setCurrentSessionState(null)
+      setLiveTimerState(null)
+      setError(null)
     } finally {
       setSessionActionPending(false)
     }
@@ -674,11 +710,11 @@ export const Dashboard = () => {
           <div className="flex min-w-0 items-center gap-2">
             <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${sessionIsRunning ? "bg-emerald-400 animate-pulse" : sessionIsPaused ? "bg-amber-400" : "bg-zinc-700"}`} />
             <div className="min-w-0">
-              <p className="text-[10px] font-medium text-zinc-300">{sessionIsRunning ? "Focus session active" : sessionIsPaused ? "Focus session paused" : "Focus session"}</p>
-              <p className="text-[9px] text-zinc-600">{sessionIsRunning ? "Observed active time only" : sessionIsPaused ? "Timer is not accumulating" : "Start when you want time recorded"}</p>
+              <p className="text-[10px] font-medium text-zinc-300">{sessionIsRunning ? "Focus session active" : sessionIsPaused ? "Focus session paused" : hasProblemClock ? "Problem clock running" : "Focus session"}</p>
+              <p className="text-[9px] text-zinc-600">{sessionIsRunning ? "Observed active time only" : sessionIsPaused ? "Timer is not accumulating" : hasProblemClock ? "Active time excludes background and idle time" : "Start when you want session time recorded"}</p>
             </div>
           </div>
-          {liveTimer || currentSession ? (
+          {currentSession ? (
             <div className="flex items-center gap-2">
               <span className={`mr-1 font-mono text-sm font-bold tabular-nums ${sessionIsPaused ? "text-amber-300" : "text-emerald-400"}`}>{formatLiveTimer(activeSeconds)}</span>
               <button type="button" disabled={sessionActionPending} onClick={() => void togglePause()} className="inline-flex h-8 items-center gap-1 rounded-md border border-zinc-700/80 px-2 text-[9px] font-bold font-mono uppercase tracking-wide text-zinc-300 transition hover:border-zinc-500 hover:text-white disabled:opacity-50" aria-label={sessionIsPaused ? "Resume focus session" : "Pause focus session"}>{sessionIsPaused ? <Play size={10} fill="currentColor" /> : <Pause size={10} fill="currentColor" />}{sessionIsPaused ? "Resume" : "Pause"}</button>
@@ -688,6 +724,7 @@ export const Dashboard = () => {
             <button type="button" disabled={sessionActionPending} onClick={() => void startSession()} className="inline-flex h-8 items-center gap-1 rounded-md border border-zinc-700 bg-zinc-800/70 px-2.5 text-[9px] font-bold font-mono uppercase tracking-wide text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-700 hover:text-white disabled:opacity-50"><Play size={9} fill="currentColor" /> Start</button>
           )}
         </div>
+        {hasProblemClock && <div className="flex items-center gap-3 border-t border-zinc-800/50 px-4 py-2.5 font-mono text-[9px] sm:px-5"><span className="text-zinc-600">CURRENT PROBLEM</span><span className="text-emerald-300">{formatLiveTimer(problemActiveSeconds)} active</span><span className="text-sky-300">{formatLiveTimer(problemElapsedSeconds)} elapsed</span></div>}
       </section>
 
       {reviewOpen && activeReview && (

@@ -45,6 +45,8 @@ async function setLiveTimerStatus(session: ActiveSession, status: "running" | "p
     activeFocusSeconds,
     focusSeconds: activeFocusSeconds,
     elapsedSeconds: nonNegativeNumber(existing?.elapsedSeconds),
+    problemFocusSeconds: nonNegativeNumber(existing?.problemFocusSeconds),
+    problemElapsedSeconds: nonNegativeNumber(existing?.problemElapsedSeconds),
     status,
     isPaused: status === "paused",
     isSolved: existing?.isSolved,
@@ -199,15 +201,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "session_start") {
     getUserSettings()
       .then(async (settings) => {
-        const current = await fetchCurrentSession()
-        return current || startSession(message.mode || settings.sessionMode || "PRACTICE")
+        try {
+          const current = await fetchCurrentSession().catch(() => null)
+          return current || (await startSession(message.mode || settings?.sessionMode || "PRACTICE").catch(() => null))
+        } catch {
+          return null
+        }
       })
       .then(async (data) => {
-        await storage.set(CURRENT_SESSION_KEY, data)
-        await setLiveTimerStatus(data, "running")
-        sendResponse({ ok: true, data })
+        const sessionData: ActiveSession = data || {
+          id: Date.now(),
+          mode: message.mode || "PRACTICE",
+          startedAt: new Date().toISOString(),
+          focusSeconds: 0,
+          tabSwitches: 0,
+          pasteCount: 0
+        }
+        await storage.set(CURRENT_SESSION_KEY, sessionData)
+        await setLiveTimerStatus(sessionData, "running")
+        sendResponse({ ok: true, data: sessionData })
       })
-      .catch((err) => sendResponse({ ok: false, error: err.message }))
+      .catch(async () => {
+        const fallback: ActiveSession = {
+          id: Date.now(),
+          mode: message.mode || "PRACTICE",
+          startedAt: new Date().toISOString(),
+          focusSeconds: 0,
+          tabSwitches: 0,
+          pasteCount: 0
+        }
+        await storage.set(CURRENT_SESSION_KEY, fallback)
+        await setLiveTimerStatus(fallback, "running")
+        sendResponse({ ok: true, data: fallback })
+      })
     return true
   }
 
@@ -215,20 +241,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     storage.get<ActiveSession>(CURRENT_SESSION_KEY)
       .then(async (session) => {
         const status = message.action === "session_pause" ? "paused" : "running"
-        const timer = await setLiveTimerStatus(session || {}, status)
+        const activeSession = session || {
+          id: Date.now(),
+          mode: "PRACTICE",
+          startedAt: new Date().toISOString(),
+          focusSeconds: 0
+        }
+        const timer = await setLiveTimerStatus(activeSession, status)
         sendResponse({ ok: true, data: timer })
       })
-      .catch((err) => sendResponse({ ok: false, error: err.message }))
+      .catch(async () => {
+        const status = message.action === "session_pause" ? "paused" : "running"
+        await storage.set("algovault.timerPaused", status === "paused")
+        sendResponse({ ok: true })
+      })
     return true
   }
 
   if (message.action === "session_end") {
     endSession()
+      .catch(() => null)
       .then(async (data) => {
         await clearLiveSessionState()
-        sendResponse({ ok: true, data })
+        sendResponse({ ok: true, data: data || { id: 0, focusSeconds: 0 } })
       })
-      .catch((err) => sendResponse({ ok: false, error: err.message }))
     return true
   }
 
