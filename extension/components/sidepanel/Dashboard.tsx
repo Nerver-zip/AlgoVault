@@ -340,9 +340,9 @@ export const Dashboard = () => {
   }, [applySnapshot, readSessionState, refresh])
 
   const activeSeconds = liveTimer?.activeFocusSeconds ?? 0
-  const sessionStatus = liveTimer?.status ?? "idle"
-  const sessionIsRunning = Boolean(currentSession && sessionStatus === "running")
-  const sessionIsPaused = Boolean(currentSession && sessionStatus === "paused")
+  const sessionStatus = liveTimer?.status ?? (currentSession ? "running" : "idle")
+  const sessionIsRunning = sessionStatus === "running" && !liveTimer?.isPaused
+  const sessionIsPaused = sessionStatus === "paused" || Boolean(liveTimer?.isPaused)
   const today = dateKey(new Date())
 
   // Live 1-second ticking interval for active running session
@@ -678,7 +678,7 @@ export const Dashboard = () => {
               <p className="text-[9px] text-zinc-600">{sessionIsRunning ? "Observed active time only" : sessionIsPaused ? "Timer is not accumulating" : "Start when you want time recorded"}</p>
             </div>
           </div>
-          {currentSession ? (
+          {liveTimer || currentSession ? (
             <div className="flex items-center gap-2">
               <span className={`mr-1 font-mono text-sm font-bold tabular-nums ${sessionIsPaused ? "text-amber-300" : "text-emerald-400"}`}>{formatLiveTimer(activeSeconds)}</span>
               <button type="button" disabled={sessionActionPending} onClick={() => void togglePause()} className="inline-flex h-8 items-center gap-1 rounded-md border border-zinc-700/80 px-2 text-[9px] font-bold font-mono uppercase tracking-wide text-zinc-300 transition hover:border-zinc-500 hover:text-white disabled:opacity-50" aria-label={sessionIsPaused ? "Resume focus session" : "Pause focus session"}>{sessionIsPaused ? <Play size={10} fill="currentColor" /> : <Pause size={10} fill="currentColor" />}{sessionIsPaused ? "Resume" : "Pause"}</button>
