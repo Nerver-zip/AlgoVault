@@ -241,38 +241,38 @@ Unlike simple streak counters, AlgoVault operates an **Autonomous Practice Sessi
 ```mermaid
 graph TD
     subgraph "Browser Extension (Manifest V3 Context)"
-        WAR[MAIN World: interceptor.js (CSP Bypass)]
-        CS[ISOLATED World: Telemetry & DOM Injectors]
-        HOOK[React Hook: usePracticeSession]
-        SP[Plasmo Sidepanel & Floating HUD]
+        WAR["MAIN World: interceptor.js (CSP Bypass)"]
+        CS["ISOLATED World: Telemetry & DOM Injectors"]
+        HOOK["React Hook: usePracticeSession"]
+        SP["Plasmo Sidepanel & Floating HUD"]
     end
 
     subgraph "Local Service Layer (Spring Boot 3.3 Engine)"
-        API[Spring Boot REST / GraphQL Controller]
-        FSRS[FSRS-4.5 Spaced Repetition Engine]
-        GLICKO[Glicko-2 Topic Rating Engine]
-        FLYWAY[Flyway DB Migration V1..V18]
-        PG[(PostgreSQL Database)]
-        RD[(Redis Key-Value Cache)]
+        API["Spring Boot REST / GraphQL Controller"]
+        FSRS["FSRS-4.5 Spaced Repetition Engine"]
+        GLICKO["Glicko-2 Topic Rating Engine"]
+        FLYWAY["Flyway DB Migration V1..V18"]
+        PG[("PostgreSQL Database")]
+        RD[("Redis Key-Value Cache")]
     end
 
     subgraph "External Integrations"
-        LC[LeetCode Official APIs]
-        ZT[ZeroTrac Contest Rating API]
-        GIT[GitHub Automated Repository Sync]
+        LC["LeetCode Official APIs"]
+        ZT["ZeroTrac Contest Rating API"]
+        GIT["GitHub Automated Repository Sync"]
     end
 
-    WAR -->|window.postMessage + UUID Nonce| CS
-    CS -->|chrome.runtime IPC| SP
-    HOOK <--->|chrome.storage.local| SP
-    SP -->|JSON Telemetry Payload| API
-    API <---> PG
-    API <---> RD
-    API -->|Async Rating Compute| GLICKO
-    API -->|Memory Interval Recalc| FSRS
-    API -->|Fetch User Submissions| LC
-    API -->|Fetch Difficulty Ratings| ZT
-    CS -->|Push AC Code Commit| GIT
+    WAR -->|"window.postMessage + UUID Nonce"| CS
+    CS -->|"chrome.runtime IPC"| SP
+    HOOK <-->|"chrome.storage.local"| SP
+    SP -->|"JSON Telemetry Payload"| API
+    API <--> PG
+    API <--> RD
+    API -->|"Async Rating Compute"| GLICKO
+    API -->|"Memory Interval Recalc"| FSRS
+    API -->|"Fetch User Submissions"| LC
+    API -->|"Fetch Difficulty Ratings"| ZT
+    CS -->|"Push AC Code Commit"| GIT
 ```
 
 ---
