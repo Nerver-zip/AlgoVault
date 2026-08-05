@@ -1,807 +1,169 @@
 import type { PlasmoCSConfig } from "plasmo"
 import { getLeetCodeProblemSlug } from "../lib/leetcode-url"
-import { showZenithQuestModal, showZenithAlarmModal, showZenithToast } from "./ZenithSystemOverlay"
+import { showZenithAlarmModal, showZenithToast } from "./ZenithSystemOverlay"
 
 export const config: PlasmoCSConfig = {
   matches: ["https://leetcode.com/problems/*", "https://leetcode.com/contest/*/problems/*"],
   run_at: "document_idle"
 }
 
-type ProblemTimerRecord = {
-  startedAt: string
-  activeSeconds: number
-}
+const ACTIVE_SESSION_KEY = "algovault.session.active"
+const IDLE_TIMEOUT_MS = 8 * 60 * 1000 // 8 minutes idle threshold
 
-const PROBLEM_TIMES_KEY = "algovault.problemTimes"
-let openedAt = new Date()
-let focusStartedAt = Date.now()
-// Session focus is deliberately local to the current content-script epoch.
-// The backend adds it to a persisted baseline on each new epoch.
-let focusSeconds = 0
-// A problem attempt is independent from an optional focus session. It survives
-// reloads and measures only foreground, non-idle time on this specific problem.
-let problemFocusSeconds = 0
-let finalizedProblemFocusSeconds: number | undefined
-let finalizedProblemElapsedSeconds: number | undefined
-let problemTimerReady = false
-let lastProblemPersistAt = 0
-let sessionFocusBaseline = 0
-let tabSwitches = 0
-let pasteCount = 0
-let lastUrl = location.href
-let trackedSlug = currentSlug()
-let trackedTitle = currentTitle()
-let tabSwitchBaseline = 0
-let pasteBaseline = 0
-let lastActivityTime = Date.now()
-const IDLE_TIMEOUT_MS = 8 * 60 * 1000 // 8 minutes thinking/reading grace period on focused tab
+// In-Memory Rolling Hash Ring Buffer for Copy-Paste Detection (Zero Storage Bloat)
+const internalCopyHashes: string[] = []
 
-let isSolved = false
-let isWindowFocused = !document.hidden && document.hasFocus()
-let isPaused = false
-let sessionStarted = false
-let activeSessionId: number | undefined
-let activeSessionMode: string | undefined
-
-// A problem attempt starts automatically; a focus session does not. The two
-// clocks must not be confused: problem timing remains useful even if the user
-// never presses Start in the dashboard.
-chrome.storage.local.get(["algovault.timerPaused", "algovault.currentSession"], (res) => {
-  isPaused = !!res["algovault.timerPaused"]
-  restoreProblemTimer(() => {
-    const current = res["algovault.currentSession"]
-    if (current && typeof current === "object") {
-      activateSession(current as { id?: number; mode?: string; focusSeconds?: number })
-    } else {
-      chrome.runtime.sendMessage({ action: "session_start", mode: "PRACTICE" }, (resp) => {
-        if (resp?.ok && resp.data) {
-          activateSession(resp.data)
-        } else {
-          publishLiveTimer()
-        }
-      })
-    }
-  })
-})
-
-function observedSegmentSeconds(now = Date.now()) {
-  if (!isWindowFocused || isPaused || isSolved) return 0
-  // Stop exactly at the idle grace boundary instead of losing the active
-  // portion that occurred before the user went idle.
-  const activeUntil = Math.min(now, lastActivityTime + IDLE_TIMEOUT_MS)
-  return Math.max(0, Math.floor((activeUntil - focusStartedAt) / 1000))
-}
-
-function persistProblemTimer(force = false) {
-  if (!trackedSlug || !problemTimerReady) return
-  const now = Date.now()
-  if (!force && now - lastProblemPersistAt < 5_000) return
-  lastProblemPersistAt = now
-  const record: ProblemTimerRecord = { startedAt: openedAt.toISOString(), activeSeconds: problemFocusSeconds + observedSegmentSeconds(now) }
-  chrome.storage.local.get(PROBLEM_TIMES_KEY, (res) => {
-    const records = res[PROBLEM_TIMES_KEY] || {}
-    const existing = records[trackedSlug!]
-    if (!existing || (existing.activeSeconds ?? existing.focusSeconds ?? 0) <= record.activeSeconds) {
-      records[trackedSlug!] = record
-      chrome.storage.local.set({ [PROBLEM_TIMES_KEY]: records, "algovault.problemStartTime": record.startedAt })
-    }
-  })
-}
-
-function restoreProblemTimer(done?: () => void) {
-  if (!trackedSlug) {
-    problemTimerReady = true
-    done?.()
-    return
-  }
-  chrome.storage.local.get(PROBLEM_TIMES_KEY, (res) => {
-    const records = res[PROBLEM_TIMES_KEY] || {}
-    const existing = records[trackedSlug!]
-    const candidateStartedAt = existing?.startedAt ?? existing?.openedAt
-    const parsedStart = candidateStartedAt ? new Date(candidateStartedAt) : null
-    if (parsedStart && !Number.isNaN(parsedStart.valueOf())) openedAt = parsedStart
-    if (typeof existing?.activeSeconds === "number") problemFocusSeconds = Math.max(0, existing.activeSeconds)
-    else if (typeof existing?.focusSeconds === "number") problemFocusSeconds = Math.max(0, existing.focusSeconds)
-    problemTimerReady = true
-    persistProblemTimer(true)
-    done?.()
-  })
-}
-
-function publishLiveTimer() {
-  const now = Date.now()
-  const elapsedSeconds = finalizedProblemElapsedSeconds ?? Math.max(0, Math.floor((now - openedAt.getTime()) / 1000))
-  const currentSegment = observedSegmentSeconds(now)
-  const currentProblemFocusSeconds = finalizedProblemFocusSeconds ?? (problemFocusSeconds + currentSegment)
-  const liveFocusSeconds = sessionStarted ? sessionFocusBaseline + focusSeconds + currentSegment : currentProblemFocusSeconds
-
-  const timerPayload = {
-    activeFocusSeconds: liveFocusSeconds,
-    focusSeconds: liveFocusSeconds,
-    problemFocusSeconds: currentProblemFocusSeconds,
-    problemElapsedSeconds: elapsedSeconds,
-    elapsedSeconds,
-    status: isPaused ? "paused" : "running",
-    isPaused: isPaused,
-    isSolved,
-    sessionId: activeSessionId,
-    mode: activeSessionMode,
-    slug: trackedSlug,
-    problemStartTime: openedAt.toISOString(),
-    updatedAt: now
-  }
-
-  chrome.storage.local.set({
-    "algovault.liveTimer": timerPayload
-  })
-
-  persistProblemTimer()
-
-  // Broadcast directly via window.postMessage for zero-latency in-tab UI updates
-  window.postMessage({
-    type: "AV_LIVE_TIMER_TICK",
-    payload: timerPayload
-  }, "*")
-}
-
-function addFocusedTime(wasFocusActiveBefore = true) {
-  if (isSolved || isPaused) return
-  if (wasFocusActiveBefore) {
-    const observed = observedSegmentSeconds()
-    problemFocusSeconds += observed
-    if (sessionStarted) focusSeconds += observed
-  }
-  focusStartedAt = Date.now()
-  persistProblemTimer(true)
-  publishLiveTimer()
-}
-
-// Zenith Mode State
-let isZenith = false
-let currentGrade = "S_PLUS"
-let gradeReason = "Pure Solve"
-let copyHistory: Array<{ hash: string; timestamp: number }> = []
-
-function simpleStringHash(str: string): string {
-  let hash = 0
+function fnv1aHash(str: string): string {
+  let hash = 0x811c9dc5
   for (let i = 0; i < str.length; i++) {
-    hash = (hash << 5) - hash + str.charCodeAt(i)
-    hash |= 0
+    hash ^= str.charCodeAt(i)
+    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)
   }
-  return String(hash)
+  return (hash >>> 0).toString(16)
 }
 
-function updateZenithGrade(newGrade: string, reason: string) {
-  currentGrade = newGrade
-  gradeReason = reason
-  chrome.storage.local.set({ "algovault.zenithGrade": newGrade, "algovault.zenithReason": reason })
+function normalizeText(text: string): string {
+  return text.replace(/\s+/g, "").trim()
 }
 
-// Recover the completion display without replacing a real final duration with
-// zero on reload.
-const initialSlug = currentSlug()
-if (initialSlug) {
-  chrome.storage.local.get(["algovault.solvedSlugs", "algovault.sessionState", "algovault.isZenith", "algovault.zenithGrade", "algovault.zenithReason"], (result) => {
-    const cached = result["algovault.solvedSlugs"] || {}
-    const slugs = Array.isArray(cached?.slugs) ? cached.slugs : []
-    if (slugs.includes(initialSlug)) {
-      isSolved = true
-      const existingState = result["algovault.sessionState"]
-      if (!existingState || !existingState.isSolved || existingState.slug !== initialSlug) {
-        chrome.storage.local.set({ "algovault.sessionState": { isSolved: true, slug: initialSlug, finalActiveSeconds: 0, finalElapsedSeconds: 0 } })
+// Memory Copy Listener: Add internal code copies to ring buffer
+document.addEventListener("copy", () => {
+  const selection = window.getSelection()?.toString() || ""
+  const normalized = normalizeText(selection)
+  if (normalized.length > 5) {
+    const hash = fnv1aHash(normalized)
+    if (!internalCopyHashes.includes(hash)) {
+      internalCopyHashes.push(hash)
+      if (internalCopyHashes.length > 15) {
+        internalCopyHashes.shift()
       }
-    } else {
-      chrome.storage.local.remove("algovault.sessionState")
-    }
-
-    isZenith = !!result["algovault.isZenith"]
-    if (isZenith) {
-      currentGrade = result["algovault.zenithGrade"] || "S_PLUS"
-      gradeReason = result["algovault.zenithReason"] || "Pure Solve"
-      showZenithToast(`Zenith Mode Active: [Grade: ${currentGrade}]`)
-    }
-  })
-} else {
-  chrome.storage.local.remove("algovault.sessionState")
-}
-
-// Storage listener to dynamically sync an explicit focus session, Zenith Mode,
-// and pause state changes across script instances.
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local") {
-    if (changes["algovault.timerPaused"] !== undefined) {
-      const nextPaused = !!changes["algovault.timerPaused"].newValue
-      if (!isPaused && nextPaused) {
-        // Persist the current focused segment before freezing the timer.
-        addFocusedTime(isWindowFocused)
-      }
-      isPaused = nextPaused
-      if (!isPaused) {
-        focusStartedAt = Date.now()
-      }
-      publishLiveTimer()
-    }
-    if (changes["algovault.currentSession"] !== undefined) {
-      const nextSession = changes["algovault.currentSession"].newValue
-      if (nextSession && typeof nextSession === "object") {
-        activateSession(nextSession as { id?: number; mode?: string; focusSeconds?: number })
-      } else {
-        deactivateSession()
-      }
-    }
-    if (changes["algovault.isZenith"]) {
-      const active = !!changes["algovault.isZenith"].newValue
-      isZenith = active
-      if (active) {
-        currentGrade = "S_PLUS"
-        gradeReason = "Pure Solve"
-        copyHistory = []
-        showZenithToast("Zenith Mode Activated: [Grade: S+]")
-      } else {
-        showZenithToast("Zenith Mode Deactivated.")
-      }
-    }
-    if (changes["algovault.zenithGrade"]) {
-      currentGrade = changes["algovault.zenithGrade"].newValue || "S_PLUS"
-    }
-    if (changes["algovault.zenithReason"]) {
-      gradeReason = changes["algovault.zenithReason"].newValue || "Pure Solve"
-    }
-  }
-})
-
-// Listen to fullscreen changes to warn/penalize users escaping fullscreen in Zenith Mode
-document.addEventListener("fullscreenchange", () => {
-  if (isZenith && !document.fullscreenElement && !isSolved) {
-    showZenithAlarmModal(
-      "Fullscreen exited.",
-      "No grade penalty is applied.",
-      () => {
-        showZenithToast("Continuing Zenith session with an interruption noted")
-      },
-      () => {
-        document.documentElement.requestFullscreen().catch(() => {
-          showZenithToast("Fullscreen remains off. Your session can continue.")
-        })
-      }
-    )
-  }
-})
-
-if ((window as any).__av_abort_controller) {
-  (window as any).__av_abort_controller.abort();
-}
-const controller = new AbortController();
-(window as any).__av_abort_controller = controller;
-const signal = controller.signal;
-
-function updateActivity() {
-  const now = Date.now()
-  // If this is the first interaction after an idle gap, preserve the valid
-  // foreground time up to the idle cutoff, then start a clean new segment.
-  if (isWindowFocused && !isPaused && !isSolved && now - lastActivityTime >= IDLE_TIMEOUT_MS) {
-    addFocusedTime(true)
-  }
-  lastActivityTime = now
-}
-
-let lastMouseMove = 0;
-function throttledUpdateActivity(e: Event) {
-  if (e.type === 'mousemove') {
-    const now = Date.now();
-    if (now - lastMouseMove < 500) return;
-    lastMouseMove = now;
-  }
-  updateActivity();
-}
-
-document.addEventListener("mousemove", throttledUpdateActivity, { signal })
-document.addEventListener("keydown", updateActivity, { signal })
-document.addEventListener("scroll", updateActivity, { signal })
-
-function currentSlug() {
-  return getLeetCodeProblemSlug()
-}
-
-function currentTitle() {
-  const heading = document.querySelector("a[href*='/problems/']")?.textContent
-  return heading?.replace(/^\d+\.\s*/, "").trim() || currentSlug()
-}
-
-function activateSession(session: { id?: number; mode?: string; focusSeconds?: number }) {
-  const isNewSession = !sessionStarted || activeSessionId !== session.id
-  if (isNewSession) addFocusedTime(isWindowFocused)
-  sessionStarted = true
-  activeSessionId = session.id
-  activeSessionMode = session.mode
-
-  chrome.storage.local.get(["algovault.liveTimer", "algovault.currentSession"], (res) => {
-    const liveTimer = res?.["algovault.liveTimer"]
-    const currSession = res?.["algovault.currentSession"] || session
-    const incomingFocus = Math.max(
-      0,
-      session.focusSeconds ?? 0,
-      currSession.focusSeconds ?? 0,
-      liveTimer?.activeFocusSeconds ?? 0,
-      liveTimer?.focusSeconds ?? 0
-    )
-    const currentTotal = sessionFocusBaseline + focusSeconds
-
-    if (incomingFocus > currentTotal || isNewSession) {
-      sessionFocusBaseline = incomingFocus
-      focusSeconds = 0
-      focusStartedAt = Date.now()
-    }
-
-    publishLiveTimer()
-  })
-}
-
-function deactivateSession() {
-  addFocusedTime(isWindowFocused)
-  sessionStarted = false
-  activeSessionId = undefined
-  activeSessionMode = undefined
-  sessionFocusBaseline = 0
-  focusSeconds = 0
-  tabSwitches = 0
-  pasteCount = 0
-  publishLiveTimer()
-}
-
-function runWhenSessionReady(fn: () => void) {
-  if (sessionStarted) fn()
-}
-
-function sendEvent(
-  eventType: string,
-  metadata: Record<string, unknown> = {},
-  titleSlug = trackedSlug,
-  title = trackedTitle
-) {
-  if (!titleSlug) return
-  runWhenSessionReady(() => {
-    chrome.runtime.sendMessage({
-      action: "session_event",
-      payload: {
-        eventType,
-        titleSlug,
-        title,
-        timestamp: new Date().toISOString(),
-        metadata
-      }
-    })
-  })
-}
-
-const heartbeatEpoch = (typeof crypto !== "undefined" && crypto.randomUUID) 
-  ? crypto.randomUUID() 
-  : Math.random().toString(36).substring(2) + Date.now().toString(36);
-
-function heartbeat(titleSlug = trackedSlug, title = trackedTitle) {
-  if (isSolved) return
-  addFocusedTime(isWindowFocused)
-
-  if (isZenith) {
-    const elapsedSeconds = Math.max(1, Math.floor((Date.now() - openedAt.getTime()) / 1000))
-    const observedFocusSeconds = sessionFocusBaseline + focusSeconds
-    const score = Math.min(100, Math.round((observedFocusSeconds / elapsedSeconds) * 100))
-    chrome.storage.local.set({ "algovault.zenithFocusScore": score })
-  }
-
-  if (!sessionStarted || !titleSlug) return
-  chrome.runtime.sendMessage({
-    action: "session_heartbeat",
-    payload: {
-      titleSlug,
-      title,
-      openedAt: openedAt.toISOString(),
-      focusSeconds,
-      tabSwitches,
-      pasteCount,
-      problemFocusSeconds,
-      problemTabSwitches: Math.max(0, tabSwitches - tabSwitchBaseline),
-      problemPasteCount: Math.max(0, pasteCount - pasteBaseline),
-      heartbeatEpoch
-    }
-  })
-}
-
-function handleInactive(isTabSwitch = false) {
-  if (isSolved) return
-  if (isWindowFocused) {
-    addFocusedTime(true)
-    isWindowFocused = false
-    if (isTabSwitch) {
-      tabSwitches += 1
-      sendEvent("TAB_SWITCH", { tabSwitches })
-    }
-  }
-}
-
-function handleActive() {
-  if (isSolved) return
-  if (!isWindowFocused) {
-    focusStartedAt = Date.now()
-    isWindowFocused = true
-    sendEvent("FOCUS", {})
-  }
-}
-
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) {
-    handleInactive(true)
-  } else {
-    handleActive()
-  }
-}, { signal })
-
-window.addEventListener("blur", () => {
-  handleInactive(false)
-}, { signal })
-
-window.addEventListener("focus", () => {
-  handleActive()
-}, { signal })
-
-// Listen to copy and paste events in the capture phase to bypass Monaco editor blockages
-document.addEventListener("paste", (event) => {
-  if (isSolved) return
-  const pasted = event.clipboardData?.getData("text") || ""
-  const charCount = pasted.length
-
-  if (isZenith && charCount > 0) {
-    const textHash = simpleStringHash(pasted)
-    const now = Date.now()
-    // Verify against Copy Token history (valid within 2 hours)
-    const isValid = copyHistory.some(h => h.hash === textHash && (now - h.timestamp < 2 * 60 * 60 * 1000))
-
-    if (!isValid) {
-      updateZenithGrade("D", "External paste recorded")
-      showZenithToast("Zenith record updated: external paste observed")
-    }
-  }
-
-  const classification = charCount < 20 ? "NATURAL" : charCount <= 100 ? "PARTIAL" : "FULL"
-  pasteCount += 1
-  sendEvent("PASTE", { charCount, classification, pasteCount })
-}, { capture: true, signal })
-
-document.addEventListener("copy", (event) => {
-  if (isSolved) return
-  const selectedText = window.getSelection()?.toString() || ""
-  const charCount = selectedText.length
-
-  if (isZenith && charCount > 0) {
-    const token = Math.random().toString(36).substring(2, 7)
-    const textHash = simpleStringHash(selectedText)
-    copyHistory.push({ hash: textHash, timestamp: Date.now() })
-    showZenithToast(`Copy Token [${token}] Registered`)
-  }
-
-  sendEvent("COPY", { charCount })
-}, { capture: true, signal })
-
-// Click interceptor to warning user when clicking on tags, hints, discussions, editorial
-document.addEventListener("click", (event) => {
-  if (!isZenith || isSolved) return
-
-  const target = event.target as HTMLElement
-  const link = target.closest("a")
-
-  if (link) {
-    const href = link.getAttribute("href") || ""
-    const isEditorial = href.includes("/editorial") || href.includes("/solution")
-    const isDiscussion = href.includes("/discussion") || href.includes("/discuss")
-
-    if (isEditorial && currentGrade !== "D" && currentGrade !== "INVALID") {
-      event.preventDefault()
-      event.stopPropagation()
-      event.stopImmediatePropagation()
-      showZenithAlarmModal(
-        "Opening editorial.",
-        "Your session record will note editorial use.",
-        () => {
-          updateZenithGrade("D", "Editorial opened")
-          showZenithToast("Zenith record updated: editorial used")
-          window.location.href = link.href
-        },
-        () => {
-          showZenithToast("Returned to the problem")
-          // If React still navigated us, force return to Description
-          const descTab = document.querySelector('a[href$="/description/"]') as HTMLElement
-          if (descTab) descTab.click()
-          if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {})
-        }
-      )
-      return
-    }
-
-    if (isDiscussion && !["C", "D", "INVALID"].includes(currentGrade)) {
-      event.preventDefault()
-      event.stopPropagation()
-      event.stopImmediatePropagation()
-      showZenithAlarmModal(
-        "Opening discussions.",
-        "Your session record will note discussion use.",
-        () => {
-          updateZenithGrade("C", "Discussion opened")
-          showZenithToast("Zenith record updated: discussion used")
-          window.location.href = link.href
-        },
-        () => {
-          showZenithToast("Returned to the problem")
-          const descTab = document.querySelector('a[href$="/description/"]') as HTMLElement
-          if (descTab) descTab.click()
-          if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {})
-        }
-      )
-      return
-    }
-  }
-
-  // Intercept tags expand clicks (Topics / Companies headers)
-  const isTagsBtn = target.textContent?.trim() === "Topics" || target.textContent?.trim() === "Companies" ||
-                    target.closest("div")?.textContent?.trim() === "Topics" || target.closest("div")?.textContent?.trim() === "Companies"
-
-  if (isTagsBtn && currentGrade === "S_PLUS") {
-    const isExpanded = target.getAttribute("aria-expanded") === "true" || target.closest("div")?.getAttribute("aria-expanded") === "true"
-    if (!isExpanded) {
-      event.preventDefault()
-      event.stopPropagation()
-      showZenithAlarmModal(
-        "Viewing topic tags.",
-        "Your session record will note that you reviewed topic tags.",
-        () => {
-          updateZenithGrade("S", "Tags viewed")
-          showZenithToast("Zenith record updated: topic tags viewed")
-          const temp = isZenith
-          isZenith = false
-          target.click()
-          isZenith = temp
-        },
-        () => {
-          showZenithToast("Returned to focus")
-        }
-      )
-      return
-    }
-  }
-
-  // Intercept hints expansion clicks
-  const hintText = target.textContent?.trim() || ""
-  const isHintBtn = hintText.startsWith("Hint ") && hintText.length < 10
-  if (isHintBtn) {
-    const hintNum = hintText.split(" ")[1]
-    const targetGrade = hintNum === "1" ? "A" : "B"
-    const targetReason = hintNum === "1" ? "Used one hint" : "Used multiple hints"
-
-    const gradeRanks = { S_PLUS: 0, S: 1, A: 2, B: 3, C: 4, D: 5, INVALID: 6 }
-    const currentRank = gradeRanks[currentGrade as keyof typeof gradeRanks] || 0
-    const targetRank = gradeRanks[targetGrade as keyof typeof gradeRanks] || 0
-
-    if (targetRank > currentRank) {
-      event.preventDefault()
-      event.stopPropagation()
-      showZenithAlarmModal(
-        `Viewing ${hintText}.`,
-        `Your session record will note ${targetReason.toLowerCase()}.`,
-        () => {
-          updateZenithGrade(targetGrade, targetReason)
-          showZenithToast(`Zenith record updated: ${targetReason.toLowerCase()}`)
-          const temp = isZenith
-          isZenith = false
-          target.click()
-          isZenith = temp
-        },
-        () => {
-          showZenithToast("Returned to focus")
-        }
-      )
-      return
     }
   }
 }, true)
 
-// Stop timer immediately on Accepted submission
-// Listen for postMessage from MAIN world (events cross world boundary, CustomEvents do NOT)
-window.addEventListener("message", ((event: MessageEvent) => {
-  if (event.data?.type !== "AV_SUBMISSION_RESULT" && event.data?.type !== "AV_SUBMISSION_RESULT_CONFIRMED") return
-  if (!event.data?.nonce || event.data.nonce !== (window as any).__ALGOVAULT_ISOLATED_NONCE__) return
-  if (isSolved) return
-  const detail = event.data.detail || {}
-  const statusNum = detail.statusCode != null ? Number(detail.statusCode) : null
-  const verdict = statusNum === 10 ? "Accepted" : detail.statusDisplay
-  if (verdict === "Accepted") {
-    // Commit the final foreground segment before freezing both clocks.
-    addFocusedTime(isWindowFocused)
-    const solvedAt = Date.now()
-    finalizedProblemFocusSeconds = problemFocusSeconds
-    finalizedProblemElapsedSeconds = Math.max(0, Math.floor((solvedAt - openedAt.getTime()) / 1000))
-    isSolved = true
-    isWindowFocused = false
-    const observedFocusSeconds = sessionFocusBaseline + focusSeconds
-    sendEvent("SOLVED", { focusSeconds: observedFocusSeconds, tabSwitches, pasteCount })
-
-    if (isZenith) {
-      if (document.fullscreenElement) {
-        document.exitFullscreen().catch(() => {})
-      }
-      showZenithToast("Quest Cleared! Zenith Mode Deactivated.")
-    }
-
-    // Keep both semantics. Active is foreground time on this problem; elapsed
-    // is the complete wall-clock attempt duration until the first AC.
-    chrome.storage.local.set({ 
-      "algovault.sessionState": {
-        isSolved: true,
-        slug: trackedSlug,
-        finalActiveSeconds: finalizedProblemFocusSeconds,
-        finalElapsedSeconds: finalizedProblemElapsedSeconds,
-        finalSeconds: finalizedProblemFocusSeconds
-      }
-    })
-    if (trackedSlug) {
-      chrome.storage.local.get(PROBLEM_TIMES_KEY, (res) => {
-        const records = res[PROBLEM_TIMES_KEY] || {}
-        delete records[trackedSlug!]
-        chrome.storage.local.set({ [PROBLEM_TIMES_KEY]: records })
+// Paste Listener: Only count external pastes
+document.addEventListener("paste", (event) => {
+  const pasted = event.clipboardData?.getData("text") || ""
+  const normalized = normalizeText(pasted)
+  if (normalized.length > 3) {
+    const hash = fnv1aHash(normalized)
+    const isInternal = internalCopyHashes.includes(hash)
+    if (!isInternal) {
+      // Increment external paste count in current session
+      chrome.storage.local.get(ACTIVE_SESSION_KEY, (res) => {
+        const session = res[ACTIVE_SESSION_KEY]
+        if (session && session.st === "RUNNING") {
+          chrome.storage.local.set({
+            [ACTIVE_SESSION_KEY]: { ...session, pastes: (session.pastes || 0) + 1 }
+          })
+        }
       })
     }
-    publishLiveTimer()
   }
-}), { signal })
+}, true)
 
-if ((window as any).__av_session_intervals) {
-  (window as any).__av_session_intervals.forEach((id: number) => clearInterval(id));
+// State Tracking
+let currentSlug = getLeetCodeProblemSlug()
+let lastActivityAt = Date.now()
+let idleCheckInterval: NodeJS.Timeout | null = null
+
+function updateActivity() {
+  lastActivityAt = Date.now()
+  // If we were auto-paused due to idle, resume on active interaction
+  chrome.storage.local.get(ACTIVE_SESSION_KEY, (res) => {
+    const session = res[ACTIVE_SESSION_KEY]
+    if (session && session.st === "PAUSED" && session.pr === "IDLE" && currentSlug === session.slug) {
+      chrome.runtime.sendMessage({ action: "session_resume_v2" })
+    }
+  })
 }
-(window as any).__av_session_intervals = [];
 
-// Detect SPA route navigation instantly (every 1 second)
-const routeInterval = setInterval(() => {
-  if (location.href !== lastUrl) {
-    const newSlug = currentSlug()
-    const oldSlug = trackedSlug
-    lastUrl = location.href
-
-    if (newSlug !== oldSlug) {
-      if (!isSolved && oldSlug) heartbeat(oldSlug, trackedTitle)
-      if (oldSlug) sendEvent("CLOSE", { url: lastUrl }, oldSlug, trackedTitle)
-
-      trackedSlug = newSlug
-      trackedTitle = currentTitle()
-
-      if (newSlug) {
-        finalizedProblemFocusSeconds = undefined
-        finalizedProblemElapsedSeconds = undefined
-        problemFocusSeconds = 0
-        openedAt = new Date()
-        problemTimerReady = false
-        restoreProblemTimer(() => publishLiveTimer())
-
-        // Check if this new problem is already solved
-        chrome.storage.local.get("algovault.solvedSlugs", (result) => {
-          const cached = result["algovault.solvedSlugs"] || {}
-          const slugs = Array.isArray(cached?.slugs) ? cached.slugs : []
-          if (slugs.includes(newSlug)) {
-            isSolved = true
-            chrome.storage.local.set({ "algovault.sessionState": { isSolved: true, slug: newSlug, finalActiveSeconds: 0, finalElapsedSeconds: 0 } })
-          } else {
-            isSolved = false
-            chrome.storage.local.remove("algovault.sessionState")
-          }
-        })
-
-        tabSwitchBaseline = tabSwitches
-        pasteBaseline = pasteCount
-        isWindowFocused = !document.hidden && document.hasFocus()
-        sendEvent("OPEN", { url: location.href })
-        heartbeat()
-      } else {
-        chrome.storage.local.remove("algovault.problemStartTime")
-        chrome.storage.local.remove("algovault.sessionState")
-        isSolved = false
-      }
-    } else {
-      // Same problem slug, just updated the sub-URL (description/editorial/submissions/etc.)
-      const newTitle = currentTitle()
-      if (newTitle && newTitle !== trackedTitle) {
-        trackedTitle = newTitle
-      }
-
-      // Check if Zenith Mode is active and they navigated directly to a prohibited path
-      if (isZenith) {
-        const path = location.pathname
-        if (path.includes("/solutions")) {
-          if (currentGrade !== "D" && currentGrade !== "INVALID") {
-            showZenithAlarmModal(
-              "Accessing solutions page.",
-              "Your session record will note solution use.",
-              () => {
-                updateZenithGrade("D", "Solutions page opened")
-                showZenithToast("Zenith record updated: solutions used")
-              },
-              () => {
-                const safeUrl = window.location.href.replace(/\/solutions.*|\/editorial.*|\/discuss.*|\/comments.*/, "/description/")
-                window.location.href = safeUrl
-                showZenithToast("Returned to the problem")
-              }
-            )
-          }
-        } else if (path.includes("/editorial")) {
-          if (currentGrade !== "D" && currentGrade !== "INVALID") {
-            showZenithAlarmModal(
-              "Accessing editorial page.",
-              "Your session record will note editorial use.",
-              () => {
-                updateZenithGrade("D", "Editorial page opened")
-                showZenithToast("Zenith record updated: editorial used")
-              },
-              () => {
-                const safeUrl = window.location.href.replace(/\/solutions.*|\/editorial.*|\/discuss.*|\/comments.*/, "/description/")
-                window.location.href = safeUrl
-                showZenithToast("Returned to the problem")
-              }
-            )
-          }
-        } else if (path.includes("/discuss") || path.includes("/discussion")) {
-          if (!["C", "D", "INVALID"].includes(currentGrade)) {
-            showZenithAlarmModal(
-              "Accessing discussions page.",
-              "Your session record will note discussion use.",
-              () => {
-                updateZenithGrade("C", "Discussions page opened")
-                showZenithToast("Zenith record updated: discussion used")
-              },
-              () => {
-                const safeUrl = window.location.href.replace(/\/solutions.*|\/editorial.*|\/discuss.*|\/comments.*/, "/description/")
-                window.location.href = safeUrl
-                showZenithToast("Returned to the problem")
-              }
-            )
-          }
-        }
-      }
-    }
+// Activity Listeners (Throttled)
+let lastMove = 0
+document.addEventListener("mousemove", () => {
+  const now = Date.now()
+  if (now - lastMove > 1000) {
+    lastMove = now
+    updateActivity()
   }
-}, 1000)
+}, { passive: true })
 
-// Periodic heartbeat every 30 seconds
-const heartbeatInterval = setInterval(() => {
-  if (isSolved) return
-  heartbeat()
-}, 30_000);
+document.addEventListener("keydown", updateActivity, { passive: true })
+document.addEventListener("scroll", updateActivity, { passive: true })
 
-// Continuous 1-second live timer publisher
-const liveTimerInterval = setInterval(() => {
-  if (!isSolved) {
-    const isTabActive = isWindowFocused && !document.hidden && !isPaused && (Date.now() - lastActivityTime < IDLE_TIMEOUT_MS)
-    if (isTabActive || isZenith) {
-      publishLiveTimer()
-    }
-  }
-}, 1000);
-
-(window as any).__av_session_intervals.push(routeInterval, heartbeatInterval, liveTimerInterval);
-
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && sessionStarted) {
-    // When returning to this tab, sync the baseline from storage
-    chrome.storage.local.get(["algovault.currentSession"], (res) => {
-      const current = res["algovault.currentSession"]
-      if (current && typeof current === "object") {
-        activateSession(current as any)
+// Intelligent Idle Poller (Check every 10 seconds, zero storage writes unless state changes)
+idleCheckInterval = setInterval(() => {
+  const now = Date.now()
+  if (now - lastActivityAt >= IDLE_TIMEOUT_MS) {
+    chrome.storage.local.get(ACTIVE_SESSION_KEY, (res) => {
+      const session = res[ACTIVE_SESSION_KEY]
+      if (session && session.st === "RUNNING" && currentSlug === session.slug) {
+        chrome.runtime.sendMessage({ action: "session_pause_v2", reason: "IDLE" })
       }
     })
-  } else if (document.hidden && sessionStarted && !isPaused && !isSolved) {
-    // When leaving this tab, commit any pending focus time
-    addFocusedTime(isWindowFocused)
+  }
+}, 10_000)
+
+// Tab Ownership & Focus Handler
+function handleFocus() {
+  if (!currentSlug) return
+  chrome.storage.local.get(ACTIVE_SESSION_KEY, (res) => {
+    const session = res[ACTIVE_SESSION_KEY]
+    if (!session || session.slug !== currentSlug) {
+      // Start fresh or load per-slug session for new problem
+      chrome.runtime.sendMessage({ action: "session_start_v2", slug: currentSlug })
+    } else if (session.st === "PAUSED" && session.pr === "TAB") {
+      // Resume session auto-paused by tab switch (DO NOT resume MANUAL pause!)
+      chrome.runtime.sendMessage({ action: "claim_tab_ownership" })
+    } else if (session.st === "RUNNING") {
+      // Transfer tab ownership if returning from another tab
+      chrome.runtime.sendMessage({ action: "claim_tab_ownership" })
+    }
+  })
+}
+
+function handleBlur() {
+  if (!document.hidden) return
+
+  chrome.storage.local.get(ACTIVE_SESSION_KEY, (res) => {
+    const session = res[ACTIVE_SESSION_KEY]
+    if (session && session.st === "RUNNING" && session.slug === currentSlug) {
+      chrome.runtime.sendMessage({ action: "session_pause_v2", reason: "TAB" })
+    }
+  })
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    handleBlur()
+  } else {
+    handleFocus()
   }
 })
 
-window.addEventListener("beforeunload", () => {
-  if (!isSolved) {
-    heartbeat()
-    sendEvent("CLOSE", { url: location.href })
+window.addEventListener("focus", handleFocus)
+window.addEventListener("blur", handleBlur)
+
+// Page Lifecycle API (Sleep/Freeze recovery)
+window.addEventListener("freeze", handleBlur)
+window.addEventListener("pagehide", handleBlur)
+window.addEventListener("resume", handleFocus)
+window.addEventListener("pageshow", handleFocus)
+
+// SPA Router Observer (Detect problem slug changes instantly without full reload)
+let lastObservedUrl = location.href
+const spaObserver = new MutationObserver(() => {
+  if (location.href !== lastObservedUrl) {
+    lastObservedUrl = location.href
+    const newSlug = getLeetCodeProblemSlug()
+    if (newSlug && newSlug !== currentSlug) {
+      currentSlug = newSlug
+      handleFocus()
+    }
   }
-}, { signal })
+})
+
+spaObserver.observe(document.body, { childList: true, subtree: true })
+
+// Initial check on load
+handleFocus()

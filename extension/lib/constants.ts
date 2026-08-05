@@ -14,7 +14,9 @@ export const STORAGE_KEYS = {
   CACHED_HEATMAP: "algovault.cache.heatmap",
   CACHED_CONTESTS: "algovault.cache.contests",
   CACHED_WEAKNESS: "algovault.cache.weakness",
-  CURRENT_SESSION: "algovault.currentSession",
+  CURRENT_SESSION: "algovault.session.active",
+  TODAY_SNAPSHOT: "algovault.todaySnapshot.v2",
+  LIVE_TIMER: "algovault.session.active",
   GITHUB_PAT: "algovault.github.pat",
   GITHUB_REPO: "algovault.github.repo"
 } as const;

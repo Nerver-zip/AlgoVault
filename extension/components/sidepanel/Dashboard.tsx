@@ -54,6 +54,7 @@ import type {
   WeaknessSnapshot,
   ZerotracProblem
 } from "../../lib/types"
+import { usePracticeSession } from "../../hooks/usePracticeSession"
 
 const TODAY_SNAPSHOT_VERSION = 2
 const STALE_AFTER_MS = 15 * 60 * 1000
@@ -243,8 +244,8 @@ export const Dashboard = () => {
   const [solved, setSolved] = useState<Set<string>>(new Set())
   const [zerotrac, setZerotrac] = useState<ZerotracProblem[]>([])
   const [ranking, setRanking] = useState<UserContestRanking | null>(null)
-  const [currentSession, setCurrentSessionState] = useState<ActiveSession | null>(null)
-  const [liveTimer, setLiveTimerState] = useState<LiveTimerState | null>(null)
+  const { session: apseSession, clocks, pauseSession, resumeSession, resetSession, finishSession } = usePracticeSession()
+  const [localLogs, setLocalLogs] = useState<any[]>([])
   const [lastSync, setLastSync] = useState<number | null>(null)
   const [snapshotSavedAt, setSnapshotSavedAt] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
@@ -254,6 +255,13 @@ export const Dashboard = () => {
   const [reviewSubmitting, setReviewSubmitting] = useState(false)
   const [reviewedToday, setReviewedToday] = useState(false)
   const [sessionActionPending, setSessionActionPending] = useState(false)
+
+  const loadLocalLogs = useCallback(() => {
+    chrome.storage.local.get("algovault.logs.index", (res) => {
+      const logs = res["algovault.logs.index"]
+      if (Array.isArray(logs)) setLocalLogs(logs)
+    })
+  }, [])
 
   const applySnapshot = useCallback((snapshot: TodaySnapshot) => {
     setData(snapshot.data)
@@ -288,7 +296,7 @@ export const Dashboard = () => {
         queue: reviews,
         weakness: weak,
         sessions: allSessions,
-        solved: solvedResponse.ok && Array.isArray(solvedResponse.data) ? solvedResponse.data : [],
+        solved: Array.from(new Set(solvedResponse.data ?? [])),
         zerotrac: normalizeZerotracPayload(zerotracResponse),
         ranking: rankingResponse.ok ? rankingResponse.data?.userContestRanking ?? null : null,
         savedAt: Date.now()
@@ -307,32 +315,26 @@ export const Dashboard = () => {
     }
   }, [applySnapshot])
 
-  const readSessionState = useCallback(async () => {
-    const [session, timer] = await Promise.all([getCurrentSession(), getLiveTimer()])
-    setCurrentSessionState(session)
-    setLiveTimerState(normalizeTimer(timer, session))
-  }, [])
-
   useEffect(() => {
     let mounted = true
-    void Promise.all([getTodaySnapshot(), getLastSync()]).then(([snapshot, syncedAt]) => {
-      if (!mounted) return
-      if (snapshot?.data) {
-        applySnapshot(snapshot)
-        setLoading(false)
-      }
-      setLastSync(syncedAt)
-    }).finally(() => {
+    const init = async () => {
+      const snap = await getTodaySnapshot()
+      if (mounted && snap?.schemaVersion === TODAY_SNAPSHOT_VERSION) applySnapshot(snap)
+      if (mounted) loadLocalLogs()
       if (mounted) void refresh()
-    })
-
-    void readSessionState()
-    const messageListener = (event: { action?: string }) => {
-      if (event.action === "dashboard_refresh") void refresh()
     }
-    const storageListener = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
-      if (area !== "local") return
-      if (changes["algovault.currentSession"] || changes["algovault.liveTimer"]) void readSessionState()
+    void init()
+
+    const messageListener = (event: { action?: string }) => {
+      if (event.action === "dashboard_refresh") {
+        loadLocalLogs()
+        void refresh()
+      }
+    }
+    const storageListener = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
+      if (areaName === "local" && changes["algovault.logs.index"]) {
+        loadLocalLogs()
+      }
     }
     chrome.runtime.onMessage.addListener(messageListener)
     chrome.storage.onChanged.addListener(storageListener)
@@ -341,17 +343,11 @@ export const Dashboard = () => {
       chrome.runtime.onMessage.removeListener(messageListener)
       chrome.storage.onChanged.removeListener(storageListener)
     }
-  }, [applySnapshot, readSessionState, refresh])
+  }, [applySnapshot, loadLocalLogs, refresh])
 
-  const activeSeconds = liveTimer?.activeFocusSeconds ?? currentSession?.focusSeconds ?? 0
-  const problemActiveSeconds = liveTimer?.problemFocusSeconds ?? 0
-  const problemElapsedSeconds = liveTimer?.problemElapsedSeconds ?? 0
-  const hasProblemClock = Boolean(liveTimer?.slug && (problemActiveSeconds > 0 || problemElapsedSeconds > 0))
-  // A current problem can be timed without an explicit focus session. Do not
-  // present that as a session running in the dashboard.
-  const sessionStatus = currentSession ? (liveTimer?.status ?? "running") : "idle"
-  const sessionIsRunning = sessionStatus === "running" && !liveTimer?.isPaused
-  const sessionIsPaused = Boolean(currentSession) && (sessionStatus === "paused" || Boolean(liveTimer?.isPaused))
+  const activeSeconds = clocks.activeSeconds
+  const sessionIsRunning = clocks.isRunning
+  const sessionIsPaused = clocks.isPaused
   const today = dateKey(new Date())
 
   const activeReview = queue[0] ?? null
@@ -500,9 +496,9 @@ export const Dashboard = () => {
       }
     })
     const byDay = new Map(days.map((day) => [day.key, day]))
-    const activeSessionId = currentSession?.id
+    const activeSessionSlug = apseSession?.slug
     for (const session of sessions) {
-      if (activeSessionId && session.id === activeSessionId) continue
+      if (activeSessionSlug && (session.id === activeSessionSlug || (session as any).slug === activeSessionSlug)) continue
       const started = parseDate(session.startedAt)
       if (!started) continue
       const bucket = byDay.get(dateKey(started))
@@ -510,12 +506,25 @@ export const Dashboard = () => {
       bucket.focusSeconds += Math.max(0, session.focusSeconds ?? 0)
       bucket.sessions += 1
     }
-    if (currentSession) {
-      const started = parseDate(currentSession.startedAt)
-      const bucket = started ? byDay.get(dateKey(started)) : byDay.get(today)
+
+    for (const log of localLogs) {
+      if (!log.ts) continue
+      const date = new Date(log.ts)
+      const bucket = byDay.get(dateKey(date))
+      if (!bucket) continue
+      const logSecs = Number(log.actSecs ?? log.activeSecs ?? log.focusSeconds ?? 0)
+      bucket.focusSeconds += Math.max(0, logSecs)
+      bucket.sessions += 1
+      if (log.solved) bucket.solves += 1
+    }
+
+    if (apseSession && clocks.activeSeconds > 0) {
+      const started = new Date(apseSession.tElapsedStart || Date.now())
+      const bucket = byDay.get(dateKey(started)) ?? byDay.get(today)
       if (bucket) {
-        bucket.focusSeconds += activeSeconds
+        bucket.focusSeconds += clocks.activeSeconds
         bucket.sessions += 1
+        if (clocks.isSolved) bucket.solves += 1
       }
     }
     for (const solve of data?.recentSolves ?? []) {
@@ -531,102 +540,10 @@ export const Dashboard = () => {
     const weekSessions = days.reduce((sum, day) => sum + day.sessions, 0)
     const strongestDay = [...days].sort((a, b) => b.focusSeconds - a.focusSeconds)[0]
     return { days, todayActivity, weekFocusSeconds, weekSolves, weekSessions, strongestDay }
-  }, [activeSeconds, currentSession, data?.recentSolves, data?.todaySolves, sessions, today])
+  }, [activeSeconds, apseSession, clocks.isRunning, data?.recentSolves, data?.todaySolves, sessions, today])
 
   const primaryActionHref = primaryAction.titleSlug ? `https://leetcode.com/problems/${primaryAction.titleSlug}/` : undefined
   const maxFocus = Math.max(1, ...activity.days.map((day) => day.focusSeconds))
-
-  const startSession = async () => {
-    setSessionActionPending(true)
-    try {
-      const result = await message<BackgroundResponse<ActiveSession>>({ action: "session_start", mode: "PRACTICE" }).catch(() => null)
-      const sessionData: ActiveSession = result?.ok && result.data ? result.data : {
-        id: Date.now(),
-        mode: "PRACTICE",
-        startedAt: new Date().toISOString(),
-        focusSeconds: 0
-      }
-      await setCurrentSession(sessionData)
-      await setLiveTimer({
-        activeFocusSeconds: 0,
-        focusSeconds: 0,
-        elapsedSeconds: 0,
-        status: "running",
-        isPaused: false,
-        updatedAt: Date.now()
-      })
-      setCurrentSessionState(sessionData)
-      await readSessionState()
-      setError(null)
-    } catch {
-      const fallback: ActiveSession = {
-        id: Date.now(),
-        mode: "PRACTICE",
-        startedAt: new Date().toISOString(),
-        focusSeconds: 0
-      }
-      await setCurrentSession(fallback)
-      await setLiveTimer({
-        activeFocusSeconds: 0,
-        focusSeconds: 0,
-        elapsedSeconds: 0,
-        status: "running",
-        isPaused: false,
-        updatedAt: Date.now()
-      })
-      setCurrentSessionState(fallback)
-      await readSessionState()
-      setError(null)
-    } finally {
-      setSessionActionPending(false)
-    }
-  }
-
-  const togglePause = async () => {
-    setSessionActionPending(true)
-    try {
-      const action = sessionIsPaused ? "session_resume" : "session_pause"
-      await message<BackgroundResponse<LiveTimerState>>({ action }).catch(() => null)
-      const nextPaused = !sessionIsPaused
-      const timer = await getLiveTimer()
-      const updatedTimer: LiveTimerState = {
-        ...(timer || { activeFocusSeconds: 0, focusSeconds: 0, elapsedSeconds: 0, updatedAt: Date.now() }),
-        status: nextPaused ? "paused" : "running",
-        isPaused: nextPaused,
-        updatedAt: Date.now()
-      }
-      await setLiveTimer(updatedTimer)
-      await chrome.storage.local.set({ "algovault.timerPaused": nextPaused })
-      await readSessionState()
-      setError(null)
-    } catch {
-      const nextPaused = !sessionIsPaused
-      await chrome.storage.local.set({ "algovault.timerPaused": nextPaused })
-      await readSessionState()
-      setError(null)
-    } finally {
-      setSessionActionPending(false)
-    }
-  }
-
-  const endSession = async () => {
-    setSessionActionPending(true)
-    try {
-      await message<BackgroundResponse<ActiveSession>>({ action: "session_end" }).catch(() => null)
-      await clearCurrentSession()
-      setCurrentSessionState(null)
-      setLiveTimerState(null)
-      await refresh().catch(() => null)
-      setError(null)
-    } catch {
-      await clearCurrentSession()
-      setCurrentSessionState(null)
-      setLiveTimerState(null)
-      setError(null)
-    } finally {
-      setSessionActionPending(false)
-    }
-  }
 
   const openTrackPicker = () => {
     chrome.storage.local.set({ "algovault.requestedTab": "Lists" })
@@ -705,26 +622,32 @@ export const Dashboard = () => {
             <div className="pl-3"><span className="block text-[18px] font-bold font-mono tabular-nums text-zinc-100">{data.currentStreak}d</span><span className="text-[8px] font-bold font-mono uppercase tracking-[0.14em] text-zinc-600">solve streak</span></div>
           </div>
         </div>
+      </section>
 
-        <div className="relative flex flex-wrap items-center justify-between gap-3 border-t border-zinc-800/60 bg-black/25 px-4 py-3 sm:px-5">
+      <section className="relative flex flex-col rounded-2xl border border-zinc-800 bg-[#0d0d0d] font-mono shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:px-5">
           <div className="flex min-w-0 items-center gap-2">
-            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${sessionIsRunning ? "bg-emerald-400 animate-pulse" : sessionIsPaused ? "bg-amber-400" : "bg-zinc-700"}`} />
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${clocks.isSolved ? "bg-emerald-400" : sessionIsRunning ? "bg-emerald-400 animate-pulse" : sessionIsPaused ? "bg-amber-400" : "bg-zinc-700"}`} />
             <div className="min-w-0">
-              <p className="text-[10px] font-medium text-zinc-300">{sessionIsRunning ? "Focus session active" : sessionIsPaused ? "Focus session paused" : hasProblemClock ? "Problem clock running" : "Focus session"}</p>
-              <p className="text-[9px] text-zinc-600">{sessionIsRunning ? "Observed active time only" : sessionIsPaused ? "Timer is not accumulating" : hasProblemClock ? "Active time excludes background and idle time" : "Start when you want session time recorded"}</p>
+              <p className="text-[10px] font-medium text-zinc-300">{apseSession ? `PROBLEM: ${apseSession.slug}` : "PRACTICE ENGINE IDLE"}</p>
+              <p className="text-[9px] text-zinc-600">{clocks.isSolved ? "SOLVED · Recorded in Logs" : sessionIsRunning ? "APSE v2 Active Focus" : sessionIsPaused ? `APSE v2 Paused (${apseSession?.pr || "MANUAL"})` : "Open a problem to auto-start"}</p>
             </div>
           </div>
-          {currentSession ? (
+          {apseSession ? (
             <div className="flex items-center gap-2">
-              <span className={`mr-1 font-mono text-sm font-bold tabular-nums ${sessionIsPaused ? "text-amber-300" : "text-emerald-400"}`}>{formatLiveTimer(activeSeconds)}</span>
-              <button type="button" disabled={sessionActionPending} onClick={() => void togglePause()} className="inline-flex h-8 items-center gap-1 rounded-md border border-zinc-700/80 px-2 text-[9px] font-bold font-mono uppercase tracking-wide text-zinc-300 transition hover:border-zinc-500 hover:text-white disabled:opacity-50" aria-label={sessionIsPaused ? "Resume focus session" : "Pause focus session"}>{sessionIsPaused ? <Play size={10} fill="currentColor" /> : <Pause size={10} fill="currentColor" />}{sessionIsPaused ? "Resume" : "Pause"}</button>
-              <button type="button" disabled={sessionActionPending} onClick={() => void endSession()} className="inline-flex h-8 items-center gap-1 rounded-md border border-rose-900/60 px-2 text-[9px] font-bold font-mono uppercase tracking-wide text-rose-300 transition hover:border-rose-700 hover:text-rose-200 disabled:opacity-50" aria-label="End focus session"><Square size={9} fill="currentColor" /> End</button>
+              <span className={`mr-1 font-mono text-sm font-bold tabular-nums ${clocks.isSolved ? "text-emerald-400" : sessionIsPaused ? "text-amber-300" : "text-emerald-400"}`}>{Math.floor(activeSeconds / 60).toString().padStart(2, "0")}:{(activeSeconds % 60).toString().padStart(2, "0")}</span>
+              
+              {!clocks.isSolved && (
+                <>
+                  <button type="button" onClick={() => sessionIsPaused ? resumeSession() : pauseSession("MANUAL")} className="inline-flex h-8 items-center gap-1 rounded-md border border-zinc-700/80 px-2 text-[9px] font-bold font-mono uppercase tracking-wide text-zinc-300 transition hover:border-zinc-500 hover:text-white" aria-label={sessionIsPaused ? "Resume focus session" : "Pause focus session"}>{sessionIsPaused ? <Play size={10} fill="currentColor" /> : <Pause size={10} fill="currentColor" />}{sessionIsPaused ? "Resume" : "Pause"}</button>
+                  <button type="button" onClick={() => finishSession()} className="inline-flex h-8 items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 text-[9px] font-bold font-mono uppercase tracking-wide text-emerald-400 transition hover:bg-emerald-500/20 hover:text-emerald-300" title="Mark as Solved & Log"><Check size={10} /> Finish</button>
+                </>
+              )}
+              
+              <button type="button" onClick={() => resetSession()} className="inline-flex h-8 items-center gap-1 rounded-md border border-rose-900/60 px-2 text-[9px] font-bold font-mono uppercase tracking-wide text-rose-300 transition hover:border-rose-700 hover:text-rose-200" aria-label="End focus session"><Square size={9} fill="currentColor" /> {clocks.isSolved ? "Clear" : "Reset"}</button>
             </div>
-          ) : (
-            <button type="button" disabled={sessionActionPending} onClick={() => void startSession()} className="inline-flex h-8 items-center gap-1 rounded-md border border-zinc-700 bg-zinc-800/70 px-2.5 text-[9px] font-bold font-mono uppercase tracking-wide text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-700 hover:text-white disabled:opacity-50"><Play size={9} fill="currentColor" /> Start</button>
-          )}
+          ) : null}
         </div>
-        {hasProblemClock && <div className="flex items-center gap-3 border-t border-zinc-800/50 px-4 py-2.5 font-mono text-[9px] sm:px-5"><span className="text-zinc-600">CURRENT PROBLEM</span><span className="text-emerald-300">{formatLiveTimer(problemActiveSeconds)} active</span><span className="text-sky-300">{formatLiveTimer(problemElapsedSeconds)} elapsed</span></div>}
       </section>
 
       {reviewOpen && activeReview && (

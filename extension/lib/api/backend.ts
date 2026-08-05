@@ -1,6 +1,6 @@
 import { BACKEND_URL } from "../constants"
 import { getJwtToken, getUsername, clearJwtToken } from "../storage"
-import type { PredictionResult } from "../types"
+import type { ActiveSession, DashboardData, PredictionResult, RevisionQueueItem, SessionData, WeaknessSnapshot } from "../types"
 
 export const exchangeGithubCode = async (code: string) => {
   const res = await fetch(`${BACKEND_URL}/api/auth/github-exchange`, {
@@ -15,7 +15,9 @@ export const exchangeGithubCode = async (code: string) => {
   return res.json();
 }
 
-async function backendFetch(path: string, init: RequestInit = {}) {
+// Older callers still consume a few untyped backend endpoints. Typed endpoint
+// wrappers should opt in explicitly while this preserves their compatibility.
+async function backendFetch<T = any>(path: string, init: RequestInit = {}): Promise<T> {
   const jwt = await getJwtToken()
   const username = await getUsername()
   const headers = new Headers(init.headers)
@@ -51,22 +53,22 @@ async function backendFetch(path: string, init: RequestInit = {}) {
     const body = await res.text().catch(() => "")
     throw new Error(body || `Backend request failed: ${res.status}`)
   }
-  if (res.status === 204) return null
+  if (res.status === 204) return null as T
   const text = await res.text().catch(() => "")
-  if (!text.trim()) return null
-  return JSON.parse(text)
+  if (!text.trim()) return null as T
+  return JSON.parse(text) as T
 }
 
 export const fetchPrediction = async (titleSlug: string): Promise<PredictionResult> => {
-  return backendFetch(`/api/predict/${titleSlug}`)
+  return backendFetch<PredictionResult>(`/api/predict/${titleSlug}`)
 }
 
-export const fetchDashboard = async () => backendFetch("/api/dashboard")
+export const fetchDashboard = async (): Promise<DashboardData> => backendFetch<DashboardData>("/api/dashboard")
 export const fetchHeatmap = async () => backendFetch("/api/heatmap")
 export const fetchMastery = async () => backendFetch("/api/mastery")
-export const fetchWeakness = async (refresh = false) => backendFetch(refresh ? "/api/weakness?refresh=true" : "/api/weakness")
+export const fetchWeakness = async (refresh = false): Promise<WeaknessSnapshot> => backendFetch<WeaknessSnapshot>(refresh ? "/api/weakness?refresh=true" : "/api/weakness")
 export const fetchPotd = async () => backendFetch("/api/potd")
-export const fetchRevisionQueue = async () => backendFetch("/api/revision")
+export const fetchRevisionQueue = async (): Promise<RevisionQueueItem[]> => backendFetch<RevisionQueueItem[]>("/api/revision")
 export const reviewRevisionCard = async (cardId: number, quality: number) => {
   return backendFetch(`/api/revision/${cardId}`, {
     method: "POST",
@@ -93,33 +95,33 @@ export const addToVault = async (payload: Record<string, any>) => {
   })
 }
 
-export const startSession = async (mode = "PRACTICE") => {
-  return backendFetch("/api/sessions/start", {
+export const startSession = async (mode = "PRACTICE"): Promise<ActiveSession> => {
+  return backendFetch<ActiveSession>("/api/sessions/start", {
     method: "POST",
     body: JSON.stringify({ mode })
   })
 }
 
-export const fetchCurrentSession = async () => backendFetch("/api/sessions/current")
+export const fetchCurrentSession = async (): Promise<ActiveSession | null> => backendFetch<ActiveSession | null>("/api/sessions/current")
 
-export const fetchAllSessions = async () => backendFetch("/api/sessions/all")
+export const fetchAllSessions = async (): Promise<SessionData[]> => backendFetch<SessionData[]>("/api/sessions/all")
 
-export const sendSessionEvent = async (payload: Record<string, any>) => {
-  return backendFetch("/api/sessions/event", {
+export const sendSessionEvent = async (payload: Record<string, unknown>): Promise<ActiveSession | null> => {
+  return backendFetch<ActiveSession | null>("/api/sessions/event", {
     method: "POST",
     body: JSON.stringify(payload)
   })
 }
 
-export const sendSessionHeartbeat = async (payload: Record<string, any>) => {
-  return backendFetch("/api/sessions/heartbeat", {
+export const sendSessionHeartbeat = async (payload: Record<string, unknown>): Promise<ActiveSession | null> => {
+  return backendFetch<ActiveSession | null>("/api/sessions/heartbeat", {
     method: "POST",
     body: JSON.stringify(payload)
   })
 }
 
-export const sendSubmissionResult = async (payload: Record<string, any>) => {
-  return backendFetch("/api/sessions/submission", {
+export const sendSubmissionResult = async (payload: Record<string, unknown>): Promise<ActiveSession | null> => {
+  return backendFetch<ActiveSession | null>("/api/sessions/submission", {
     method: "POST",
     body: JSON.stringify(payload)
   })
@@ -132,8 +134,8 @@ export const sendSelfReport = async (payload: Record<string, any>) => {
   })
 }
 
-export const endSession = async () => {
-  return backendFetch("/api/sessions/end", {
+export const endSession = async (): Promise<ActiveSession | null> => {
+  return backendFetch<ActiveSession | null>("/api/sessions/end", {
     method: "POST"
   })
 }

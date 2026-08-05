@@ -17,7 +17,7 @@ import {
   fetchZerotracRatingsBackend,
   addToVault
 } from "../lib/api/backend"
-import type { ActiveSession, LiveTimerState } from "../lib/types"
+import { createSession, transitionSession } from "../lib/session-engine/EngineKernel"
 
 export {}
 
@@ -26,54 +26,256 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error
 let isSyncing = false;
 let syncAbortController: AbortController | null = null;
 
-const CURRENT_SESSION_KEY = "algovault.currentSession"
-const LIVE_TIMER_KEY = "algovault.liveTimer"
-const TIMER_PAUSED_KEY = "algovault.timerPaused"
+const ACTIVE_SESSION_KEY = "algovault.session.active"
+const LOGS_INDEX_KEY = "algovault.logs.index"
 
-function nonNegativeNumber(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0
-}
+// ─── APSE v2 BACKGROUND COORDINATOR ─────────────────────────────────
 
-async function setLiveTimerStatus(session: ActiveSession, status: "running" | "paused"): Promise<LiveTimerState> {
-  const existing = await storage.get<LiveTimerState>(LIVE_TIMER_KEY)
-  const activeFocusSeconds = Math.max(
-    nonNegativeNumber(existing?.activeFocusSeconds),
-    nonNegativeNumber(existing?.focusSeconds),
-    nonNegativeNumber(session.focusSeconds)
+/**
+ * Archive completed session to monthly log bucket and index
+ */
+async function archivePracticeLog(session: any, isSolved: boolean, language?: string) {
+  if (!session || !session.slug) return
+  const now = Date.now()
+  const activeSecs = Math.floor(
+    (session.accActiveMs + (session.st === "RUNNING" && session.tActiveStart ? Math.max(0, now - session.tActiveStart) : 0)) / 1000
   )
-  const timer: LiveTimerState = {
-    activeFocusSeconds,
-    focusSeconds: activeFocusSeconds,
-    elapsedSeconds: nonNegativeNumber(existing?.elapsedSeconds),
-    problemFocusSeconds: nonNegativeNumber(existing?.problemFocusSeconds),
-    problemElapsedSeconds: nonNegativeNumber(existing?.problemElapsedSeconds),
-    status,
-    isPaused: status === "paused",
-    isSolved: existing?.isSolved,
+  const elapsedSecs = Math.floor(Math.max(0, now - session.tElapsedStart - session.accPausedMs) / 1000)
+  const focusScore = elapsedSecs > 0 ? Math.min(100, Math.round((activeSecs / elapsedSecs) * 100)) : 100
+
+  const logId = session.id || String(now)
+  const logItem = {
+    v: 2,
+    logId,
     sessionId: session.id,
-    mode: session.mode,
-    slug: existing?.slug,
-    problemStartTime: existing?.problemStartTime,
-    updatedAt: Date.now()
+    slug: session.slug,
+    startedAt: session.tElapsedStart,
+    completedAt: now,
+    activeSecs,
+    elapsedSecs,
+    focusScore,
+    tabs: session.tabs || 0,
+    pastes: session.pastes || 0,
+    isSolved,
+    language
   }
-  await Promise.all([
-    storage.set(TIMER_PAUSED_KEY, status === "paused"),
-    storage.set(LIVE_TIMER_KEY, timer)
-  ])
-  return timer
+
+  // 1. Append to Monthly Bucket `algovault.logs.YYYY_MM`
+  const dateObj = new Date(now)
+  const yyyyMm = `${dateObj.getFullYear()}_${String(dateObj.getMonth() + 1).padStart(2, "0")}`
+  const bucketKey = `algovault.logs.${yyyyMm}`
+  const existingBucket = (await storage.get<any[]>(bucketKey)) || []
+  existingBucket.push(logItem)
+  await storage.set(bucketKey, existingBucket)
+
+  // 2. Append to Ultra-Fast Summary Index
+  const indexItem = {
+    slug: session.slug,
+    ts: now,
+    actSecs: activeSecs,
+    elSecs: elapsedSecs,
+    score: focusScore,
+    solved: isSolved
+  }
+  const existingIndex = (await storage.get<any[]>(LOGS_INDEX_KEY)) || []
+  existingIndex.push(indexItem)
+  await storage.set(LOGS_INDEX_KEY, existingIndex)
 }
 
-async function clearLiveSessionState(): Promise<void> {
-  await Promise.all([
-    storage.remove(CURRENT_SESSION_KEY),
-    storage.remove(LIVE_TIMER_KEY),
-    storage.set(TIMER_PAUSED_KEY, false)
-  ])
-}
+// Tab Removal Listener for Tab Ownership Safety
+chrome.tabs.onRemoved.addListener(async (closedTabId) => {
+  const active = await storage.get<any>(ACTIVE_SESSION_KEY)
+  if (active && active.ownerTabId === closedTabId && active.st === "RUNNING") {
+    const updated = transitionSession(active, "PAUSED", "TAB", Date.now())
+    await storage.set(ACTIVE_SESSION_KEY, { ...updated, ownerTabId: null })
+  }
+})
+
+// Chrome Tab Activation Listener for 100% Accurate Tab Switch Detection
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  const active = await storage.get<any>(ACTIVE_SESSION_KEY)
+  if (active && active.st === "RUNNING" && active.ownerTabId && active.ownerTabId !== activeInfo.tabId) {
+    const updatedSession = { ...active, tabs: (active.tabs || 0) + 1 }
+    const updated = transitionSession(updatedSession, "PAUSED", "TAB", Date.now())
+    await storage.set(ACTIVE_SESSION_KEY, updated)
+    chrome.runtime.sendMessage({ action: "session_updated_v2", session: updated })
+  }
+})
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "open_side_panel" && sender.tab) {
     chrome.sidePanel.open({ windowId: sender.tab.windowId })
+  }
+
+  // APSE v2 State Machine Message Interceptors
+  if (message.action === "claim_tab_ownership" && sender.tab?.id) {
+    const tabId = sender.tab.id
+    storage.get<any>(ACTIVE_SESSION_KEY).then(async (session) => {
+      if (!session) {
+        sendResponse({ ok: false })
+        return
+      }
+      if (session.ownerTabId === tabId && session.st === "RUNNING") {
+        sendResponse({ ok: true, session })
+        return
+      }
+      if ((session.st === "PAUSED" && session.pr === "MANUAL") || session.st === "SOLVED") {
+        const updated = { ...session, ownerTabId: tabId }
+        await storage.set(ACTIVE_SESSION_KEY, updated)
+        sendResponse({ ok: true, session: updated })
+        return
+      }
+
+      const isTabSwitch = session.pr === "TAB" || (session.ownerTabId !== null && session.ownerTabId !== tabId)
+      const transitioned = transitionSession(session, "RUNNING", null, Date.now())
+      const updated = {
+        ...transitioned,
+        ownerTabId: tabId,
+        tabs: isTabSwitch ? (session.tabs || 0) + 1 : (session.tabs || 0)
+      }
+      await storage.set(ACTIVE_SESSION_KEY, updated)
+      chrome.runtime.sendMessage({ action: "session_updated_v2", session: updated })
+      sendResponse({ ok: true, session: updated })
+    })
+    return true
+  }
+
+  if (message.action === "session_start_v2") {
+    const slug = message.slug
+    if (!slug) {
+      sendResponse({ ok: false })
+      return true
+    }
+    const tabId = sender.tab?.id || null
+    const now = Date.now()
+    const storeKey = "algovault.session.store"
+
+    storage.get<any>(ACTIVE_SESSION_KEY).then(async (existingSession) => {
+      // 1. If active session is for the exact same slug, preserve it (DO NOT auto-restart if SOLVED or MANUAL PAUSE)!
+      if (existingSession && existingSession.slug === slug) {
+        if (existingSession.st === "RUNNING" || (existingSession.st === "PAUSED" && existingSession.pr === "MANUAL") || existingSession.st === "SOLVED") {
+          const finalSession = { ...existingSession, ownerTabId: tabId || existingSession.ownerTabId }
+          await storage.set(ACTIVE_SESSION_KEY, finalSession)
+          sendResponse({ ok: true, session: finalSession })
+          return
+        }
+        const updated = transitionSession(existingSession, "RUNNING", null, now)
+        const finalSession = { ...updated, ownerTabId: tabId || existingSession.ownerTabId }
+        await storage.set(ACTIVE_SESSION_KEY, finalSession)
+        chrome.runtime.sendMessage({ action: "session_updated_v2", session: finalSession })
+        sendResponse({ ok: true, session: finalSession })
+        return
+      }
+
+      // 2. Manage multi-problem switching using per-slug store
+      const store = (await storage.get<Record<string, any>>(storeKey)) || {}
+
+      if (existingSession && existingSession.slug) {
+        if ((existingSession.st === "PAUSED" && existingSession.pr === "MANUAL") || existingSession.st === "SOLVED") {
+          store[existingSession.slug] = existingSession
+        } else {
+          store[existingSession.slug] = transitionSession(existingSession, "PAUSED", "TAB", now)
+        }
+      }
+
+      let sessionForSlug = store[slug]
+      if (sessionForSlug) {
+        if ((sessionForSlug.st === "PAUSED" && sessionForSlug.pr === "MANUAL") || sessionForSlug.st === "SOLVED") {
+          sessionForSlug = { ...sessionForSlug, ownerTabId: tabId }
+        } else {
+          sessionForSlug = {
+            ...transitionSession(sessionForSlug, "RUNNING", null, now),
+            ownerTabId: tabId
+          }
+        }
+        delete store[slug]
+      } else {
+        sessionForSlug = createSession(slug, tabId, now)
+      }
+
+      await Promise.all([
+        storage.set(ACTIVE_SESSION_KEY, sessionForSlug),
+        storage.set(storeKey, store)
+      ])
+      chrome.runtime.sendMessage({ action: "session_updated_v2", session: sessionForSlug })
+      sendResponse({ ok: true, session: sessionForSlug })
+    })
+    return true
+  }
+
+  if (message.action === "session_pause_v2") {
+    const reason = message.reason || "MANUAL"
+    storage.get<any>(ACTIVE_SESSION_KEY).then(async (session) => {
+      if (!session) {
+        sendResponse({ ok: false })
+        return
+      }
+      const isTabSwitch = reason === "TAB"
+      const sessionWithTabs = isTabSwitch ? { ...session, tabs: (session.tabs || 0) + 1 } : session
+      const updated = transitionSession(sessionWithTabs, "PAUSED", reason, Date.now())
+      await storage.set(ACTIVE_SESSION_KEY, updated)
+      chrome.runtime.sendMessage({ action: "session_updated_v2", session: updated })
+      sendResponse({ ok: true, session: updated })
+    })
+    return true
+  }
+
+  if (message.action === "session_resume_v2") {
+    const tabId = sender.tab?.id || null
+    storage.get<any>(ACTIVE_SESSION_KEY).then(async (session) => {
+      if (!session) {
+        sendResponse({ ok: false })
+        return
+      }
+      const transitioned = transitionSession(session, "RUNNING", null, Date.now())
+      const updated = {
+        ...transitioned,
+        ownerTabId: tabId || session.ownerTabId
+      }
+      await storage.set(ACTIVE_SESSION_KEY, updated)
+      chrome.runtime.sendMessage({ action: "session_updated_v2", session: updated })
+      sendResponse({ ok: true, session: updated })
+    })
+    return true
+  }
+
+  if (message.action === "session_reset_v2") {
+    const storeKey = "algovault.session.store"
+    storage.get<any>(ACTIVE_SESSION_KEY).then(async (active) => {
+      const slug = active?.slug
+      await storage.remove(ACTIVE_SESSION_KEY)
+      if (slug) {
+        const store = (await storage.get<Record<string, any>>(storeKey)) || {}
+        delete store[slug]
+        await storage.set(storeKey, store)
+      }
+      chrome.runtime.sendMessage({ action: "session_updated_v2", session: null })
+      sendResponse({ ok: true, session: null })
+    })
+    return true
+  }
+
+  if (message.action === "session_finish_v2") {
+    storage.get<any>(ACTIVE_SESSION_KEY).then(async (session) => {
+      if (!session) {
+        sendResponse({ ok: false })
+        return
+      }
+      const updated = transitionSession(session, "SOLVED", null, Date.now())
+      await archivePracticeLog(updated, true, message.language)
+      
+      const result = (await storage.get<any>("algovault.solvedSlugs")) || {}
+      const slugs = new Set<string>(Array.isArray(result?.slugs) ? result.slugs : [])
+      slugs.add(session.slug)
+      await storage.set("algovault.solvedSlugs", { ...result, fetchedAt: Date.now(), slugs: Array.from(slugs) })
+      
+      await storage.set(ACTIVE_SESSION_KEY, updated)
+      
+      chrome.runtime.sendMessage({ action: "session_updated_v2", session: updated })
+      chrome.runtime.sendMessage({ action: "dashboard_refresh" })
+      sendResponse({ ok: true, session: updated })
+    })
+    return true
   }
 
   if (message.action === "get_prediction") {
@@ -199,72 +401,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "session_start") {
-    getUserSettings()
-      .then(async (settings) => {
-        try {
-          const current = await fetchCurrentSession().catch(() => null)
-          return current || (await startSession(message.mode || settings?.sessionMode || "PRACTICE").catch(() => null))
-        } catch {
-          return null
-        }
+    // Forward legacy session_start to APSE v2
+    const slug = message.slug || message.titleSlug
+    if (slug) {
+      const now = Date.now()
+      const newSession = createSession(slug, sender.tab?.id || null, now)
+      storage.set(ACTIVE_SESSION_KEY, newSession).then(() => {
+        sendResponse({ ok: true, data: newSession })
       })
-      .then(async (data) => {
-        const sessionData: ActiveSession = data || {
-          id: Date.now(),
-          mode: message.mode || "PRACTICE",
-          startedAt: new Date().toISOString(),
-          focusSeconds: 0,
-          tabSwitches: 0,
-          pasteCount: 0
-        }
-        await storage.set(CURRENT_SESSION_KEY, sessionData)
-        await setLiveTimerStatus(sessionData, "running")
-        sendResponse({ ok: true, data: sessionData })
-      })
-      .catch(async () => {
-        const fallback: ActiveSession = {
-          id: Date.now(),
-          mode: message.mode || "PRACTICE",
-          startedAt: new Date().toISOString(),
-          focusSeconds: 0,
-          tabSwitches: 0,
-          pasteCount: 0
-        }
-        await storage.set(CURRENT_SESSION_KEY, fallback)
-        await setLiveTimerStatus(fallback, "running")
-        sendResponse({ ok: true, data: fallback })
-      })
+    } else {
+      sendResponse({ ok: true })
+    }
     return true
   }
 
-  if (message.action === "session_pause" || message.action === "session_resume") {
-    storage.get<ActiveSession>(CURRENT_SESSION_KEY)
-      .then(async (session) => {
-        const status = message.action === "session_pause" ? "paused" : "running"
-        const activeSession = session || {
-          id: Date.now(),
-          mode: "PRACTICE",
-          startedAt: new Date().toISOString(),
-          focusSeconds: 0
-        }
-        const timer = await setLiveTimerStatus(activeSession, status)
-        sendResponse({ ok: true, data: timer })
-      })
-      .catch(async () => {
-        const status = message.action === "session_pause" ? "paused" : "running"
-        await storage.set("algovault.timerPaused", status === "paused")
+  if (message.action === "session_pause") {
+    storage.get<any>(ACTIVE_SESSION_KEY).then(async (session) => {
+      if (session && session.st === "RUNNING") {
+        const updated = transitionSession(session, "PAUSED", "MANUAL", Date.now())
+        await storage.set(ACTIVE_SESSION_KEY, updated)
+        sendResponse({ ok: true, data: updated })
+      } else {
         sendResponse({ ok: true })
-      })
+      }
+    })
+    return true
+  }
+
+  if (message.action === "session_resume") {
+    storage.get<any>(ACTIVE_SESSION_KEY).then(async (session) => {
+      if (session && session.st === "PAUSED") {
+        const updated = transitionSession(session, "RUNNING", null, Date.now())
+        await storage.set(ACTIVE_SESSION_KEY, updated)
+        sendResponse({ ok: true, data: updated })
+      } else {
+        sendResponse({ ok: true })
+      }
+    })
     return true
   }
 
   if (message.action === "session_end") {
-    endSession()
-      .catch(() => null)
-      .then(async (data) => {
-        await clearLiveSessionState()
-        sendResponse({ ok: true, data: data || { id: 0, focusSeconds: 0 } })
-      })
+    storage.remove(ACTIVE_SESSION_KEY).then(() => {
+      sendResponse({ ok: true })
+    })
     return true
   }
 
@@ -278,9 +458,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "session_heartbeat") {
     sendSessionHeartbeat(message.payload)
       .then(async (data) => {
-        if (data) {
-          await storage.set(CURRENT_SESSION_KEY, data)
-        }
         sendResponse({ ok: true, data })
       })
       .catch((err) => sendResponse({ ok: false, error: err.message }))
@@ -319,6 +496,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       // Trigger GitHub sync independently in the background so backend failures don't block it
       if (payload.statusDisplay === "Accepted") {
+        storage.get<any>(ACTIVE_SESSION_KEY).then(async (activeSession) => {
+          if (activeSession && activeSession.slug === payload.titleSlug) {
+            const updated = transitionSession(activeSession, "SOLVED", null, Date.now())
+            await archivePracticeLog(updated, true, payload.codeLang || payload.language)
+            await storage.set(ACTIVE_SESSION_KEY, updated)
+          }
+        })
+
         syncAcceptedSubmissionToGithub(payload, helpType).catch((gitErr) => {
           console.error("Error during GitHub sync operation:", gitErr)
         })
@@ -326,7 +511,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       sendSubmissionResult(payload)
         .then(async (data) => {
-          if (data) await storage.set(CURRENT_SESSION_KEY, data)
           sendResponse({ ok: true, data })
           // Broadcast to any open sidepanel dashboard to refresh fresh data
           chrome.runtime.sendMessage({ action: "dashboard_refresh" })

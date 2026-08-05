@@ -23,6 +23,7 @@ public class WeaknessResponse {
         private Double masteryScore;
         private Double rd;
         private String evidenceLevel;
+        private Integer totalAttempted;
     }
 
     @Data

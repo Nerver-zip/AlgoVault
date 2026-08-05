@@ -113,4 +113,17 @@ class SessionServiceTest {
         assertEquals(1, session.getPasteCount());
         assertEquals("epoch-2", session.getLastHeartbeatEpoch());
     }
+
+    @Test
+    void heartbeat_withoutExplicitSession_doesNotCreateOne() {
+        User user = User.builder().id(1L).build();
+        com.algovault.dto.SessionRequests.HeartbeatRequest request = new com.algovault.dto.SessionRequests.HeartbeatRequest();
+        request.setFocusSeconds(120);
+
+        when(sessionRepository.findFirstByUserIdAndEndedAtIsNullOrderByStartedAtDesc(1L))
+            .thenReturn(java.util.Optional.empty());
+
+        assertNull(sessionService.heartbeat(user, request));
+        verify(sessionRepository, never()).save(any(Session.class));
+    }
 }

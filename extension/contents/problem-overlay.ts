@@ -426,13 +426,17 @@ const injectAlgoVaultOverlay = () => {
           document.documentElement.requestFullscreen().catch((err) => {
             console.warn("Fullscreen request rejected:", err);
           });
+          // Zenith is an explicit user action, so it starts an APSE v2 focus session.
+          const slug = getLeetCodeProblemSlug()
+          if (slug) {
+            chrome.runtime.sendMessage({ action: "session_start_v2", slug });
+          }
           chrome.storage.local.set({
             "algovault.isZenith": true,
             "algovault.zenithGrade": "S_PLUS",
             "algovault.zenithReason": "Pure Solve",
             "algovault.zenithFocusScore": 100,
-            "algovault.zenithIntent": intent,
-            "algovault.problemStartTime": new Date().toISOString()
+            "algovault.zenithIntent": intent
           }, () => {
             startZenithBtn.remove();
           });

@@ -58,6 +58,12 @@ public class SolveProbabilityEngine {
     /** Pseudo-observation count of the prior — controls prior strength. */
     private static final double PRIOR_STRENGTH = 8.0;
 
+    /** A raw count can overstate evidence when examples sit at the edge of the rating window. */
+    private static final double MIN_EFFECTIVE_EVIDENCE = 3.0;
+
+    /** Tag estimates need a small body of direct evidence before influencing a prediction. */
+    private static final int MIN_TAG_OBSERVATIONS = 3;
+
     /** Weight of the rating-based prior in the blended prior. */
     private static final double RATING_PRIOR_WEIGHT = 0.7;
 
@@ -120,42 +126,59 @@ public class SolveProbabilityEngine {
                 ? 0.5
                 : logistic((user.getVirtualRating() - targetRating) / 400.0);
 
-        // Tag-mastery prior: average mastery score → logistic
+        // Tag-mastery prior: an evidence-weighted average mastery score → logistic.
+        // A one-problem tag should be visible to the learner, but should not be
+        // strong enough to move a probability estimate.
         double tagPrior = ratingPrior; // fallback if no mastery data
         boolean hasTagData = false;
+        double tagEvidenceWeight = 0.0;
         if (masteries != null && !masteries.isEmpty() && problem.getTags() != null && !problem.getTags().isEmpty()) {
-            double masterySum = 0;
-            int matchedTags = 0;
-            Map<String, Double> masteryMap = new HashMap<>();
+            Map<String, TagMastery> masteryMap = new HashMap<>();
             for (TagMastery tm : masteries) {
-                masteryMap.put(tm.getTag(), tm.getMasteryScore());
+                masteryMap.put(tm.getTag(), tm);
             }
+            double weightedMasterySum = 0.0;
+            double totalTagReliability = 0.0;
             for (String tag : problem.getTags()) {
-                Double score = masteryMap.get(tag);
-                if (score != null) {
-                    masterySum += score;
-                    matchedTags++;
-                }
+                TagMastery mastery = masteryMap.get(tag);
+                if (mastery == null || mastery.getMasteryScore() == null) continue;
+                int attempts = mastery.getTotalAttempted() == null ? 0 : mastery.getTotalAttempted();
+                if (attempts < MIN_TAG_OBSERVATIONS) continue;
+
+                double rd = mastery.getRd() == null ? 350.0 : mastery.getRd();
+                double sampleReliability = Math.min(1.0, attempts / 8.0);
+                double uncertaintyReliability = Math.max(0.1, Math.min(1.0, (350.0 - rd) / 250.0));
+                double reliability = sampleReliability * uncertaintyReliability;
+                weightedMasterySum += mastery.getMasteryScore() * reliability;
+                totalTagReliability += reliability;
             }
-            if (matchedTags > 0) {
-                double avgMastery = masterySum / matchedTags;
+            if (totalTagReliability > 0.0) {
+                double avgMastery = weightedMasterySum / totalTagReliability;
                 // Map mastery score to probability: how does user's mastery
                 // on these tags compare to the problem's difficulty?
                 tagPrior = logistic((avgMastery - targetRating) / 400.0);
                 hasTagData = true;
+                tagEvidenceWeight = Math.min(1.0, totalTagReliability);
             }
         }
 
-        // Blend: rating evidence dominates, tag mastery adjusts
-        double blendedPrior = hasTagData
-                ? RATING_PRIOR_WEIGHT * ratingPrior + TAG_PRIOR_WEIGHT * tagPrior
-                : ratingPrior;
+        // Blend: rating evidence dominates; sparse/uncertain tag data only
+        // gets a proportionate share of the intended 30% adjustment.
+        double tagBlendWeight = hasTagData ? TAG_PRIOR_WEIGHT * tagEvidenceWeight : 0.0;
+        double blendedPrior = (1.0 - tagBlendWeight) * ratingPrior + tagBlendWeight * tagPrior;
 
         // ─── Step 4: Beta-binomial posterior ─────────────────────────────
         double alpha0 = PRIOR_STRENGTH * blendedPrior;
         double beta0 = PRIOR_STRENGTH * (1.0 - blendedPrior);
-        double probability = (alpha0 + weightedSuccesses) / (alpha0 + beta0 + totalWeight);
+        double alpha = alpha0 + weightedSuccesses;
+        double beta = beta0 + totalWeight - weightedSuccesses;
+        double posteriorTotal = alpha + beta;
+        double probability = alpha / posteriorTotal;
         int chance = (int) Math.round(probability * 100.0);
+        double posteriorVariance = (alpha * beta) / (posteriorTotal * posteriorTotal * (posteriorTotal + 1.0));
+        double posteriorStandardError = Math.sqrt(Math.max(0.0, posteriorVariance));
+        int lowerBound = (int) Math.round(Math.max(0.0, probability - 1.96 * posteriorStandardError) * 100.0);
+        int upperBound = (int) Math.round(Math.min(1.0, probability + 1.96 * posteriorStandardError) * 100.0);
 
         // ─── Step 5: Expected time estimate ──────────────────────────────
         List<Integer> observedMinutes = new ArrayList<>();
@@ -192,8 +215,10 @@ public class SolveProbabilityEngine {
         breakdown.put("rawComparableProblems", rawObservations);
         breakdown.put("effectiveWeight", Math.round(totalWeight * 100.0) / 100.0);
         breakdown.put("weightedSuccesses", Math.round(weightedSuccesses * 100.0) / 100.0);
+        breakdown.put("posterior95IntervalPercent", List.of(lowerBound, upperBound));
         breakdown.put("ratingPriorPercent", Math.round(ratingPrior * 100.0));
         breakdown.put("tagPriorPercent", hasTagData ? Math.round(tagPrior * 100.0) : "N/A");
+        breakdown.put("tagEvidenceWeight", Math.round(tagEvidenceWeight * 100.0) / 100.0);
         breakdown.put("blendedPriorPercent", Math.round(blendedPrior * 100.0));
         breakdown.put("observedTimeSamples", observedMinutes.size());
         breakdown.put("timeNote", observedMinutes.isEmpty()
@@ -201,7 +226,8 @@ public class SolveProbabilityEngine {
                 : "Median of comparable tracked sessions");
 
         return response(chance, medianMinutes, rawObservations, blendedPrior,
-                (int) Math.round(weightedSuccesses), confidence, rawObservations < 5, breakdown);
+                (int) Math.round(weightedSuccesses), confidence,
+                rawObservations < 5 || totalWeight < MIN_EFFECTIVE_EVIDENCE, breakdown);
     }
 
     private PredictionResponse response(int chance, int minutes, int observations,

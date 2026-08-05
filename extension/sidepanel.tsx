@@ -10,15 +10,15 @@ import { Contest } from "./components/sidepanel/Contest"
 import { Lists } from "./components/sidepanel/Lists"
 import { Resources } from "./components/sidepanel/Resources"
 import { Settings } from "./components/sidepanel/Settings"
-import { getUsername, storage } from "./lib/storage"
-import type { ActiveSession } from "./lib/types"
+import { getUsername } from "./lib/storage"
 import { ErrorBoundary } from "./components/ui/ErrorBoundary"
 import { motion, AnimatePresence } from "framer-motion"
+import { usePracticeSession } from "./hooks/usePracticeSession"
 
 export default function SidePanel() {
   const [activeTab, setActiveTab] = useState<Tab>('Dashboard')
   const [username, setUsername] = useState<string>("")
-  const [session, setSession] = useState<ActiveSession | null>(null)
+  const { session, clocks } = usePracticeSession()
 
   useEffect(() => {
     chrome.storage.local.get(["algovault.requestedTab", "algovault.lastActiveTab"], (result) => {
@@ -30,30 +30,21 @@ export default function SidePanel() {
       }
     })
     getUsername().then((value) => setUsername(value || "Set username"))
-    const loadSession = () => {
-      storage.get("algovault.currentSession").then((value) => {
-        setSession((prev: any) => {
-          if (JSON.stringify(prev) === JSON.stringify(value)) return prev
-          return value || null
-        })
-      })
-    }
-    loadSession()
-    const interval = window.setInterval(loadSession, 2000)
-
+    
     const handleStorageChange = (changes: any, areaName: string) => {
-      if (areaName === "local" && changes["algovault.username"]) {
-        setUsername(changes["algovault.username"].newValue || "Set username");
+      if (areaName === "local") {
+        if (changes["algovault.username"]) {
+          setUsername(changes["algovault.username"].newValue || "Set username")
+        }
+        if (changes["algovault.requestedTab"]?.newValue === "Lists") {
+          setActiveTab("Lists")
+          chrome.storage.local.remove("algovault.requestedTab")
+        }
       }
-      if (areaName === "local" && changes["algovault.requestedTab"]?.newValue === "Lists") {
-        setActiveTab("Lists")
-        chrome.storage.local.remove("algovault.requestedTab")
-      }
-    };
-    chrome.storage.onChanged.addListener(handleStorageChange);
+    }
+    chrome.storage.onChanged.addListener(handleStorageChange)
 
     return () => {
-      window.clearInterval(interval)
       chrome.storage.onChanged.removeListener(handleStorageChange)
     }
   }, [])
@@ -79,13 +70,15 @@ export default function SidePanel() {
         <div className="flex items-center gap-3">
           {session ? (
             <div className="flex items-center gap-2 px-2.5 py-1 rounded-full border border-emerald-500/20 bg-emerald-500/[0.06] text-[10px] text-zinc-300 font-mono">
-              <span className="relative flex h-1.5 w-1.5">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#dfa054] opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-[#dfa054]"></span>
-              </span>
-              <span>{session.mode}</span>
+              {session.st === "RUNNING" && (
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#dfa054] opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-[#dfa054]"></span>
+                </span>
+              )}
+              <span>{session.st === "RUNNING" ? "ACTIVE" : session.st}</span>
               <span className="text-emerald-500/40">|</span>
-              <span className="tabular-nums">{session.focusScore ?? 100}%</span>
+              <span className="tabular-nums">{clocks.focusScore ?? 100}%</span>
             </div>
           ) : (
             <div className="flex items-center gap-1.5 px-2 py-1 rounded-full border border-zinc-800 bg-zinc-900/30 text-[9px] text-zinc-500 font-mono uppercase tracking-wide">

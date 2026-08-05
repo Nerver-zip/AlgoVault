@@ -138,8 +138,9 @@ export type SessionStatus = "idle" | "running" | "paused";
 export interface LiveTimerState {
   /** Focus time observed while a user-started session is active. */
   activeFocusSeconds: number;
-  /** Focus time observed specifically on the current problem. */
+  /** Foreground, non-idle time observed specifically on the current problem. */
   problemFocusSeconds?: number;
+  /** Wall-clock time from first opening this attempt until now (or its first AC). */
   problemElapsedSeconds?: number;
   /** Kept for existing content-script consumers; not used to reconstruct time in UI. */
   focusSeconds?: number;

@@ -1,10 +1,7 @@
 import cssText from "data-text:~style.css"
 import type { PlasmoCSConfig, PlasmoGetStyle } from "plasmo"
 import { useEffect, useState } from "react"
-
-interface ActiveSession { id?: number; isActive?: boolean; startTime?: number; titleSlug?: string; mode?: string; focusSeconds?: number; focusScore?: number; tabSwitches?: number; pasteCount?: number; }
-interface SessionState { isSolved?: boolean; finalSeconds?: number; focusScore?: number; tabSwitches?: number; copyPastes?: number; }
-interface LiveTimerState { activeFocusSeconds?: number; problemFocusSeconds?: number; problemElapsedSeconds?: number; focusSeconds?: number; elapsedSeconds?: number; status?: "idle" | "running" | "paused"; isPaused?: boolean; isSolved?: boolean; updatedAt?: number; }
+import { usePracticeSession } from "../hooks/usePracticeSession"
 
 export const config: PlasmoCSConfig = {
   matches: ["https://leetcode.com/problems/*", "https://leetcode.com/contest/*/problems/*"]
@@ -17,72 +14,26 @@ export const getStyle: PlasmoGetStyle = () => {
 }
 
 const FloatingButton = () => {
-  const [session, setSession] = useState<ActiveSession | null>(null)
-  const [sessionState, setSessionState] = useState<SessionState | null>(null)
-  const [liveTimer, setLiveTimer] = useState<LiveTimerState | null>(null)
+  const { session, clocks, pauseSession, resumeSession, finishSession } = usePracticeSession()
   const [expanded, setExpanded] = useState(false)
-  const [isPaused, setIsPaused] = useState(false)
 
   // Zenith properties
   const [isZenith, setIsZenith] = useState(false)
   const [zenithGrade, setZenithGrade] = useState("S_PLUS")
-  const [zenithFocusScore, setZenithFocusScore] = useState(100)
-
-  // Listen for direct in-tab live timer ticks from session-tracker (bypasses storage event delays)
-  useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      if (event.data?.type === "AV_LIVE_TIMER_TICK" && event.data?.payload) {
-        const p = event.data.payload
-        setLiveTimer(p)
-        if (p.isPaused !== undefined) {
-          setIsPaused(p.isPaused)
-        }
-      }
-    }
-    window.addEventListener("message", handleMessage)
-    return () => window.removeEventListener("message", handleMessage)
-  }, [])
 
   useEffect(() => {
-    const load = () => {
-      chrome.storage.local.get([
-        "algovault.currentSession",
-        "algovault.sessionState",
-        "algovault.liveTimer",
-        "algovault.timerPaused",
-        "algovault.isZenith",
-        "algovault.zenithGrade",
-        "algovault.zenithFocusScore"
-      ], (result) => {
-        let sess = result["algovault.currentSession"]
-        if (typeof sess === "string") {
-          try { sess = JSON.parse(sess) } catch (e) {}
-        }
-        let state = result["algovault.sessionState"]
-        if (typeof state === "string") {
-          try { state = JSON.parse(state) } catch (e) {}
-        }
-        setSession(sess || null)
-        setSessionState(state || null)
-        setLiveTimer(result["algovault.liveTimer"] || null)
-        setIsPaused(!!result["algovault.timerPaused"])
-        setIsZenith(!!result["algovault.isZenith"])
-        setZenithGrade(result["algovault.zenithGrade"] || "S_PLUS")
-        setZenithFocusScore(result["algovault.zenithFocusScore"] ?? 100)
-      })
-    }
-    load()
+    chrome.storage.local.get([
+      "algovault.isZenith",
+      "algovault.zenithGrade"
+    ], (result) => {
+      setIsZenith(!!result["algovault.isZenith"])
+      setZenithGrade(result["algovault.zenithGrade"] || "S_PLUS")
+    })
+
     const listener = (changes: any, areaName: string) => {
-      if (areaName === "local" && (
-        changes["algovault.currentSession"] ||
-        changes["algovault.sessionState"] ||
-        changes["algovault.liveTimer"] ||
-        changes["algovault.timerPaused"] ||
-        changes["algovault.isZenith"] ||
-        changes["algovault.zenithGrade"] ||
-        changes["algovault.zenithFocusScore"]
-      )) {
-        load();
+      if (areaName === "local" && (changes["algovault.isZenith"] || changes["algovault.zenithGrade"])) {
+        setIsZenith(!!changes["algovault.isZenith"]?.newValue)
+        setZenithGrade(changes["algovault.zenithGrade"]?.newValue || "S_PLUS")
       }
     }
     chrome.storage.onChanged.addListener(listener)
@@ -96,7 +47,11 @@ const FloatingButton = () => {
 
   const togglePauseTimer = (e: React.MouseEvent) => {
     e.stopPropagation()
-    chrome.runtime.sendMessage({ action: isPaused ? "session_resume" : "session_pause" })
+    if (clocks.isPaused) {
+      resumeSession()
+    } else {
+      pauseSession("MANUAL")
+    }
   }
 
   const handleAbandonZenith = (e: React.MouseEvent) => {
@@ -114,24 +69,10 @@ const FloatingButton = () => {
     }
   }
 
-  // The tracker publishes only observed, user-started active focus. Never add
-  // wall-clock deltas here: a backgrounded tab must not silently gain time.
-  let totalSecs = 0
-  let problemSecs = 0
-
-  if (sessionState?.isSolved) {
-    totalSecs = sessionState.finalSeconds ?? 0
-    problemSecs = liveTimer?.problemFocusSeconds ?? totalSecs
-  } else {
-    totalSecs = liveTimer?.activeFocusSeconds ?? liveTimer?.focusSeconds ?? session?.focusSeconds ?? 0
-    problemSecs = liveTimer?.problemFocusSeconds ?? (liveTimer?.activeFocusSeconds ?? 0)
-  }
-
-  const minutes = Math.floor(totalSecs / 60)
-  const rem = String(totalSecs % 60).padStart(2, "0")
-
-  const pMins = Math.floor(problemSecs / 60)
-  const pRem = String(problemSecs % 60).padStart(2, "0")
+  const activeMinutes = Math.floor(clocks.activeSeconds / 60)
+  const activeRem = String(clocks.activeSeconds % 60).padStart(2, "0")
+  const elapsedMinutes = Math.floor(clocks.elapsedSeconds / 60)
+  const elapsedRem = String(clocks.elapsedSeconds % 60).padStart(2, "0")
 
   const formattedGrade = zenithGrade.replace("_PLUS", "+")
 
@@ -146,19 +87,25 @@ const FloatingButton = () => {
         <button
           onClick={handleOpenPanel}
           className={`flex items-center gap-2 px-3 py-1.5 rounded-full elevated-card text-xs text-zinc-300 font-mono font-medium hover:border-zinc-700 transition-all border ${
-            isPaused
+            clocks.isPaused
               ? "border-amber-500/60 bg-amber-500/10 text-amber-300"
               : isZenith 
-                ? (minutes >= 25 ? 'border-amber-500/80 shadow-[0_0_20px_rgba(245,158,11,0.6)] animate-pulse' : 'border-cyan-500/50 shadow-[0_0_10px_rgba(6,182,212,0.35)]') 
-                : 'border-zinc-805'
+                ? (activeMinutes >= 25 ? 'border-amber-500/80 shadow-[0_0_20px_rgba(245,158,11,0.6)] animate-pulse' : 'border-cyan-500/50 shadow-[0_0_10px_rgba(6,182,212,0.35)]')
+                : 'border-zinc-800 bg-zinc-950/90'
           } shadow-lg cursor-pointer`}
-          title={`Problem time: ${pMins}m ${pRem}s | Total session: ${minutes}m ${rem}s`}
+          title={session ? `Active: ${activeMinutes}m ${activeRem}s | Elapsed: ${elapsedMinutes}m ${elapsedRem}s` : "AlgoVault Practice Engine"}
         >
-          <span className={`${isPaused ? 'text-amber-400' : isZenith ? (minutes >= 25 ? 'text-amber-400' : 'text-cyan-400') : 'text-[#dfa054]'} text-xs`}>
-            {isPaused ? '⏸️' : isZenith ? `⚔️ ${formattedGrade}` : '⚡'}
+          <span className={`${clocks.isPaused ? 'text-amber-400' : isZenith ? (activeMinutes >= 25 ? 'text-amber-400' : 'text-cyan-400') : 'text-[#dfa054]'} text-xs`}>
+            {clocks.isPaused ? '⏸️' : isZenith ? `⚔️ ${formattedGrade}` : '⚡'}
           </span>
-          <span className="tabular-nums font-bold">{pMins}:{pRem}</span>
-          <span className="text-[10px] text-zinc-400 font-normal">({minutes}:{rem})</span>
+          {session ? (
+            <>
+              <span className="tabular-nums font-bold">{activeMinutes}:{activeRem}</span>
+              <span className="text-[10px] text-zinc-400 font-normal">/{elapsedMinutes}:{elapsedRem}</span>
+            </>
+          ) : (
+            <span className="font-bold text-zinc-400">Ready</span>
+          )}
         </button>
       ) : (
         // Expanded Command Surface Layout
@@ -168,23 +115,23 @@ const FloatingButton = () => {
           <div className="flex items-center justify-between border-b border-zinc-900 pb-2 mb-2">
             <div className="flex items-center gap-1.5">
               <span className="relative flex h-1.5 w-1.5 shrink-0">
-                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${isPaused ? 'bg-amber-400' : isZenith ? 'bg-cyan-400' : session ? 'bg-[#dfa054]' : 'bg-zinc-600'} opacity-75`}></span>
-                <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${isPaused ? 'bg-amber-500' : isZenith ? 'bg-cyan-500' : session ? 'bg-[#dfa054]' : 'bg-zinc-700'}`}></span>
+                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${clocks.isPaused ? 'bg-amber-400' : isZenith ? 'bg-cyan-400' : session ? 'bg-[#dfa054]' : 'bg-zinc-600'} opacity-75`}></span>
+                <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${clocks.isPaused ? 'bg-amber-500' : isZenith ? 'bg-cyan-500' : session ? 'bg-[#dfa054]' : 'bg-zinc-700'}`}></span>
               </span>
               <span className="font-bold text-[10px] text-zinc-300 tracking-wider font-mono">
-                {isPaused ? "AV:PAUSED" : isZenith ? "AV:ZENITH" : `AV:${session?.mode || "SOLVING"}`}
+                {clocks.isPaused ? "AV:PAUSED" : isZenith ? "AV:ZENITH" : "AV:SOLVING"}
               </span>
             </div>
             <div className="flex items-center gap-1">
-              <span className={`text-xs font-mono font-semibold tabular-nums ${isPaused ? 'text-amber-400' : isZenith ? 'text-cyan-400' : 'text-[#dfa054]'}`}>
-                {pMins}:{pRem}
+              <span className={`text-xs font-mono font-semibold tabular-nums ${clocks.isPaused ? 'text-amber-400' : isZenith ? 'text-cyan-400' : 'text-[#dfa054]'}`}>
+                {activeMinutes}:{activeRem}
               </span>
               <button
                 onClick={togglePauseTimer}
-                className="ml-1 px-1.5 py-0.5 rounded border border-zinc-800 bg-zinc-900 text-[9px] font-mono font-bold text-zinc-300 hover:text-white"
-                title={isPaused ? "Resume Timer" : "Pause Timer"}
+                className="ml-1 px-1.5 py-0.5 rounded border border-zinc-800 bg-zinc-900 text-[9px] font-mono font-bold text-zinc-300 hover:text-white cursor-pointer"
+                title={clocks.isPaused ? "Resume Timer" : "Pause Timer"}
               >
-                {isPaused ? "▶️" : "⏸️"}
+                {clocks.isPaused ? "▶️" : "⏸️"}
               </button>
             </div>
           </div>
@@ -192,18 +139,18 @@ const FloatingButton = () => {
           <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono text-zinc-400 mb-2">
             <div className="flex flex-col items-center bg-zinc-900/40 border border-zinc-900 py-1.5 rounded">
               <span className="text-zinc-500 text-[8px] uppercase tracking-wider font-semibold">
-                Problem Time
+                Active time
               </span>
               <span className="font-bold text-emerald-400 mt-0.5 tabular-nums">
-                {pMins}m {pRem}s
+                {activeMinutes}m {activeRem}s
               </span>
             </div>
             <div className="flex flex-col items-center bg-zinc-900/40 border border-zinc-900 py-1.5 rounded">
               <span className="text-zinc-500 text-[8px] uppercase tracking-wider font-semibold">
-                Total Session
+                {clocks.isSolved ? "Elapsed to AC" : "Elapsed time"}
               </span>
               <span className="font-bold text-sky-400 mt-0.5 tabular-nums">
-                {minutes}m {rem}s
+                {elapsedMinutes}m {elapsedRem}s
               </span>
             </div>
           </div>
@@ -214,26 +161,38 @@ const FloatingButton = () => {
                 {isZenith ? "Grade" : "Focus"}
               </span>
               <span className={`font-bold mt-0.5 ${isZenith ? 'text-cyan-400' : 'text-zinc-200'}`}>
-                {isZenith ? formattedGrade : (session?.focusScore ?? 100)}
+                {isZenith ? formattedGrade : `${clocks.focusScore}%`}
               </span>
             </div>
             <div className="flex flex-col items-center bg-zinc-900/30 border border-zinc-900 py-1 rounded">
               <span className="text-zinc-500 text-[8px] uppercase tracking-wider font-semibold">
-                {isZenith ? "Focus" : "Tabs"}
+                Tabs
               </span>
               <span className="font-bold text-zinc-200 mt-0.5 tabular-nums">
-                {isZenith ? `${zenithFocusScore}%` : (session?.tabSwitches ?? 0)}
+                {session?.tabs ?? 0}
               </span>
             </div>
             <div className="flex flex-col items-center bg-zinc-900/30 border border-zinc-900 py-1 rounded">
               <span className="text-zinc-500 text-[8px] uppercase tracking-wider font-semibold">
-                {isZenith ? "Obey" : "Paste"}
+                Paste
               </span>
               <span className="font-bold text-zinc-200 mt-0.5 tabular-nums">
-                {isZenith ? (zenithGrade === "INVALID" ? "No" : "Yes") : (session?.pasteCount ?? 0)}
+                {session?.pastes ?? 0}
               </span>
             </div>
           </div>
+
+          {session && !clocks.isSolved && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                finishSession()
+              }}
+              className="w-full mb-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 font-bold text-[10px] py-1.5 rounded transition-all text-center tracking-wider uppercase shadow-sm cursor-pointer"
+            >
+              ✓ Mark Solved & Log
+            </button>
+          )}
 
           {isZenith ? (
             <button

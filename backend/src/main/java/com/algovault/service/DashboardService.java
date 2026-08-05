@@ -14,7 +14,6 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.temporal.ChronoUnit;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -56,16 +55,20 @@ public class DashboardService {
         int pastes = 0;
         if (currentSession.isPresent()) {
             Session s = currentSession.get();
-            if (ChronoUnit.HOURS.between(s.getStartedAt(), LocalDateTime.now()) < 12) {
-                sessionTime = (int) ChronoUnit.SECONDS.between(s.getStartedAt(), LocalDateTime.now());
-                focus = s.getFocusScore() != null ? s.getFocusScore() : 100;
-                switches = s.getTabSwitches() != null ? s.getTabSwitches() : 0;
-                pastes = s.getPasteCount() != null ? s.getPasteCount() : 0;
-            }
+            // Focus time comes only from observed heartbeats. Wall-clock time
+            // would count backgrounded tabs and make the dashboard dishonest.
+            sessionTime = s.getFocusSeconds() != null ? s.getFocusSeconds() : 0;
+            focus = s.getFocusScore() != null ? s.getFocusScore() : 100;
+            switches = s.getTabSwitches() != null ? s.getTabSwitches() : 0;
+            pastes = s.getPasteCount() != null ? s.getPasteCount() : 0;
         }
 
+        // A re-submission of an already-solved problem is valuable history, but
+        // it must not make the Today/weekly solve count look larger than it is.
+        Set<Long> recentSolvedProblemIds = new HashSet<>();
         List<DashboardResponse.RecentSolve> recentSolves = recentSubs.stream()
-            .filter(s -> s.getProblem() != null)
+            .filter(s -> s.getProblem() != null && s.getProblem().getId() != null)
+            .filter(s -> recentSolvedProblemIds.add(s.getProblem().getId()))
             .map(s -> DashboardResponse.RecentSolve.builder()
                 .title(s.getProblem().getTitle())
                 .titleSlug(s.getProblem().getTitleSlug())

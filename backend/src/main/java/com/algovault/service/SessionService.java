@@ -45,15 +45,9 @@ public class SessionService {
 
         Optional<Session> existingOpt = sessionRepository.findFirstByUserIdAndEndedAtIsNullOrderByStartedAtDesc(user.getId());
         if (existingOpt.isPresent()) {
-            Session existing = existingOpt.get();
-            if (existing.getProblemsAttempted() != null && existing.getProblemsAttempted() == 0 &&
-                existing.getProblemsSolved() != null && existing.getProblemsSolved() == 0 &&
-                existing.getMode() != null && existing.getMode().equals(normalizeMode(mode)) &&
-                existing.getStartedAt() != null && existing.getStartedAt().isAfter(LocalDateTime.now().minusMinutes(1))) {
-                return toResponse(existing);
-            }
-            existing.setEndedAt(LocalDateTime.now());
-            sessionRepository.save(existing);
+            // Starting while a session is already active is an idempotent
+            // resume, not a destructive replacement of the user's record.
+            return toResponse(existingOpt.get());
         }
 
         Session session = sessionRepository.save(Session.builder()
@@ -72,14 +66,16 @@ public class SessionService {
 
     @Transactional
     public SessionResponse endCurrentSession(User user) {
-        Session session = currentOrStart(user, "PRACTICE");
+        Session session = currentSession(user).orElse(null);
+        if (session == null) return null;
         session.setEndedAt(LocalDateTime.now());
         return toResponse(sessionRepository.save(session));
     }
 
     @Transactional
     public SessionResponse recordEvent(User user, SessionRequests.EventRequest request) {
-        Session session = currentOrStart(user, "PRACTICE");
+        Session session = currentSession(user).orElse(null);
+        if (session == null) return null;
         String eventType = Optional.ofNullable(request.getEventType()).orElse("UNKNOWN");
 
         sessionEventRepository.save(SessionEvent.builder()
@@ -118,7 +114,8 @@ public class SessionService {
 
     @Transactional
     public SessionResponse heartbeat(User user, SessionRequests.HeartbeatRequest request) {
-        Session session = currentOrStart(user, "PRACTICE");
+        Session session = currentSession(user).orElse(null);
+        if (session == null) return null;
         
         String incomingEpoch = request.getHeartbeatEpoch();
         if (incomingEpoch != null && !incomingEpoch.isBlank()) {
@@ -165,10 +162,12 @@ public class SessionService {
         @CacheEvict(value = "predictions", key = "#user.id + '-' + #request.titleSlug")
     })
     public SessionResponse recordSubmission(User user, SessionRequests.SubmissionResultRequest request) {
-        Session session = currentOrStart(user, "PRACTICE");
+        // Submissions are valuable learning evidence even when the user did
+        // not choose to run a focus session. Do not invent a session here.
+        Session session = currentSession(user).orElse(null);
         Problem problem = problemFromRequest(request.getTitleSlug(), request.getTitle());
         if (problem == null) {
-            return toResponse(session);
+            return session == null ? null : toResponse(session);
         }
 
         String verdict = normalizeVerdict(request.getStatusDisplay(), request.getStatusCode());
@@ -244,15 +243,17 @@ public class SessionService {
             }
         }
 
-        session.setProblemsAttempted((int) submissionRepository.countDistinctProblemsSince(user.getId(), session.getStartedAt()));
-        session.setProblemsSolved((int) submissionRepository.countDistinctSolvedProblemsSince(user.getId(), session.getStartedAt()));
-        sessionRepository.save(session);
+        if (session != null) {
+            session.setProblemsAttempted((int) submissionRepository.countDistinctProblemsSince(user.getId(), session.getStartedAt()));
+            session.setProblemsSolved((int) submissionRepository.countDistinctSolvedProblemsSince(user.getId(), session.getStartedAt()));
+            sessionRepository.save(session);
+        }
 
         syncMetadata(user);
         if (submission != null) {
             analyticsService.updateIncremental(user.getId(), submission);
         }
-        return toResponse(session);
+        return session == null ? null : toResponse(session);
     }
 
     @Transactional
@@ -299,19 +300,8 @@ public class SessionService {
             .toList();
     }
 
-    private Session currentOrStart(User user, String mode) {
-        return sessionRepository.findFirstByUserIdAndEndedAtIsNullOrderByStartedAtDesc(user.getId())
-            .orElseGet(() -> sessionRepository.save(Session.builder()
-                .user(user)
-                .mode(normalizeMode(mode))
-                .startedAt(LocalDateTime.now())
-                .problemsAttempted(0)
-                .problemsSolved(0)
-                .focusSeconds(0)
-                .tabSwitches(0)
-                .pasteCount(0)
-                .focusScore(100)
-                .build()));
+    private Optional<Session> currentSession(User user) {
+        return sessionRepository.findFirstByUserIdAndEndedAtIsNullOrderByStartedAtDesc(user.getId());
     }
 
     private ProblemOpenEvent openEvent(User user, Problem problem, LocalDateTime openedAt) {

@@ -14,6 +14,9 @@ public class Glicko2MasteryEngine {
 
     private static final double TAU = 0.5; // System constant
     private static final double SCALE = 173.7178;
+    private static final double VOLATILITY_EPSILON = 0.000001;
+    private static final int MAX_VOLATILITY_BRACKET_STEPS = 100;
+    private static final int MAX_VOLATILITY_ITERATIONS = 100;
 
     public static class GlickoRating {
         public double rating;
@@ -79,45 +82,65 @@ public class Glicko2MasteryEngine {
             deltaSum += gj * (m.score - ej);
         }
 
+        if (!(vInv > 0.0) || !Double.isFinite(vInv)) {
+            // Degenerate numerical inputs should increase uncertainty, not
+            // manufacture a large rating movement.
+            return decayRating(current);
+        }
+
         double v = 1.0 / vInv;
         double delta = v * deltaSum;
 
         // Step 5: Update volatility (sigma) using Illinois algorithm
         double a = Math.log(sigma * sigma);
-        double fA = f(a, delta, phi, v, a);
         double A = a;
         double B;
+        boolean hasBracket = true;
 
         if (delta * delta > phi * phi + v) {
             B = Math.log(delta * delta - phi * phi - v);
         } else {
             int k = 1;
-            while (f(a - k * TAU, delta, phi, v, a) < 0) {
+            double bracketValue = f(a - k * TAU, delta, phi, v, a);
+            while (Double.isFinite(bracketValue) && bracketValue < 0 && k < MAX_VOLATILITY_BRACKET_STEPS) {
                 k++;
+                bracketValue = f(a - k * TAU, delta, phi, v, a);
             }
             B = a - k * TAU;
+            hasBracket = Double.isFinite(bracketValue) && bracketValue >= 0;
         }
 
-        double fA_val = f(A, delta, phi, v, a);
-        double fB_val = f(B, delta, phi, v, a);
+        double newSigma = sigma;
+        if (hasBracket && Double.isFinite(B)) {
+            double fAVal = f(A, delta, phi, v, a);
+            double fBVal = f(B, delta, phi, v, a);
+            int iteration = 0;
+            while (Double.isFinite(fAVal) && Double.isFinite(fBVal)
+                    && Math.abs(B - A) > VOLATILITY_EPSILON
+                    && iteration++ < MAX_VOLATILITY_ITERATIONS) {
+                double denominator = fBVal - fAVal;
+                if (Math.abs(denominator) < 1e-12 || !Double.isFinite(denominator)) break;
 
-        double epsilon = 0.000001;
-        while (Math.abs(B - A) > epsilon) {
-            double C = A + (A - B) * fA_val / (fB_val - fA_val);
-            double fC_val = f(C, delta, phi, v, a);
+                double C = A + (A - B) * fAVal / denominator;
+                double fCVal = f(C, delta, phi, v, a);
+                if (!Double.isFinite(C) || !Double.isFinite(fCVal)) break;
 
-            if (fC_val * fB_val <= 0) {
-                A = B;
-                fA_val = fB_val;
-            } else {
-                fA_val = fA_val / 2.0;
+                if (fCVal * fBVal <= 0) {
+                    A = B;
+                    fAVal = fBVal;
+                } else {
+                    fAVal = fAVal / 2.0;
+                }
+
+                B = C;
+                fBVal = fCVal;
             }
 
-            B = C;
-            fB_val = fC_val;
+            if (Math.abs(B - A) <= VOLATILITY_EPSILON) {
+                double candidate = Math.exp(A / 2.0);
+                if (Double.isFinite(candidate) && candidate > 0.0) newSigma = candidate;
+            }
         }
-
-        double newSigma = Math.exp(A / 2.0);
 
         // Step 6: Update RD to pre-rating period value
         double phiStar = Math.sqrt(phi * phi + newSigma * newSigma);
@@ -141,6 +164,12 @@ public class Glicko2MasteryEngine {
         double newRd = newPhi * SCALE;
 
         return new GlickoRating(newRating, newRd, newSigma);
+    }
+
+    private GlickoRating decayRating(GlickoRating current) {
+        double phi = current.rd / SCALE;
+        double phiPrime = Math.sqrt(phi * phi + current.volatility * current.volatility);
+        return new GlickoRating(current.rating, Math.min(phiPrime * SCALE, 350.0), current.volatility);
     }
 
     private double f(double x, double delta, double phi, double v, double a) {

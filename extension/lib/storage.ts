@@ -5,7 +5,10 @@ import type {
   ContestResult,
   DashboardData,
   HeatmapBucket,
+  LiveTimerState,
   TagMastery,
+  TodaySnapshot,
+  ActiveSession,
   UserSettings,
   ZerotracProblem,
 } from "./types"
@@ -16,15 +19,15 @@ const storage = new Storage({ area: "local" })
 
 async function getTyped<T>(key: string): Promise<T | null> {
   try {
-    const data = await storage.get(key)
-    return data ? (data as T) : null
+    const data = await storage.get<T>(key)
+    return data ?? null
   } catch {
     return null
   }
 }
 
 async function setTyped<T>(key: string, value: T): Promise<void> {
-  await storage.set(key, value as unknown as string)
+  await storage.set(key, value)
 }
 
 // ─── Username ─────────────────────────────────────────────────────
@@ -119,6 +122,54 @@ export async function getCachedDashboard(): Promise<DashboardData | null> {
 
 export async function setCachedDashboard(data: DashboardData): Promise<void> {
   await setTyped(STORAGE_KEYS.CACHED_DASHBOARD, data)
+}
+
+// ─── Today command center ─────────────────────────────────────────
+
+export async function getTodaySnapshot(): Promise<TodaySnapshot | null> {
+  const current = await getTyped<TodaySnapshot>(STORAGE_KEYS.TODAY_SNAPSHOT)
+  if (current) return current
+
+  // Preserve the instant-load benefit for people upgrading from the original
+  // Today cache. The next successful refresh writes the versioned record.
+  const legacy = await getTyped<Partial<TodaySnapshot>>("algovault.todaySnapshot")
+  if (!legacy?.data) return null
+  return {
+    schemaVersion: 2,
+    data: legacy.data,
+    queue: legacy.queue ?? [],
+    weakness: legacy.weakness ?? null,
+    sessions: legacy.sessions ?? [],
+    solved: legacy.solved ?? [],
+    zerotrac: legacy.zerotrac ?? [],
+    ranking: legacy.ranking ?? null,
+    savedAt: legacy.savedAt ?? 0,
+    isPartial: legacy.isPartial
+  }
+}
+
+export async function setTodaySnapshot(snapshot: TodaySnapshot): Promise<void> {
+  await setTyped(STORAGE_KEYS.TODAY_SNAPSHOT, snapshot)
+}
+
+export async function getLiveTimer(): Promise<any | null> {
+  return getTyped<any>("algovault.session.active")
+}
+
+export async function setLiveTimer(timer: any): Promise<void> {
+  await setTyped("algovault.session.active", timer)
+}
+
+export async function getCurrentSession(): Promise<any | null> {
+  return getTyped<any>("algovault.session.active")
+}
+
+export async function setCurrentSession(session: any): Promise<void> {
+  await setTyped("algovault.session.active", session)
+}
+
+export async function clearCurrentSession(): Promise<void> {
+  await storage.remove("algovault.session.active")
 }
 
 // ─── Cached Mastery ───────────────────────────────────────────────

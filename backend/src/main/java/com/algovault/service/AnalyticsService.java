@@ -16,6 +16,11 @@ import org.springframework.stereotype.Service;
 @Slf4j
 @org.springframework.transaction.annotation.Transactional
 public class AnalyticsService {
+    private static final double LOGISTIC_LEARNING_RATE = 0.05;
+    private static final double LOGISTIC_L2 = 0.05;
+    private static final int MAX_LOGISTIC_ITERATIONS = 2_000;
+    private static final double LOGISTIC_CONVERGENCE_TOLERANCE = 1e-5;
+
     private final MasteryService masteryService;
     private final TopicRatingService topicRatingService;
     private final HeatmapService heatmapService;
@@ -167,11 +172,10 @@ public class AnalyticsService {
             // Fit Logistic Regression: P(success) = 1 / (1 + e^-(theta0 - theta1 * x))
             double theta0 = 0.0;
             double theta1 = 1.0; // Positive coefficient (higher rating means lower probability of success)
-            double alpha = 0.05; // Learning rate
-            double lambda = 0.05; // L2 Regularization weight
-            int iterations = 1000;
+            boolean converged = false;
+            boolean numericallyStable = true;
 
-            for (int iter = 0; iter < iterations; iter++) {
+            for (int iter = 0; iter < MAX_LOGISTIC_ITERATIONS; iter++) {
                 double grad0 = 0.0;
                 double grad1 = 0.0;
                 double sumWeights = 0.0;
@@ -180,7 +184,7 @@ public class AnalyticsService {
                     double x = point[0];
                     double y = point[1];
                     double w = point[2];
-                    double z = theta0 - theta1 * x;
+                    double z = Math.max(-35.0, Math.min(35.0, theta0 - theta1 * x));
                     double p = 1.0 / (1.0 + Math.exp(-z));
 
                     grad0 += w * (p - y);
@@ -188,30 +192,78 @@ public class AnalyticsService {
                     sumWeights += w;
                 }
 
-                double avgGrad0 = grad0 / sumWeights;
-                double avgGrad1 = (grad1 / sumWeights) + lambda * theta1; // Only regularize the slope
+                if (!(sumWeights > 0.0) || !Double.isFinite(sumWeights)) {
+                    numericallyStable = false;
+                    break;
+                }
 
-                theta0 -= alpha * avgGrad0;
-                theta1 -= alpha * avgGrad1;
+                double avgGrad0 = grad0 / sumWeights;
+                double avgGrad1 = (grad1 / sumWeights) + LOGISTIC_L2 * theta1; // Only regularize the slope
+                if (!Double.isFinite(avgGrad0) || !Double.isFinite(avgGrad1)) {
+                    numericallyStable = false;
+                    break;
+                }
+
+                double nextTheta0 = theta0 - LOGISTIC_LEARNING_RATE * avgGrad0;
+                double nextTheta1 = theta1 - LOGISTIC_LEARNING_RATE * avgGrad1;
 
                 // Project theta1 to be positive so probability strictly decreases with rating difficulty
-                if (theta1 < 0.05) {
-                    theta1 = 0.05;
+                nextTheta1 = Math.max(0.05, nextTheta1);
+                if (!Double.isFinite(nextTheta0) || !Double.isFinite(nextTheta1)) {
+                    numericallyStable = false;
+                    break;
+                }
+
+                double parameterStep = Math.max(Math.abs(nextTheta0 - theta0), Math.abs(nextTheta1 - theta1));
+                theta0 = nextTheta0;
+                theta1 = nextTheta1;
+                if (parameterStep < LOGISTIC_CONVERGENCE_TOLERANCE) {
+                    converged = true;
+                    break;
                 }
             }
 
-            // Find rating where solve probability is exactly 50%: theta0 - theta1 * x = 0 => x = theta0 / theta1
-            double targetNormRating = theta0 / theta1;
-            double estimatedRating = targetNormRating * 500.0 + 1500.0;
-            estimatedRating = Math.max(800.0, Math.min(3000.0, estimatedRating));
+            if (!numericallyStable || !converged || theta1 <= 0.05 || !Double.isFinite(theta0)) {
+                // A non-converged optimizer is evidence of an underdetermined
+                // sample, not a license to publish a spurious skill number.
+                int fallback = user.getVirtualRating() != null
+                    ? user.getVirtualRating()
+                    : fallbackVirtualRating(problemAttempts);
+                log.warn("Virtual rating logistic fit did not converge for user {}; keeping fallback {}", userId, fallback);
+                user.setVirtualRating(fallback);
+            } else {
+                // Find rating where solve probability is exactly 50%: theta0 - theta1 * x = 0 => x = theta0 / theta1
+                double targetNormRating = theta0 / theta1;
+                double estimatedRating = targetNormRating * 500.0 + 1500.0;
+                estimatedRating = Math.max(800.0, Math.min(3000.0, estimatedRating));
 
-            // This is the estimated 50% first-attempt rating from one
-            // regularized model. Do not blend it with a pseudo-Glicko value:
-            // both consume the same submissions and their average has no
-            // statistical interpretation.
-            user.setVirtualRating((int) Math.round(estimatedRating));
+                // This is the estimated 50% first-attempt rating from one
+                // regularized model. Do not blend it with a pseudo-Glicko value:
+                // both consume the same submissions and their average has no
+                // statistical interpretation.
+                user.setVirtualRating((int) Math.round(estimatedRating));
+            }
         }
 
         userRepository.save(user);
+    }
+
+    private int fallbackVirtualRating(Map<Long, List<Submission>> problemAttempts) {
+        double solvedSum = 0.0;
+        double maxSolvedRating = 0.0;
+        int solvedCount = 0;
+        for (List<Submission> attempts : problemAttempts.values()) {
+            if (attempts.isEmpty()) continue;
+            attempts.sort(Comparator.comparing(Submission::getSubmittedAt));
+            Submission first = attempts.get(0);
+            if (!"Accepted".equals(first.getVerdict())) continue;
+            double rating = first.getProblem().getActualRating();
+            solvedSum += rating;
+            maxSolvedRating = Math.max(maxSolvedRating, rating);
+            solvedCount++;
+        }
+        if (solvedCount == 0) return 1200;
+        double average = solvedSum / solvedCount;
+        return (int) Math.round(Math.max(800.0, Math.min(3000.0, 0.8 * average + 0.2 * maxSolvedRating)));
     }
 }

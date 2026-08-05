@@ -21,6 +21,9 @@ import org.springframework.cache.annotation.Cacheable;
 @org.springframework.transaction.annotation.Transactional
 @RequiredArgsConstructor
 public class WeaknessService {
+    /** Fewer observations can be shown as exploration, but not prescribed as a weakness. */
+    private static final int MIN_RECOMMENDATION_EVIDENCE = 3;
+
     private final TagMasteryRepository tagMasteryRepository;
     private final ProblemRepository problemRepository;
     private final UserRepository userRepository;
@@ -29,8 +32,8 @@ public class WeaknessService {
     public WeaknessResponse getWeakness(Long userId) {
         List<TagMastery> masteries = tagMasteryRepository.findByUserIdOrderByMasteryScoreDesc(userId);
         
-        // Filter tags with at least 1 attempt and rank by weakness.
-        // Lower threshold (1 vs previous 3) ensures new users still see recommendations.
+        // Show early observations transparently, but use the evidence level to
+        // distinguish "explore this" from a defensible weakness signal.
         List<WeaknessResponse.WeakTag> weakTags = masteries.stream()
             .filter(m -> m.getTotalAttempted() != null && m.getTotalAttempted() >= 1)
             .sorted((m1, m2) -> {
@@ -56,6 +59,7 @@ public class WeaknessService {
                     .masteryScore(m.getMasteryScore())
                     .rd(m.getRd())
                     .evidenceLevel(evidenceLevel)
+                    .totalAttempted(m.getTotalAttempted())
                     .build();
             })
             .collect(Collectors.toList());
@@ -71,6 +75,9 @@ public class WeaknessService {
         List<WeaknessResponse.RecommendedProblem> recommendations = new ArrayList<>();
         java.util.Set<String> recommendedSlugs = new java.util.HashSet<>();
         for (WeaknessResponse.WeakTag weakTag : weakTags) {
+            if (weakTag.getTotalAttempted() == null || weakTag.getTotalAttempted() < MIN_RECOMMENDATION_EVIDENCE) {
+                continue;
+            }
             // Fetch 40 problems sorted by rating proximity for better variety.
             // The SQL query uses COALESCE to include unrated problems via difficulty estimates.
             List<Problem> problems = problemRepository.findRecommendedUnsolved(userId, weakTag.getTag(), minRating, maxRating, targetRating, 40);
