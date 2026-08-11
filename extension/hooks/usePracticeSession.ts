@@ -14,25 +14,39 @@ export function usePracticeSession() {
   useEffect(() => {
     let mounted = true
 
-    storage.get<PracticeSession>(ACTIVE_SESSION_KEY).then((data) => {
+    const parseSession = (raw: any): PracticeSession | null => {
+      if (!raw) return null
+      if (typeof raw === "string") {
+        try {
+          return JSON.parse(raw)
+        } catch {
+          return null
+        }
+      }
+      if (typeof raw === "object") return raw as PracticeSession
+      return null
+    }
+
+    storage.get<any>(ACTIVE_SESSION_KEY).then((data) => {
       if (mounted) {
-        setSession(data || null)
+        setSession(parseSession(data))
       }
     })
 
     const storageListener = (changes: Record<string, any>, areaName: string) => {
       if (areaName === "local" && changes[ACTIVE_SESSION_KEY]) {
-        const nextSession = changes[ACTIVE_SESSION_KEY].newValue as PracticeSession | null
+        const nextSession = parseSession(changes[ACTIVE_SESSION_KEY].newValue)
         if (mounted) {
-          setSession(nextSession || null)
+          setSession(nextSession)
         }
       }
     }
 
     const messageListener = (msg: any) => {
       if (msg && msg.action === "session_updated_v2") {
+        const nextSession = parseSession(msg.session)
         if (mounted) {
-          setSession(msg.session || null)
+          setSession(nextSession)
         }
       }
     }
@@ -49,14 +63,14 @@ export function usePracticeSession() {
 
   // 2. Centralized 1-second Local Tick (Zero Storage Writes)
   useEffect(() => {
-    if (!session || session.st !== "RUNNING") return
+    if (!session) return
 
     const interval = setInterval(() => {
       setNow(Date.now())
     }, 1000)
 
     return () => clearInterval(interval)
-  }, [session?.st, session?.tActiveStart])
+  }, [session?.id, session?.st, session?.tActiveStart])
 
   // 3. Derived Clocks (Pure math calculations)
   const clocks = deriveClocks(session, now)
@@ -94,13 +108,18 @@ export function usePracticeSession() {
     })
   }, [])
 
+  const logTimeSession = useCallback((language?: string) => {
+    chrome.runtime.sendMessage({ action: "session_log_time_v2", language })
+  }, [])
+
   return {
     session,
     clocks,
     pauseSession,
     resumeSession,
     resetSession,
-    finishSession
+    finishSession,
+    logTimeSession
   }
 }
 

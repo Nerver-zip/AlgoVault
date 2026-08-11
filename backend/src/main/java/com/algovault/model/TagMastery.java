@@ -44,6 +44,9 @@ public class TagMastery {
     @Column(name = "mastery_score")
     private Double masteryScore;
 
+    @Column(name = "raw_rating")
+    private Double rawRating;
+
     @Column(name = "rd")
     private Double rd;
 

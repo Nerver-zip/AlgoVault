@@ -120,8 +120,19 @@ export function transitionSession(
 /**
  * Derives activeSeconds, elapsedSeconds, and focusScore synchronously at 60FPS with ZERO storage writes.
  */
-export function deriveClocks(session: PracticeSession | null, now = Date.now()) {
-  if (!session) {
+export function deriveClocks(sessionInput: PracticeSession | string | null, now = Date.now()) {
+  let session: PracticeSession | null = null
+  if (typeof sessionInput === "string") {
+    try {
+      session = JSON.parse(sessionInput)
+    } catch {
+      session = null
+    }
+  } else {
+    session = sessionInput
+  }
+
+  if (!session || typeof session !== "object") {
     return { activeSeconds: 0, elapsedSeconds: 0, focusScore: 100, isRunning: false, isPaused: false, isSolved: false }
   }
 

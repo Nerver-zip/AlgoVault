@@ -32,7 +32,7 @@ const LOGS_INDEX_KEY = "algovault.logs.index"
 // ─── APSE v2 BACKGROUND COORDINATOR ─────────────────────────────────
 
 /**
- * Archive completed session to monthly log bucket and index
+ * Archive completed or paused session to monthly log bucket and index
  */
 async function archivePracticeLog(session: any, isSolved: boolean, language?: string) {
   if (!session || !session.slug) return
@@ -40,16 +40,18 @@ async function archivePracticeLog(session: any, isSolved: boolean, language?: st
   const activeSecs = Math.floor(
     (session.accActiveMs + (session.st === "RUNNING" && session.tActiveStart ? Math.max(0, now - session.tActiveStart) : 0)) / 1000
   )
+  if (activeSecs <= 0) return
+
   const elapsedSecs = Math.floor(Math.max(0, now - session.tElapsedStart - session.accPausedMs) / 1000)
   const focusScore = elapsedSecs > 0 ? Math.min(100, Math.round((activeSecs / elapsedSecs) * 100)) : 100
 
-  const logId = session.id || String(now)
+  const logId = session.id || String(session.tElapsedStart || now)
   const logItem = {
     v: 2,
     logId,
     sessionId: session.id,
     slug: session.slug,
-    startedAt: session.tElapsedStart,
+    startedAt: session.tElapsedStart || now,
     completedAt: now,
     activeSecs,
     elapsedSecs,
@@ -60,25 +62,48 @@ async function archivePracticeLog(session: any, isSolved: boolean, language?: st
     language
   }
 
-  // 1. Append to Monthly Bucket `algovault.logs.YYYY_MM`
-  const dateObj = new Date(now)
+  // 1. Upsert into Monthly Bucket `algovault.logs.YYYY_MM`
+  const dateObj = new Date(session.tElapsedStart || now)
   const yyyyMm = `${dateObj.getFullYear()}_${String(dateObj.getMonth() + 1).padStart(2, "0")}`
   const bucketKey = `algovault.logs.${yyyyMm}`
   const existingBucket = (await storage.get<any[]>(bucketKey)) || []
-  existingBucket.push(logItem)
+  const bucketIndex = existingBucket.findIndex(
+    (item: any) => (session.id && item.sessionId === session.id) || (item.slug === session.slug && item.startedAt === session.tElapsedStart)
+  )
+  if (bucketIndex >= 0) {
+    existingBucket[bucketIndex] = {
+      ...existingBucket[bucketIndex],
+      ...logItem,
+      isSolved: isSolved || existingBucket[bucketIndex].isSolved
+    }
+  } else {
+    existingBucket.push(logItem)
+  }
   await storage.set(bucketKey, existingBucket)
 
-  // 2. Append to Ultra-Fast Summary Index
+  // 2. Upsert into Ultra-Fast Summary Index
   const indexItem = {
+    sessionId: session.id,
     slug: session.slug,
-    ts: now,
+    ts: session.tElapsedStart || now,
     actSecs: activeSecs,
     elSecs: elapsedSecs,
     score: focusScore,
     solved: isSolved
   }
   const existingIndex = (await storage.get<any[]>(LOGS_INDEX_KEY)) || []
-  existingIndex.push(indexItem)
+  const summaryIndex = existingIndex.findIndex(
+    (item: any) => (session.id && item.sessionId === session.id) || (item.slug === session.slug && item.ts === session.tElapsedStart)
+  )
+  if (summaryIndex >= 0) {
+    existingIndex[summaryIndex] = {
+      ...existingIndex[summaryIndex],
+      ...indexItem,
+      solved: isSolved || existingIndex[summaryIndex].solved
+    }
+  } else {
+    existingIndex.push(indexItem)
+  }
   await storage.set(LOGS_INDEX_KEY, existingIndex)
 }
 
@@ -88,6 +113,7 @@ chrome.tabs.onRemoved.addListener(async (closedTabId) => {
   if (active && active.ownerTabId === closedTabId && active.st === "RUNNING") {
     const updated = transitionSession(active, "PAUSED", "TAB", Date.now())
     await storage.set(ACTIVE_SESSION_KEY, { ...updated, ownerTabId: null })
+    await archivePracticeLog(updated, updated.st === "SOLVED")
   }
 })
 
@@ -98,6 +124,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     const updatedSession = { ...active, tabs: (active.tabs || 0) + 1 }
     const updated = transitionSession(updatedSession, "PAUSED", "TAB", Date.now())
     await storage.set(ACTIVE_SESSION_KEY, updated)
+    await archivePracticeLog(updated, updated.st === "SOLVED")
     chrome.runtime.sendMessage({ action: "session_updated_v2", session: updated })
   }
 })
@@ -108,29 +135,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   // APSE v2 State Machine Message Interceptors
-  if (message.action === "claim_tab_ownership" && sender.tab?.id) {
-    const tabId = sender.tab.id
+  if (message.action === "claim_tab_ownership") {
+    const tabId = sender.tab?.id || null
     storage.get<any>(ACTIVE_SESSION_KEY).then(async (session) => {
       if (!session) {
         sendResponse({ ok: false })
         return
       }
-      if (session.ownerTabId === tabId && session.st === "RUNNING") {
+      if (tabId && session.ownerTabId === tabId && session.st === "RUNNING") {
         sendResponse({ ok: true, session })
         return
       }
       if ((session.st === "PAUSED" && session.pr === "MANUAL") || session.st === "SOLVED") {
-        const updated = { ...session, ownerTabId: tabId }
+        const updated = { ...session, ownerTabId: tabId || session.ownerTabId }
         await storage.set(ACTIVE_SESSION_KEY, updated)
         sendResponse({ ok: true, session: updated })
         return
       }
 
-      const isTabSwitch = session.pr === "TAB" || (session.ownerTabId !== null && session.ownerTabId !== tabId)
+      const isTabSwitch = session.pr === "TAB" || (session.ownerTabId !== null && tabId !== null && session.ownerTabId !== tabId)
       const transitioned = transitionSession(session, "RUNNING", null, Date.now())
       const updated = {
         ...transitioned,
-        ownerTabId: tabId,
+        ownerTabId: tabId || session.ownerTabId,
         tabs: isTabSwitch ? (session.tabs || 0) + 1 : (session.tabs || 0)
       }
       await storage.set(ACTIVE_SESSION_KEY, updated)
@@ -171,11 +198,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const store = (await storage.get<Record<string, any>>(storeKey)) || {}
 
       if (existingSession && existingSession.slug) {
+        let pausedSession: any
         if ((existingSession.st === "PAUSED" && existingSession.pr === "MANUAL") || existingSession.st === "SOLVED") {
-          store[existingSession.slug] = existingSession
+          pausedSession = existingSession
         } else {
-          store[existingSession.slug] = transitionSession(existingSession, "PAUSED", "TAB", now)
+          pausedSession = transitionSession(existingSession, "PAUSED", "TAB", now)
         }
+        store[existingSession.slug] = pausedSession
+        await archivePracticeLog(pausedSession, existingSession.st === "SOLVED")
       }
 
       let sessionForSlug = store[slug]
@@ -214,6 +244,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const sessionWithTabs = isTabSwitch ? { ...session, tabs: (session.tabs || 0) + 1 } : session
       const updated = transitionSession(sessionWithTabs, "PAUSED", reason, Date.now())
       await storage.set(ACTIVE_SESSION_KEY, updated)
+      await archivePracticeLog(updated, updated.st === "SOLVED")
       chrome.runtime.sendMessage({ action: "session_updated_v2", session: updated })
       sendResponse({ ok: true, session: updated })
     })
@@ -274,6 +305,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.runtime.sendMessage({ action: "session_updated_v2", session: updated })
       chrome.runtime.sendMessage({ action: "dashboard_refresh" })
       sendResponse({ ok: true, session: updated })
+    })
+    return true
+  }
+
+  if (message.action === "session_log_time_v2") {
+    storage.get<any>(ACTIVE_SESSION_KEY).then(async (session) => {
+      if (!session) {
+        sendResponse({ ok: false })
+        return
+      }
+      await archivePracticeLog(session, false, message.language)
+      chrome.runtime.sendMessage({ action: "dashboard_refresh" })
+      sendResponse({ ok: true })
     })
     return true
   }

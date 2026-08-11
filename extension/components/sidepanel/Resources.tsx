@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react"
 import {
   BookOpen,
+  Code2,
   ExternalLink,
   PlayCircle,
   SearchCode
@@ -8,6 +9,7 @@ import {
 import { Card } from "../ui/Card"
 import { motion, AnimatePresence } from "framer-motion"
 import { CurriculumBoard } from "./CurriculumBoard"
+import { TemplateVault } from "./TemplateVault"
 
 
 type ResourceKind = "video" | "reference" | "practice"
@@ -78,7 +80,7 @@ const KIND_META: Record<ResourceKind, { label: string; icon: React.ElementType; 
 }
 
 export const Resources = () => {
-  const [activeTab, setActiveTab] = useState<"roadmap" | "resources">("roadmap")
+  const [activeTab, setActiveTab] = useState<"roadmap" | "resources" | "templates">("roadmap")
   const [filter, setFilter] = useState<"all" | ResourceKind>("all")
   const visible = useMemo(() => filter === "all" ? RESOURCES : RESOURCES.filter((resource) => resource.kind === filter), [filter])
 
@@ -88,23 +90,33 @@ export const Resources = () => {
       <div className="flex bg-zinc-950/80 p-1.5 rounded-xl border border-zinc-800/80 shadow-inner">
         <button
           onClick={() => setActiveTab("roadmap")}
-          className={`flex-1 flex items-center justify-center gap-2 text-[10.5px] font-bold py-2 rounded-lg transition-all font-mono uppercase tracking-wider ${
+          className={`flex-1 flex items-center justify-center gap-1.5 text-[10px] font-bold py-2 rounded-lg transition-all font-mono uppercase tracking-wider ${
             activeTab === "roadmap"
               ? "bg-zinc-900 text-[#dfa054] border border-[#dfa054]/30 shadow-md"
               : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/40"
           }`}
         >
-          <SearchCode size={13} /> Curriculum Map
+          <SearchCode size={13} /> Curriculum
+        </button>
+        <button
+          onClick={() => setActiveTab("templates")}
+          className={`flex-1 flex items-center justify-center gap-1.5 text-[10px] font-bold py-2 rounded-lg transition-all font-mono uppercase tracking-wider ${
+            activeTab === "templates"
+              ? "bg-zinc-900 text-[#dfa054] border border-[#dfa054]/30 shadow-md"
+              : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/40"
+          }`}
+        >
+          <Code2 size={13} /> Templates
         </button>
         <button
           onClick={() => setActiveTab("resources")}
-          className={`flex-1 flex items-center justify-center gap-2 text-[10.5px] font-bold py-2 rounded-lg transition-all font-mono uppercase tracking-wider ${
+          className={`flex-1 flex items-center justify-center gap-1.5 text-[10px] font-bold py-2 rounded-lg transition-all font-mono uppercase tracking-wider ${
             activeTab === "resources"
               ? "bg-zinc-900 text-[#dfa054] border border-[#dfa054]/30 shadow-md"
               : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/40"
           }`}
         >
-          <BookOpen size={13} /> External Resources
+          <BookOpen size={13} /> Resources
         </button>
       </div>
 
@@ -118,6 +130,16 @@ export const Resources = () => {
             transition={{ duration: 0.18 }}
           >
             <CurriculumBoard />
+          </motion.div>
+        ) : activeTab === "templates" ? (
+          <motion.div
+            key="templates"
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.18 }}
+          >
+            <TemplateVault />
           </motion.div>
         ) : (
           <motion.div

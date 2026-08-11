@@ -14,8 +14,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.time.YearMonth;
 import java.util.*;
 
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 
 @Service
@@ -34,19 +36,20 @@ public class MasteryService {
         return tagMasteryRepository.findByUserIdOrderByMasteryScoreDesc(userId);
     }
 
+    @CacheEvict(value = "mastery", key = "#userId")
+    @Transactional
+    public List<TagMastery> recomputeAndGetMastery(Long userId) {
+        computeMastery(userId);
+        return tagMasteryRepository.findByUserIdOrderByMasteryScoreDesc(userId);
+    }
+
     @Transactional
     public void computeMastery(Long userId) {
         log.info("Computing Tag Mastery for user {}", userId);
         User user = userRepository.findById(userId).orElseThrow();
         List<Submission> allSubmissions = submissionRepository.findByUserIdOrderBySubmittedAtDesc(userId);
 
-        Map<Long, ProblemOpenEvent> latestEventMap = new HashMap<>();
-        for (ProblemOpenEvent e : problemOpenEventRepository.findByUserId(userId)) {
-            Long pid = e.getProblem().getId();
-            if (!latestEventMap.containsKey(pid) || latestEventMap.get(pid).getOpenedAt().isBefore(e.getOpenedAt())) {
-                latestEventMap.put(pid, e);
-            }
-        }
+        Map<Long, ProblemOpenEvent> latestEventMap = buildLatestEventMap(userId);
 
         Map<String, Map<Long, List<Submission>>> tagToProblemAttempts = new HashMap<>();
         for (Submission sub : allSubmissions) {
@@ -68,97 +71,12 @@ public class MasteryService {
             attempts.forEach(list -> list.sort(Comparator.comparing(Submission::getSubmittedAt)));
             attempts.sort(Comparator.comparing(list -> list.get(0).getSubmittedAt()));
 
-            int firstAcCount = 0;
-            int totalSolved = 0;
-            LocalDateTime lastSolvedAt = null;
-            double totalSolveMinutes = 0;
-            int timedSolves = 0;
-
-            double globalRating = (user.getLcRating() != null && user.getLcRating() > 0) ? user.getLcRating() : (user.getVirtualRating() != null && user.getVirtualRating() > 0 ? user.getVirtualRating() : 1500.0);
-            double startingRating = 0.8 * globalRating + 0.2 * 1500.0;
-            Glicko2MasteryEngine.GlickoRating currentRating = new Glicko2MasteryEngine.GlickoRating(startingRating, 350.0, 0.06);
-
-            for (List<Submission> problemAttempts : attempts) {
-                Submission first = problemAttempts.get(0);
-                Submission accepted = problemAttempts.stream()
-                    .filter(sub -> "Accepted".equals(sub.getVerdict()))
-                    .findFirst()
-                    .orElse(null);
-
-                double score = 0.0;
-                if (accepted != null) {
-                    totalSolved++;
-                    if ("Accepted".equals(first.getVerdict())) {
-                        firstAcCount++;
-                    }
-                    if (lastSolvedAt == null || accepted.getSubmittedAt().isAfter(lastSolvedAt)) {
-                        lastSolvedAt = accepted.getSubmittedAt();
-                    }
-
-                    score = "Accepted".equals(first.getVerdict()) ? 1.0 : 0.7;
-                    ProblemOpenEvent event = latestEventMap.get(first.getProblem().getId());
-                    if (event != null) {
-                        String help = event.getSelfReportedHelp();
-                        if ("EDITORIAL".equals(help) || "EXTERNAL".equals(help)) {
-                            score = 0.0;
-                        } else if ("HINT".equals(help)) {
-                            score = Math.min(score, 0.5);
-                        }
-                        if (event.getFocusSeconds() != null && event.getFocusSeconds() > 0) {
-                            totalSolveMinutes += event.getFocusSeconds() / 60.0;
-                            timedSolves++;
-                        }
-                    } else if (problemAttempts.size() > 1) {
-                        long minutes = java.time.Duration.between(first.getSubmittedAt(), accepted.getSubmittedAt()).toMinutes();
-                        totalSolveMinutes += Math.max(0, minutes);
-                        timedSolves++;
-                    }
-                }
-
-                double opponentRating = first.getProblem().getActualRating() != null
-                    ? first.getProblem().getActualRating()
-                    : inferRatingFromDifficulty(first.getProblem().getDifficulty());
-
-                // Dynamic opponent RD: well-known problems have low RD, uncertain ones high.
-                double baseOpponentRD = computeOpponentRD(first.getProblem());
-
-                // Fractional tag attribution: a problem with N tags gives each tag
-                // score/N credit, preventing multi-tag double-counting.
-                int numTags = (first.getProblem().getTags() != null) ? first.getProblem().getTags().size() : 1;
-                double effectiveScore = numTags > 1 ? score / Math.sqrt(numTags) : score;
-                double effectiveOpponentRD = numTags > 1 ? baseOpponentRD * Math.sqrt(numTags) : baseOpponentRD;
-
-                currentRating = glickoEngine.updateRating(currentRating, List.of(
-                    new Glicko2MasteryEngine.MatchResult(opponentRating, effectiveOpponentRD, effectiveScore)
-                ));
-            }
-
-            if (lastSolvedAt != null) {
-                long monthsSince = Math.min(6, java.time.Duration.between(lastSolvedAt, LocalDateTime.now()).toDays() / 30);
-                for (int m = 0; m < monthsSince; m++) {
-                    currentRating = glickoEngine.updateRating(currentRating, Collections.emptyList());
-                }
-            }
-
-            int totalAttempted = attempts.size();
-            double successRate = totalAttempted > 0 ? (double) totalSolved / totalAttempted : 0.0;
+            TagRatingResult result = computeTagRating(user, attempts, latestEventMap);
 
             TagMastery tm = tagMasteryRepository.findByUserIdAndTag(userId, tag)
                 .orElse(TagMastery.builder().user(user).tag(tag).build());
 
-            tm.setTotalAttempted(totalAttempted);
-            tm.setTotalSolved(totalSolved);
-            tm.setFirstAcCount(firstAcCount);
-            tm.setSuccessRate(successRate * 100.0);
-            tm.setAvgSolveTime(timedSolves > 0 ? totalSolveMinutes / timedSolves : null);
-            // Use the Glicko-2 Lower Confidence Bound (Rating - 2 * RD) directly.
-            // The engine naturally increases RD over time, so we don't need a custom decay multiplier.
-            double conservativeScore = currentRating.rating - (2.0 * currentRating.rd);
-            tm.setMasteryScore(Math.max(800.0, conservativeScore));
-            tm.setRd(currentRating.rd);
-            tm.setVolatility(currentRating.volatility);
-            tm.setLastSolvedAt(lastSolvedAt);
-
+            applyRatingResult(tm, result);
             updatedMasteries.add(tm);
         }
 
@@ -197,13 +115,7 @@ public class MasteryService {
             return;
         }
 
-        Map<Long, ProblemOpenEvent> latestEventMap = new HashMap<>();
-        for (ProblemOpenEvent e : problemOpenEventRepository.findByUserId(user.getId())) {
-            Long pid = e.getProblem().getId();
-            if (!latestEventMap.containsKey(pid) || latestEventMap.get(pid).getOpenedAt().isBefore(e.getOpenedAt())) {
-                latestEventMap.put(pid, e);
-            }
-        }
+        Map<Long, ProblemOpenEvent> latestEventMap = buildLatestEventMap(user.getId());
 
         Map<Long, List<Submission>> problemAttemptsMap = new HashMap<>();
         for (Submission sub : tagSubs) {
@@ -214,17 +126,66 @@ public class MasteryService {
         attempts.forEach(list -> list.sort(Comparator.comparing(Submission::getSubmittedAt)));
         attempts.sort(Comparator.comparing(list -> list.get(0).getSubmittedAt()));
 
+        TagRatingResult result = computeTagRating(user, attempts, latestEventMap);
+
+        TagMastery tm = tagMasteryRepository.findByUserIdAndTag(user.getId(), tag)
+            .orElse(TagMastery.builder().user(user).tag(tag).build());
+
+        applyRatingResult(tm, result);
+        tagMasteryRepository.save(tm);
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       SHARED CORE: Computes Glicko-2 rating for a single tag
+       from its sorted list of problem attempts.
+       ═══════════════════════════════════════════════════════════════ */
+
+    /**
+     * Internal result container for the shared rating computation.
+     */
+    private record TagRatingResult(
+        Glicko2MasteryEngine.GlickoRating finalRating,
+        int totalAttempted,
+        int totalSolved,
+        int firstAcCount,
+        double totalSolveMinutes,
+        int timedSolves,
+        LocalDateTime lastSolvedAt
+    ) {}
+
+    /**
+     * Core Glicko-2 rating computation for a single tag.
+     * Uses proper monthly batching: all problems solved in the same calendar
+     * month are processed as a single Glicko-2 rating period (the standard
+     * recommends 10-15 games per period). Gap months between activity trigger
+     * empty rating periods to naturally increase RD (uncertainty).
+     *
+     * Score gradients (fairer than before):
+     *   1st-attempt AC, no help:        1.0  (full win)
+     *   Multi-attempt AC, no help:      0.65 (good, but cost retries)
+     *   Solved with hint:               0.5  (partial credit)
+     *   Solved with editorial/external: 0.25 (learned, but not independent)
+     *   Not solved:                     0.0  (loss)
+     */
+    private TagRatingResult computeTagRating(
+            User user,
+            List<List<Submission>> sortedAttempts,
+            Map<Long, ProblemOpenEvent> latestEventMap) {
+
         int firstAcCount = 0;
         int totalSolved = 0;
         LocalDateTime lastSolvedAt = null;
         double totalSolveMinutes = 0;
         int timedSolves = 0;
 
-        double globalRating = (user.getLcRating() != null && user.getLcRating() > 0) ? user.getLcRating() : (user.getVirtualRating() != null && user.getVirtualRating() > 0 ? user.getVirtualRating() : 1500.0);
-        double startingRating = 0.8 * globalRating + 0.2 * 1500.0;
-        Glicko2MasteryEngine.GlickoRating currentRating = new Glicko2MasteryEngine.GlickoRating(startingRating, 350.0, 0.06);
+        Glicko2MasteryEngine.GlickoRating currentRating =
+            new Glicko2MasteryEngine.GlickoRating(1500.0, 350.0, 0.06);
 
-        for (List<Submission> problemAttempts : attempts) {
+        // ── Step 1: Build per-problem MatchResults and track stats ──
+        // Each entry: the YearMonth of the first submission + the MatchResult
+        TreeMap<YearMonth, List<Glicko2MasteryEngine.MatchResult>> monthBatches = new TreeMap<>();
+
+        for (List<Submission> problemAttempts : sortedAttempts) {
             Submission first = problemAttempts.get(0);
             Submission accepted = problemAttempts.stream()
                 .filter(sub -> "Accepted".equals(sub.getVerdict()))
@@ -241,12 +202,13 @@ public class MasteryService {
                     lastSolvedAt = accepted.getSubmittedAt();
                 }
 
-                score = "Accepted".equals(first.getVerdict()) ? 1.0 : 0.7;
+                // Fairer score gradients
+                score = "Accepted".equals(first.getVerdict()) ? 1.0 : 0.65;
                 ProblemOpenEvent event = latestEventMap.get(first.getProblem().getId());
                 if (event != null) {
                     String help = event.getSelfReportedHelp();
                     if ("EDITORIAL".equals(help) || "EXTERNAL".equals(help)) {
-                        score = 0.0;
+                        score = 0.25; // Was 0.0 — too harsh, user still solved it
                     } else if ("HINT".equals(help)) {
                         score = Math.min(score, 0.5);
                     }
@@ -255,7 +217,8 @@ public class MasteryService {
                         timedSolves++;
                     }
                 } else if (problemAttempts.size() > 1) {
-                    long minutes = java.time.Duration.between(first.getSubmittedAt(), accepted.getSubmittedAt()).toMinutes();
+                    long minutes = java.time.Duration.between(
+                        first.getSubmittedAt(), accepted.getSubmittedAt()).toMinutes();
                     totalSolveMinutes += Math.max(0, minutes);
                     timedSolves++;
                 }
@@ -265,58 +228,103 @@ public class MasteryService {
                 ? first.getProblem().getActualRating()
                 : inferRatingFromDifficulty(first.getProblem().getDifficulty());
 
-            // Dynamic opponent RD based on problem metadata confidence
-            double baseOpponentRD = computeOpponentRD(first.getProblem());
+            double opponentRD = computeOpponentRD(first.getProblem());
 
-            // Fractional tag attribution for multi-tag problems
-            int numTags = (first.getProblem().getTags() != null) ? first.getProblem().getTags().size() : 1;
-            double effectiveScore = numTags > 1 ? score / Math.sqrt(numTags) : score;
-            double effectiveOpponentRD = numTags > 1 ? baseOpponentRD * Math.sqrt(numTags) : baseOpponentRD;
-
-            currentRating = glickoEngine.updateRating(currentRating, List.of(
-                new Glicko2MasteryEngine.MatchResult(opponentRating, effectiveOpponentRD, effectiveScore)
-            ));
+            // Group by month of first submission
+            YearMonth month = YearMonth.from(first.getSubmittedAt());
+            monthBatches
+                .computeIfAbsent(month, k -> new ArrayList<>())
+                .add(new Glicko2MasteryEngine.MatchResult(opponentRating, opponentRD, score));
         }
 
+        // ── Step 2: Process batches month-by-month with gap decay ──
+        YearMonth prevMonth = null;
+        for (Map.Entry<YearMonth, List<Glicko2MasteryEngine.MatchResult>> batch : monthBatches.entrySet()) {
+            YearMonth currentMonth = batch.getKey();
+
+            // Apply empty rating periods for gap months between activity
+            if (prevMonth != null) {
+                long gapMonths = prevMonth.until(currentMonth, java.time.temporal.ChronoUnit.MONTHS) - 1;
+                for (long g = 0; g < Math.min(gapMonths, 6); g++) {
+                    currentRating = glickoEngine.updateRating(currentRating, Collections.emptyList());
+                }
+            }
+
+            // Process entire month as one Glicko-2 rating period
+            currentRating = glickoEngine.updateRating(currentRating, batch.getValue());
+            prevMonth = currentMonth;
+        }
+
+        // ── Step 3: Apply trailing time decay for inactivity ──
         if (lastSolvedAt != null) {
-            long monthsSince = Math.min(6, java.time.Duration.between(lastSolvedAt, LocalDateTime.now()).toDays() / 30);
-            for (int m = 0; m < monthsSince; m++) {
+            long monthsSince = Math.min(6,
+                java.time.Duration.between(lastSolvedAt, LocalDateTime.now()).toDays() / 30);
+            for (long m = 0; m < monthsSince; m++) {
                 currentRating = glickoEngine.updateRating(currentRating, Collections.emptyList());
             }
         }
 
-        int totalAttempted = attempts.size();
-        double successRate = totalAttempted > 0 ? (double) totalSolved / totalAttempted : 0.0;
+        return new TagRatingResult(
+            currentRating,
+            sortedAttempts.size(),
+            totalSolved,
+            firstAcCount,
+            totalSolveMinutes,
+            timedSolves,
+            lastSolvedAt
+        );
+    }
 
-        TagMastery tm = tagMasteryRepository.findByUserIdAndTag(user.getId(), tag)
-            .orElse(TagMastery.builder().user(user).tag(tag).build());
+    /**
+     * Applies a TagRatingResult to a TagMastery entity.
+     * Uses raw Glicko-2 rating directly — no Bayesian anchor.
+     * Glicko-2's RD already encodes uncertainty for small samples,
+     * so the old w(N)=N/(N+5) anchor was double-counting uncertainty
+     * and artificially deflating legitimate ratings.
+     */
+    private void applyRatingResult(TagMastery tm, TagRatingResult r) {
+        double rawRating = r.finalRating().rating;
+        double successRate = r.totalAttempted() > 0
+            ? (double) r.totalSolved() / r.totalAttempted() : 0.0;
 
-        tm.setTotalAttempted(totalAttempted);
-        tm.setTotalSolved(totalSolved);
-        tm.setFirstAcCount(firstAcCount);
+        tm.setTotalAttempted(r.totalAttempted());
+        tm.setTotalSolved(r.totalSolved());
+        tm.setFirstAcCount(r.firstAcCount());
         tm.setSuccessRate(successRate * 100.0);
-        tm.setAvgSolveTime(timedSolves > 0 ? totalSolveMinutes / timedSolves : null);
-        
-        // Use the Glicko-2 Lower Confidence Bound (Rating - 2 * RD) directly.
-        double conservativeScore = currentRating.rating - (2.0 * currentRating.rd);
-        tm.setMasteryScore(Math.max(800.0, conservativeScore));
-        tm.setRd(currentRating.rd);
-        tm.setVolatility(currentRating.volatility);
-        tm.setLastSolvedAt(lastSolvedAt);
+        tm.setAvgSolveTime(r.timedSolves() > 0 ? r.totalSolveMinutes() / r.timedSolves() : null);
+        tm.setRawRating(rawRating);
+        tm.setMasteryScore(Math.max(800.0, Math.round(rawRating * 10.0) / 10.0));
+        tm.setRd(r.finalRating().rd);
+        tm.setVolatility(r.finalRating().volatility);
+        tm.setLastSolvedAt(r.lastSolvedAt());
+    }
 
-        tagMasteryRepository.save(tm);
+    /**
+     * Builds a map of problem ID → latest ProblemOpenEvent for a user.
+     */
+    private Map<Long, ProblemOpenEvent> buildLatestEventMap(Long userId) {
+        Map<Long, ProblemOpenEvent> latestEventMap = new HashMap<>();
+        for (ProblemOpenEvent e : problemOpenEventRepository.findByUserId(userId)) {
+            Long pid = e.getProblem().getId();
+            if (!latestEventMap.containsKey(pid)
+                    || latestEventMap.get(pid).getOpenedAt().isBefore(e.getOpenedAt())) {
+                latestEventMap.put(pid, e);
+            }
+        }
+        return latestEventMap;
     }
 
     /**
      * Infers an approximate Elo rating from the difficulty label when no
-     * ZeroTrac/contest rating exists. Based on observed LeetCode distributions.
+     * ZeroTrac/contest rating exists. Centers are based on observed
+     * LeetCode rating distributions per difficulty bucket.
      */
     private double inferRatingFromDifficulty(String difficulty) {
         if (difficulty == null) return 1500.0;
         return switch (difficulty.toLowerCase()) {
-            case "easy" -> 1250.0;
-            case "medium" -> 1550.0;
-            case "hard" -> 1950.0;
+            case "easy" -> 1200.0;   // Range ~800-1400, center at 1200
+            case "medium" -> 1500.0; // Range ~1200-1800, center at 1500
+            case "hard" -> 2100.0;   // Range ~1800-2800, center at 2100
             default -> 1500.0;
         };
     }
@@ -335,7 +343,8 @@ public class MasteryService {
             return 60.0;
         } else {
             // Rating inferred from difficulty string — high uncertainty
-            return 120.0;
+            return 180.0;
         }
     }
 }
+

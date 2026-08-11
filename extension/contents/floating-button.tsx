@@ -14,7 +14,7 @@ export const getStyle: PlasmoGetStyle = () => {
 }
 
 const FloatingButton = () => {
-  const { session, clocks, pauseSession, resumeSession, finishSession } = usePracticeSession()
+  const { session, clocks, pauseSession, resumeSession, finishSession, logTimeSession } = usePracticeSession()
   const [expanded, setExpanded] = useState(false)
 
   // Zenith properties
@@ -181,6 +181,18 @@ const FloatingButton = () => {
               </span>
             </div>
           </div>
+
+          {session && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                logTimeSession()
+              }}
+              className="w-full mb-1.5 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 font-bold text-[10px] py-1.5 rounded transition-all text-center tracking-wider uppercase shadow-sm cursor-pointer"
+            >
+              ⏱️ Push Time to Log
+            </button>
+          )}
 
           {session && !clocks.isSolved && (
             <button

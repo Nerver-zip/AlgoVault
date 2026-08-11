@@ -6,6 +6,14 @@ const dirs = [
   path.join(__dirname, '../build/chrome-mv3-prod')
 ];
 
+// Sync chrome-mv3-prod to chrome-mv3-dev so both build targets have identical updated files
+const prodDir = path.join(__dirname, '../build/chrome-mv3-prod');
+const devDir = path.join(__dirname, '../build/chrome-mv3-dev');
+if (fs.existsSync(prodDir)) {
+  fs.cpSync(prodDir, devDir, { recursive: true });
+  console.log(`Synced build files from chrome-mv3-prod to chrome-mv3-dev`);
+}
+
 dirs.forEach(dir => {
   const manifestPath = path.join(dir, 'manifest.json');
   if (fs.existsSync(manifestPath)) {
@@ -34,11 +42,11 @@ dirs.forEach(dir => {
 
   // Copy interceptor.js to the build assets directory
   const srcInterceptor = path.join(__dirname, '../assets/interceptor.js');
-  const destDir = path.join(dir, 'assets');
-  const destInterceptor = path.join(destDir, 'interceptor.js');
+  const destAssets = path.join(dir, 'assets');
+  const destInterceptor = path.join(destAssets, 'interceptor.js');
   if (fs.existsSync(srcInterceptor)) {
-    if (!fs.existsSync(destDir)) {
-      fs.mkdirSync(destDir, { recursive: true });
+    if (!fs.existsSync(destAssets)) {
+      fs.mkdirSync(destAssets, { recursive: true });
     }
     fs.copyFileSync(srcInterceptor, destInterceptor);
     console.log(`Copied interceptor.js to ${destInterceptor}`);

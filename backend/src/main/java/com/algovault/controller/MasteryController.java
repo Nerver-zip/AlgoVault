@@ -23,4 +23,10 @@ public class MasteryController {
         User user = userContextService.resolveUser(request);
         return ResponseEntity.ok(service.getMastery(user.getId()));
     }
+
+    @PostMapping("/recompute")
+    public ResponseEntity<List<TagMastery>> recomputeMastery(HttpServletRequest request) {
+        User user = userContextService.resolveUser(request);
+        return ResponseEntity.ok(service.recomputeAndGetMastery(user.getId()));
+    }
 }

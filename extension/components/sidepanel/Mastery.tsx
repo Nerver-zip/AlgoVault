@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo } from "react"
 import { Card } from "../ui/Card"
-import { fetchMastery } from "../../lib/api/backend"
+import { fetchMastery, recomputeMastery } from "../../lib/api/backend"
 import { getCachedMastery, setCachedMastery, getUsername } from "../../lib/storage"
 import { Radar, RadarChart, PolarGrid, PolarAngleAxis, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { 
@@ -37,7 +37,7 @@ const nextTier = (score: number) => {
   return null
 }
 
-const rdToConfidence = (rd: number) => Math.max(0, Math.min(100, Math.round(100 - (rd / 3.5))))
+const rdToConfidence = (rd: number) => Math.max(0, Math.min(100, Math.round(100 * (1 - Math.pow(rd / 350, 2)))))
 
 const getStability = (vol: number) => {
   if (vol <= 0.04) return { label: "Rock Solid", color: "text-emerald-400", bg: "bg-emerald-400/10", border: "border-emerald-500/30", icon: Shield, note: "Consistent first-attempt solutions" }
@@ -129,7 +129,7 @@ export const Mastery = () => {
           setLoading(false)
         }
       }
-      const fetched = await fetchMastery()
+      const fetched = forceRefresh ? await recomputeMastery() : await fetchMastery()
       setData(fetched)
       setCachedMastery(fetched)
     } catch (err) {
@@ -155,8 +155,7 @@ export const Mastery = () => {
     let wSum = 0, wTotal = 0, solved = 0, attempted = 0, firstAc = 0
     sorted.forEach(m => {
       const rd = Math.max(m.rd || 350, 30)
-      const n = Math.sqrt(m.totalAttempted || 1)
-      const w = n / (rd * rd)
+      const w = 1 / (rd * rd + 100)
 
       wSum += w * (m.masteryScore || 800)
       wTotal += w
@@ -523,7 +522,7 @@ export const Mastery = () => {
         const rd = items.map(d => ({
           subject: d.tag.length > 10 ? d.tag.slice(0, 9) + '…' : d.tag,
           score: Math.round(d.masteryScore || 800),
-          raw: Math.round((d.rawRating || d.masteryScore || 800) + (d.rd ? d.rd * 1.8 : 0)),
+          raw: Math.round((d.rawRating || d.masteryScore || 800) + (d.rd ? d.rd : 0)),
         }))
         return (
           <Card className="p-4 bg-[#0d0d0f] border-zinc-800/80 space-y-2.5 shadow-xl">

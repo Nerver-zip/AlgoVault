@@ -5,6 +5,7 @@ import {
   Brain,
   Check,
   ChevronRight,
+  Clock,
   Clock3,
   Flame,
   Pause,
@@ -244,7 +245,7 @@ export const Dashboard = () => {
   const [solved, setSolved] = useState<Set<string>>(new Set())
   const [zerotrac, setZerotrac] = useState<ZerotracProblem[]>([])
   const [ranking, setRanking] = useState<UserContestRanking | null>(null)
-  const { session: apseSession, clocks, pauseSession, resumeSession, resetSession, finishSession } = usePracticeSession()
+  const { session: apseSession, clocks, pauseSession, resumeSession, resetSession, finishSession, logTimeSession } = usePracticeSession()
   const [localLogs, setLocalLogs] = useState<any[]>([])
   const [lastSync, setLastSync] = useState<number | null>(null)
   const [snapshotSavedAt, setSnapshotSavedAt] = useState<number | null>(null)
@@ -498,7 +499,7 @@ export const Dashboard = () => {
     const byDay = new Map(days.map((day) => [day.key, day]))
     const activeSessionSlug = apseSession?.slug
     for (const session of sessions) {
-      if (activeSessionSlug && (session.id === activeSessionSlug || (session as any).slug === activeSessionSlug)) continue
+      if (activeSessionSlug && (String(session.id) === activeSessionSlug || (session as any).slug === activeSessionSlug)) continue
       const started = parseDate(session.startedAt)
       if (!started) continue
       const bucket = byDay.get(dateKey(started))
@@ -509,6 +510,10 @@ export const Dashboard = () => {
 
     for (const log of localLogs) {
       if (!log.ts) continue
+      // Skip log if it represents the currently active session (live clocks adds it below)
+      if (apseSession && (log.sessionId === apseSession.id || (activeSessionSlug && log.slug === activeSessionSlug))) {
+        continue
+      }
       const date = new Date(log.ts)
       const bucket = byDay.get(dateKey(date))
       if (!bucket) continue
@@ -640,6 +645,7 @@ export const Dashboard = () => {
               {!clocks.isSolved && (
                 <>
                   <button type="button" onClick={() => sessionIsPaused ? resumeSession() : pauseSession("MANUAL")} className="inline-flex h-8 items-center gap-1 rounded-md border border-zinc-700/80 px-2 text-[9px] font-bold font-mono uppercase tracking-wide text-zinc-300 transition hover:border-zinc-500 hover:text-white" aria-label={sessionIsPaused ? "Resume focus session" : "Pause focus session"}>{sessionIsPaused ? <Play size={10} fill="currentColor" /> : <Pause size={10} fill="currentColor" />}{sessionIsPaused ? "Resume" : "Pause"}</button>
+                  <button type="button" onClick={() => logTimeSession()} className="inline-flex h-8 items-center gap-1 rounded-md border border-sky-500/30 bg-sky-500/10 px-2 text-[9px] font-bold font-mono uppercase tracking-wide text-sky-400 transition hover:bg-sky-500/20 hover:text-sky-300" title="Push current focus time to practice log"><Clock size={10} /> Log Time</button>
                   <button type="button" onClick={() => finishSession()} className="inline-flex h-8 items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 text-[9px] font-bold font-mono uppercase tracking-wide text-emerald-400 transition hover:bg-emerald-500/20 hover:text-emerald-300" title="Mark as Solved & Log"><Check size={10} /> Finish</button>
                 </>
               )}
