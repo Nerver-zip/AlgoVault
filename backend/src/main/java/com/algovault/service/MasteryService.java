@@ -277,25 +277,39 @@ public class MasteryService {
 
     /**
      * Applies a TagRatingResult to a TagMastery entity.
-     * Uses raw Glicko-2 rating directly — no Bayesian anchor.
-     * Glicko-2's RD already encodes uncertainty for small samples,
-     * so the old w(N)=N/(N+5) anchor was double-counting uncertainty
-     * and artificially deflating legitimate ratings.
+     * Incorporates sample-size volume damping and RD confidence margins
+     * to prevent small sample sizes (e.g. 2-3 solves) from falsely triggering
+     * Grandmaster/Master tier ratings before true calibration.
      */
     private void applyRatingResult(TagMastery tm, TagRatingResult r) {
         double rawRating = r.finalRating().rating;
-        double successRate = r.totalAttempted() > 0
-            ? (double) r.totalSolved() / r.totalAttempted() : 0.0;
+        double rd = r.finalRating().rd;
+        double volatility = r.finalRating().volatility;
+        int totalSolved = r.totalSolved();
+        int totalAttempted = r.totalAttempted();
 
-        tm.setTotalAttempted(r.totalAttempted());
-        tm.setTotalSolved(r.totalSolved());
+        double successRate = totalAttempted > 0
+            ? (double) totalSolved / totalAttempted : 0.0;
+
+        // Sample-size volume damping: requires at least 5 solves to reach 100% rating scaling
+        double volumeDamping = Math.min(1.0, Math.max(0.15, (double) totalSolved / 5.0));
+
+        // Damped rating step from initial 1500 baseline
+        double dampedRating = 1500.0 + (rawRating - 1500.0) * volumeDamping;
+
+        // Uncertainty margin subtracts uncalibrated volatility when RD is high (e.g. 350)
+        double uncertaintyMargin = (rd / 350.0) * 200.0 * (1.0 - volumeDamping);
+        double effectiveMastery = Math.max(800.0, dampedRating - uncertaintyMargin);
+
+        tm.setTotalAttempted(totalAttempted);
+        tm.setTotalSolved(totalSolved);
         tm.setFirstAcCount(r.firstAcCount());
         tm.setSuccessRate(successRate * 100.0);
         tm.setAvgSolveTime(r.timedSolves() > 0 ? r.totalSolveMinutes() / r.timedSolves() : null);
         tm.setRawRating(rawRating);
-        tm.setMasteryScore(Math.max(800.0, Math.round(rawRating * 10.0) / 10.0));
-        tm.setRd(r.finalRating().rd);
-        tm.setVolatility(r.finalRating().volatility);
+        tm.setMasteryScore(Math.max(800.0, Math.round(effectiveMastery * 10.0) / 10.0));
+        tm.setRd(rd);
+        tm.setVolatility(volatility);
         tm.setLastSolvedAt(r.lastSolvedAt());
     }
 

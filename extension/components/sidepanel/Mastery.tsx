@@ -18,16 +18,26 @@ import type { TagMastery } from "../../lib/types"
    Codeforces & Chess Elo aligned rating tiers
    ═══════════════════════════════════════════════════════════ */
 const TIERS = [
-  { name: "Grandmaster", floor: 2200, color: "#ef4444", bg: "rgba(239,68,68,0.12)", border: "rgba(239,68,68,0.35)", icon: Crown, desc: "Elite 1% mastery · Solves Hard problems with ease" },
-  { name: "Master",      floor: 1900, color: "#f59e0b", bg: "rgba(245,158,11,0.12)", border: "rgba(245,158,11,0.35)", icon: Crown, desc: "Top 5% mastery · High speed & clean algorithmic logic" },
-  { name: "Expert",      floor: 1600, color: "#a855f7", bg: "rgba(168,85,247,0.12)", border: "rgba(168,85,247,0.35)", icon: Shield, desc: "Top 15% mastery · Consistently solves Medium/Hard topics" },
-  { name: "Specialist",  floor: 1400, color: "#38bdf8", bg: "rgba(56,189,248,0.12)", border: "rgba(56,189,248,0.35)", icon: Shield, desc: "Top 35% mastery · Solid fundamentals across core patterns" },
-  { name: "Pupil",       floor: 1200, color: "#34d399", bg: "rgba(52,211,153,0.12)", border: "rgba(52,211,153,0.35)", icon: Trophy, desc: "Developing mastery · Good grasp on basic data structures" },
-  { name: "Newbie",      floor: 0,    color: "#a1a1aa", bg: "rgba(161,161,170,0.08)", border: "rgba(161,161,170,0.20)", icon: Award, desc: "Early practice · Building foundational problem-solving habits" },
+  { name: "Grandmaster", floor: 2200, minSolves: 20, minConf: 60, color: "#ef4444", bg: "rgba(239,68,68,0.12)", border: "rgba(239,68,68,0.35)", icon: Crown, desc: "Elite 1% mastery · Solves Hard problems with ease" },
+  { name: "Master",      floor: 1900, minSolves: 12, minConf: 50, color: "#f59e0b", bg: "rgba(245,158,11,0.12)", border: "rgba(245,158,11,0.35)", icon: Crown, desc: "Top 5% mastery · High speed & clean algorithmic logic" },
+  { name: "Expert",      floor: 1600, minSolves: 8,  minConf: 40, color: "#a855f7", bg: "rgba(168,85,247,0.12)", border: "rgba(168,85,247,0.35)", icon: Shield, desc: "Top 15% mastery · Consistently solves Medium/Hard topics" },
+  { name: "Specialist",  floor: 1400, minSolves: 5,  minConf: 25, color: "#38bdf8", bg: "rgba(56,189,248,0.12)", border: "rgba(56,189,248,0.35)", icon: Shield, desc: "Top 35% mastery · Solid fundamentals across core patterns" },
+  { name: "Pupil",       floor: 1200, minSolves: 2,  minConf: 10, color: "#34d399", bg: "rgba(52,211,153,0.12)", border: "rgba(52,211,153,0.35)", icon: Trophy, desc: "Developing mastery · Good grasp on basic data structures" },
+  { name: "Newbie",      floor: 0,    minSolves: 0,  minConf: 0,  color: "#a1a1aa", bg: "rgba(161,161,170,0.08)", border: "rgba(161,161,170,0.20)", icon: Award, desc: "Early practice · Building foundational problem-solving habits" },
 ] as const
 
-const getTier = (score: number) => {
-  return TIERS.find(t => score >= t.floor) || TIERS[TIERS.length - 1]
+const rdToConfidence = (rd: number) => Math.max(0, Math.min(100, Math.round(100 * (1 - Math.pow(rd / 350, 1.5)))))
+
+const getTier = (score: number, totalSolved = 0, rd = 350) => {
+  const conf = rdToConfidence(rd)
+  for (const t of TIERS) {
+    if (score >= t.floor && totalSolved >= t.minSolves && conf >= t.minConf) {
+      return t
+    }
+  }
+  const eligibleTier = TIERS.find(t => totalSolved >= t.minSolves && conf >= t.minConf) || TIERS[TIERS.length - 1]
+  const targetTier = TIERS.find(t => score >= t.floor) || TIERS[TIERS.length - 1]
+  return eligibleTier.floor < targetTier.floor ? eligibleTier : targetTier
 }
 
 const nextTier = (score: number) => {
@@ -36,8 +46,6 @@ const nextTier = (score: number) => {
   }
   return null
 }
-
-const rdToConfidence = (rd: number) => Math.max(0, Math.min(100, Math.round(100 * (1 - Math.pow(rd / 350, 2)))))
 
 const getStability = (vol: number) => {
   if (vol <= 0.04) return { label: "Rock Solid", color: "text-emerald-400", bg: "bg-emerald-400/10", border: "border-emerald-500/30", icon: Shield, note: "Consistent first-attempt solutions" }
@@ -175,7 +183,7 @@ export const Mastery = () => {
     const tierDist: Record<string, number> = {}
     TIERS.forEach(t => { tierDist[t.name] = 0 })
     sorted.forEach(m => { 
-      const t = getTier(m.masteryScore || 800)
+      const t = getTier(m.masteryScore || 800, m.totalSolved || 0, m.rd || 350)
       tierDist[t.name] = (tierDist[t.name] || 0) + 1 
     })
 
@@ -210,7 +218,7 @@ export const Mastery = () => {
     }
 
     if (tierFilter !== "all") {
-      list = list.filter(m => getTier(m.masteryScore || 800).name.toLowerCase() === tierFilter.toLowerCase())
+      list = list.filter(m => getTier(m.masteryScore || 800, m.totalSolved || 0, m.rd || 350).name.toLowerCase() === tierFilter.toLowerCase())
     }
 
     list.sort((a, b) => {
@@ -618,7 +626,7 @@ export const Mastery = () => {
             const winRate = m.totalAttempted > 0 ? Math.round((m.totalSolved / m.totalAttempted) * 100) : 0
             const stab = getStability(vol)
             const open = expandedTag === m.tag
-            const tierStyle = getTier(score)
+            const tierStyle = getTier(score, m.totalSolved || 0, rd)
 
             return (
               <motion.div 
