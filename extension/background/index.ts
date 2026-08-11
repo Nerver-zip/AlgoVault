@@ -34,41 +34,56 @@ const LOGS_INDEX_KEY = "algovault.logs.index"
 /**
  * Archive completed or paused session to monthly log bucket and index
  */
-async function archivePracticeLog(session: any, isSolved: boolean, language?: string) {
+async function archivePracticeLog(sessionInput: any, isSolved: boolean, language?: string) {
+  if (!sessionInput) return
+  let session: any = sessionInput
+  if (typeof sessionInput === "string") {
+    try {
+      session = JSON.parse(sessionInput)
+    } catch {
+      return
+    }
+  }
   if (!session || !session.slug) return
-  const now = Date.now()
-  const activeSecs = Math.floor(
-    (session.accActiveMs + (session.st === "RUNNING" && session.tActiveStart ? Math.max(0, now - session.tActiveStart) : 0)) / 1000
-  )
-  if (activeSecs <= 0) return
 
-  const elapsedSecs = Math.floor(Math.max(0, now - session.tElapsedStart - session.accPausedMs) / 1000)
+  const now = Date.now()
+  const accActiveMs = typeof session.accActiveMs === "number" && !isNaN(session.accActiveMs) ? session.accActiveMs : 0
+  const activeOrigin = (typeof session.tActiveStart === "number" && !isNaN(session.tActiveStart))
+    ? session.tActiveStart
+    : (typeof session.tElapsedStart === "number" && !isNaN(session.tElapsedStart) ? session.tElapsedStart : now)
+  const currentSegmentMs = session.st === "RUNNING" ? Math.max(0, now - activeOrigin) : 0
+  const activeSecs = Math.max(0, Math.floor((accActiveMs + currentSegmentMs) / 1000))
+
+  if (activeSecs <= 0 && !isSolved) return
+
+  const tElapsedStart = typeof session.tElapsedStart === "number" && !isNaN(session.tElapsedStart) ? session.tElapsedStart : now
+  const elapsedSecs = Math.floor(Math.max(0, now - tElapsedStart - (session.accPausedMs || 0)) / 1000)
   const focusScore = elapsedSecs > 0 ? Math.min(100, Math.round((activeSecs / elapsedSecs) * 100)) : 100
 
-  const logId = session.id || String(session.tElapsedStart || now)
+  const logId = session.id || String(tElapsedStart)
   const logItem = {
     v: 2,
     logId,
     sessionId: session.id,
     slug: session.slug,
-    startedAt: session.tElapsedStart || now,
+    startedAt: tElapsedStart,
     completedAt: now,
     activeSecs,
     elapsedSecs,
     focusScore,
     tabs: session.tabs || 0,
     pastes: session.pastes || 0,
-    isSolved,
+    isSolved: Boolean(isSolved || session.st === "SOLVED"),
     language
   }
 
   // 1. Upsert into Monthly Bucket `algovault.logs.YYYY_MM`
-  const dateObj = new Date(session.tElapsedStart || now)
+  const dateObj = new Date(tElapsedStart)
   const yyyyMm = `${dateObj.getFullYear()}_${String(dateObj.getMonth() + 1).padStart(2, "0")}`
   const bucketKey = `algovault.logs.${yyyyMm}`
   const existingBucket = (await storage.get<any[]>(bucketKey)) || []
   const bucketIndex = existingBucket.findIndex(
-    (item: any) => (session.id && item.sessionId === session.id) || (item.slug === session.slug && item.startedAt === session.tElapsedStart)
+    (item: any) => (session.id && item.sessionId === session.id) || (item.slug === session.slug && item.startedAt === tElapsedStart)
   )
   if (bucketIndex >= 0) {
     existingBucket[bucketIndex] = {
@@ -85,21 +100,21 @@ async function archivePracticeLog(session: any, isSolved: boolean, language?: st
   const indexItem = {
     sessionId: session.id,
     slug: session.slug,
-    ts: session.tElapsedStart || now,
+    ts: tElapsedStart,
     actSecs: activeSecs,
     elSecs: elapsedSecs,
     score: focusScore,
-    solved: isSolved
+    solved: Boolean(isSolved || session.st === "SOLVED")
   }
   const existingIndex = (await storage.get<any[]>(LOGS_INDEX_KEY)) || []
   const summaryIndex = existingIndex.findIndex(
-    (item: any) => (session.id && item.sessionId === session.id) || (item.slug === session.slug && item.ts === session.tElapsedStart)
+    (item: any) => (session.id && item.sessionId === session.id) || (item.slug === session.slug && item.ts === tElapsedStart)
   )
   if (summaryIndex >= 0) {
     existingIndex[summaryIndex] = {
       ...existingIndex[summaryIndex],
       ...indexItem,
-      solved: isSolved || existingIndex[summaryIndex].solved
+      solved: Boolean(isSolved || existingIndex[summaryIndex].solved)
     }
   } else {
     existingIndex.push(indexItem)

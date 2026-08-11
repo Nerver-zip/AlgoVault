@@ -258,9 +258,66 @@ export const Dashboard = () => {
   const [sessionActionPending, setSessionActionPending] = useState(false)
 
   const loadLocalLogs = useCallback(() => {
-    chrome.storage.local.get("algovault.logs.index", (res) => {
-      const logs = res["algovault.logs.index"]
-      if (Array.isArray(logs)) setLocalLogs(logs)
+    const now = new Date()
+    const yyyyMm = `${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, "0")}`
+    const bucketKey = `algovault.logs.${yyyyMm}`
+
+    chrome.storage.local.get(["algovault.logs.index", bucketKey, "algovault.session.store"], (res) => {
+      const indexLogs = Array.isArray(res["algovault.logs.index"]) ? res["algovault.logs.index"] : []
+      const bucketLogs = Array.isArray(res[bucketKey]) ? res[bucketKey] : []
+      const storeSessions = res["algovault.session.store"] || {}
+
+      const logMap = new Map<string, any>()
+
+      // 1. Add summary index logs
+      for (const log of indexLogs) {
+        if (!log) continue
+        const key = log.sessionId || `${log.slug}_${log.ts}`
+        logMap.set(key, log)
+      }
+
+      // 2. Merge detailed monthly bucket logs
+      for (const log of bucketLogs) {
+        if (!log) continue
+        const key = log.sessionId || `${log.slug}_${log.startedAt}`
+        const existing = logMap.get(key)
+        const activeSecs = Number(log.activeSecs ?? log.actSecs ?? log.focusSeconds ?? 0)
+        if (!existing || Number(existing.actSecs ?? existing.activeSecs ?? 0) < activeSecs) {
+          logMap.set(key, {
+            sessionId: log.sessionId,
+            slug: log.slug,
+            ts: log.startedAt || log.completedAt || Date.now(),
+            actSecs: activeSecs,
+            elSecs: log.elapsedSecs ?? 0,
+            score: log.focusScore ?? 100,
+            solved: Boolean(log.isSolved || log.solved)
+          })
+        }
+      }
+
+      // 3. Add stored multi-tab sessions
+      for (const [slug, storeSess] of Object.entries(storeSessions)) {
+        if (!storeSess || typeof storeSess !== "object") continue
+        const sess = storeSess as any
+        const key = sess.id || `${slug}_${sess.tElapsedStart}`
+        if (!logMap.has(key)) {
+          const accActiveMs = typeof sess.accActiveMs === "number" ? sess.accActiveMs : 0
+          const actSecs = Math.floor(accActiveMs / 1000)
+          if (actSecs > 0) {
+            logMap.set(key, {
+              sessionId: sess.id,
+              slug,
+              ts: sess.tElapsedStart || Date.now(),
+              actSecs,
+              elSecs: Math.floor((Date.now() - (sess.tElapsedStart || Date.now())) / 1000),
+              score: 100,
+              solved: sess.st === "SOLVED"
+            })
+          }
+        }
+      }
+
+      setLocalLogs(Array.from(logMap.values()))
     })
   }, [])
 
@@ -510,8 +567,8 @@ export const Dashboard = () => {
 
     for (const log of localLogs) {
       if (!log.ts) continue
-      // Skip log if it represents the currently active session (live clocks adds it below)
-      if (apseSession && (log.sessionId === apseSession.id || (activeSessionSlug && log.slug === activeSessionSlug))) {
+      // Skip log ONLY if it represents the exact live active session (live clocks adds it below)
+      if (apseSession && log.sessionId && log.sessionId === apseSession.id) {
         continue
       }
       const date = new Date(log.ts)
