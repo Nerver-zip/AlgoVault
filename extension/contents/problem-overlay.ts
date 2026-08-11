@@ -283,23 +283,8 @@ const injectAlgoVaultOverlay = () => {
     })
   }
 
-  // Compact study-list membership entry point.
-  const titleH1 = document.querySelector('a[href*="/problems/"]')?.parentElement;
-  if (titleH1 && !document.getElementById('av-lists-btn')) {
-    const slug = getLeetCodeProblemSlug();
-    const memberships = STUDY_LISTS.filter((list) => list.problems.some((problem) => problem.slug === slug));
-    const listsBtn = document.createElement('button');
-    listsBtn.id = 'av-lists-btn';
-    listsBtn.textContent = memberships.length ? memberships.map((list) => list.name.replace("NeetCode ", "NC ").replace("Striver ", "Striver ")).join(" · ") : 'Study Lists';
-    listsBtn.title = memberships.length ? `Included in ${memberships.map((list) => list.name).join(" and ")}` : "Open study lists";
-    listsBtn.className = 'ml-3 text-xs px-2 py-1 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 transition-colors font-medium';
-    listsBtn.onclick = () => {
-      chrome.storage.local.set({ "algovault.requestedTab": "Lists" }, () => {
-        chrome.runtime.sendMessage({ action: "open_side_panel" });
-      });
-    };
-    titleH1.appendChild(listsBtn);
-  }
+    // Remove Study Lists overlay button if present
+    document.getElementById('av-lists-btn')?.remove();
 
   // Helper to make Zenith button freely draggable across the screen
   const makeElementDraggable = (el: HTMLElement, storageKey: string, onClickHandler: () => void) => {
