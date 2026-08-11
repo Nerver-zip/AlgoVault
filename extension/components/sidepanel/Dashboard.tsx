@@ -11,6 +11,9 @@ import {
   Pause,
   Play,
   RefreshCw,
+  Shuffle,
+  Sparkles,
+  Lock,
   Square,
   Target,
   TrendingUp,
@@ -30,12 +33,14 @@ import {
   getCurrentSession,
   getLastSync,
   getLiveTimer,
+  getTodayRecommendationSelection,
   getTodaySnapshot,
   getUsername,
   setCachedDashboard,
   setCachedWeakness,
   setCurrentSession,
   setLiveTimer,
+  setTodayRecommendationSelection,
   setTodaySnapshot
 } from "../../lib/storage"
 import { normalizeZerotracPayload } from "../../lib/zerotrac"
@@ -101,6 +106,22 @@ function parseDate(value: unknown): Date | null {
     return new Date(year, month - 1, day, hour, minute, second)
   }
   return null
+}
+
+/**
+ * The background uses Plasmo Storage, which JSON-serializes values before
+ * placing them in chrome.storage.local. This dashboard reads a few hot-path
+ * keys directly through chrome.storage.local, so decode both the historical
+ * serialized form and a native Chrome storage value.
+ */
+function parseStoredValue<T>(value: unknown, fallback: T): T {
+  if (typeof value !== "string") return (value ?? fallback) as T
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return (parsed ?? fallback) as T
+  } catch {
+    return fallback
+  }
 }
 
 function dateKey(date: Date) {
@@ -171,12 +192,21 @@ function normalizeTimer(timer: LiveTimerState | null, session: ActiveSession | n
   }
 }
 
-function selectStudyProblem(solved: Set<string>) {
+function getStudyCandidates(solved: Set<string>) {
+  const candidates: { list: (typeof STUDY_LISTS)[0]; problem: (typeof STUDY_LISTS)[0]["problems"][0] }[] = []
   for (const list of STUDY_LISTS) {
-    const problem = list.problems.find((candidate) => !solved.has(candidate.slug))
-    if (problem) return { list, problem }
+    for (const problem of list.problems) {
+      if (!solved.has(problem.slug)) {
+        candidates.push({ list, problem })
+      }
+    }
   }
-  return null
+  return candidates
+}
+
+function selectStudyProblem(solved: Set<string>, preferredSlug?: string) {
+  const candidates = getStudyCandidates(solved)
+  return candidates.find((candidate) => candidate.problem.slug === preferredSlug) ?? candidates[0] ?? null
 }
 
 function evidenceTone(level?: string): EvidenceBadge["tone"] {
@@ -237,6 +267,16 @@ function QuestIcon({ id, status }: { id: QuestId; status: QuestStep["status"] })
   return <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${shell} ${className}`}>{icon}</div>
 }
 
+const KNOWN_PREMIUM_SLUGS = new Set([
+  "encode-and-decode-strings",
+  "walls-and-gates",
+  "graph-valid-tree",
+  "number-of-connected-components-in-an-undirected-graph",
+  "alien-dictionary",
+  "meeting-rooms",
+  "meeting-rooms-ii"
+])
+
 export const Dashboard = () => {
   const [data, setData] = useState<DashboardData | null>(null)
   const [queue, setQueue] = useState<RevisionQueueItem[]>([])
@@ -256,6 +296,8 @@ export const Dashboard = () => {
   const [reviewSubmitting, setReviewSubmitting] = useState(false)
   const [reviewedToday, setReviewedToday] = useState(false)
   const [sessionActionPending, setSessionActionPending] = useState(false)
+  const [recommendationSelection, setRecommendationSelection] = useState<{ practiceSlug?: string; stretchSlug?: string }>({})
+  const [hoveredActivityKey, setHoveredActivityKey] = useState<string | null>(null)
 
   const loadLocalLogs = useCallback(() => {
     const now = new Date()
@@ -263,9 +305,14 @@ export const Dashboard = () => {
     const bucketKey = `algovault.logs.${yyyyMm}`
 
     chrome.storage.local.get(["algovault.logs.index", bucketKey, "algovault.session.store"], (res) => {
-      const indexLogs = Array.isArray(res["algovault.logs.index"]) ? res["algovault.logs.index"] : []
-      const bucketLogs = Array.isArray(res[bucketKey]) ? res[bucketKey] : []
-      const storeSessions = res["algovault.session.store"] || {}
+      const storedIndex = parseStoredValue<unknown>(res["algovault.logs.index"], [])
+      const storedBucket = parseStoredValue<unknown>(res[bucketKey], [])
+      const storedSessions = parseStoredValue<unknown>(res["algovault.session.store"], {})
+      const indexLogs = Array.isArray(storedIndex) ? storedIndex : []
+      const bucketLogs = Array.isArray(storedBucket) ? storedBucket : []
+      const storeSessions = storedSessions && typeof storedSessions === "object" && !Array.isArray(storedSessions)
+        ? storedSessions as Record<string, unknown>
+        : {}
 
       const logMap = new Map<string, any>()
 
@@ -330,6 +377,14 @@ export const Dashboard = () => {
     setZerotrac(snapshot.zerotrac)
     setRanking(snapshot.ranking)
     setSnapshotSavedAt(snapshot.savedAt)
+  }, [])
+
+  const updateRecommendationSelection = useCallback((update: { practiceSlug?: string; stretchSlug?: string }) => {
+    setRecommendationSelection((current) => {
+      const next = { ...current, ...update }
+      void setTodayRecommendationSelection(next)
+      return next
+    })
   }, [])
 
   const refresh = useCallback(async () => {
@@ -403,20 +458,37 @@ export const Dashboard = () => {
     }
   }, [applySnapshot, loadLocalLogs, refresh])
 
+  useEffect(() => {
+    let mounted = true
+    void getTodayRecommendationSelection().then((selection) => {
+      if (mounted) setRecommendationSelection(selection)
+    })
+    return () => { mounted = false }
+  }, [])
+
   const activeSeconds = clocks.activeSeconds
   const sessionIsRunning = clocks.isRunning
   const sessionIsPaused = clocks.isPaused
   const today = dateKey(new Date())
 
   const activeReview = queue[0] ?? null
+  const practiceRecommendations = useMemo(
+    () => (weakness?.recommendations ?? []).filter((problem) => !solved.has(problem.titleSlug)),
+    [solved, weakness?.recommendations]
+  )
   const selectedRecommendation = useMemo<WeaknessRecommendation | null>(() => {
-    return weakness?.recommendations?.find((problem) => !solved.has(problem.titleSlug)) ?? null
-  }, [solved, weakness])
+    return practiceRecommendations.find((problem) => problem.titleSlug === recommendationSelection.practiceSlug)
+      ?? practiceRecommendations[0]
+      ?? null
+  }, [practiceRecommendations, recommendationSelection.practiceSlug])
   const selectedWeakTag = useMemo(() => {
     if (!selectedRecommendation?.tag) return null
     return weakness?.weakTags?.find((tag) => tag.tag === selectedRecommendation.tag) ?? null
   }, [selectedRecommendation?.tag, weakness?.weakTags])
-  const studyContinuation = useMemo(() => selectStudyProblem(solved), [solved])
+  const studyContinuation = useMemo(
+    () => selectStudyProblem(solved, recommendationSelection.practiceSlug),
+    [solved, recommendationSelection.practiceSlug]
+  )
 
   const primaryAction = useMemo<PrimaryAction>(() => {
     if (activeReview) {
@@ -437,6 +509,7 @@ export const Dashboard = () => {
     }
     if (selectedRecommendation) {
       const level = selectedWeakTag?.evidenceLevel
+      const isPremium = KNOWN_PREMIUM_SLUGS.has(selectedRecommendation.titleSlug)
       return {
         kind: "practice",
         eyebrow: "Target practice",
@@ -450,12 +523,14 @@ export const Dashboard = () => {
         badges: [
           { label: selectedRecommendation.tag ?? "Targeted practice", tone: "blue" },
           { label: evidenceLabel(level), tone: evidenceTone(level) },
+          ...(isPremium ? [{ label: "🔒 LeetCode Premium", tone: "amber" as const }] : []),
           ...(selectedWeakTag?.totalAttempted ? [{ label: `${selectedWeakTag.totalAttempted} tagged attempts`, tone: "zinc" as const }] : []),
           ...(selectedRecommendation.actualRating ? [{ label: `Rating ${Math.round(selectedRecommendation.actualRating)}`, tone: "zinc" as const }] : [])
         ]
       }
     }
     if (studyContinuation) {
+      const isPremium = KNOWN_PREMIUM_SLUGS.has(studyContinuation.problem.slug)
       return {
         kind: "track",
         eyebrow: "Continue your track",
@@ -466,7 +541,8 @@ export const Dashboard = () => {
         actionLabel: "Continue track",
         badges: [
           { label: studyContinuation.list.name, tone: "blue" },
-          { label: studyContinuation.problem.topic, tone: "zinc" }
+          { label: studyContinuation.problem.topic, tone: "zinc" },
+          ...(isPremium ? [{ label: "🔒 LeetCode Premium", tone: "amber" as const }] : [])
         ]
       }
     }
@@ -484,11 +560,37 @@ export const Dashboard = () => {
     const baseRating = ranking?.rating ?? data?.virtualRating ?? null
     const hasEvidence = (data?.totalSolved ?? 0) >= MIN_SOLVES_FOR_STRETCH
     if (!baseRating || !hasEvidence) return null
-    const low = Math.round(baseRating + 150)
-    const high = Math.round(baseRating + 250)
-    const candidate = zerotrac.find((problem) => !solved.has(problem.TitleSlug) && problem.Rating >= low && problem.Rating <= high)
-    return candidate ? { problem: candidate, low, high } : null
-  }, [data?.totalSolved, data?.virtualRating, ranking?.rating, solved, zerotrac])
+    const low = Math.round(baseRating + 50)
+    const high = Math.round(baseRating + 100)
+    const targetRating = baseRating + 75
+    const candidates = zerotrac
+      .filter((problem) => !solved.has(problem.TitleSlug) && problem.Rating >= low && problem.Rating <= high)
+      .sort((left, right) => Math.abs(left.Rating - targetRating) - Math.abs(right.Rating - targetRating) || left.TitleSlug.localeCompare(right.TitleSlug))
+    if (!candidates.length) return null
+    const chosen = candidates.find((problem) => problem.TitleSlug === recommendationSelection.stretchSlug) ?? candidates[0]
+    return { problem: chosen, low, high, candidateCount: candidates.length }
+  }, [data?.totalSolved, data?.virtualRating, ranking?.rating, recommendationSelection.stretchSlug, solved, zerotrac])
+
+  const shufflePractice = () => {
+    const candidateSlugs = practiceRecommendations.length
+      ? practiceRecommendations.map((problem) => problem.titleSlug)
+      : getStudyCandidates(solved).map((candidate) => candidate.problem.slug)
+    if (candidateSlugs.length < 2) return
+    const currentIndex = candidateSlugs.indexOf(selectedRecommendation?.titleSlug ?? studyContinuation?.problem.slug ?? "")
+    updateRecommendationSelection({ practiceSlug: candidateSlugs[(Math.max(currentIndex, -1) + 1) % candidateSlugs.length] })
+  }
+
+  const shuffleStretch = () => {
+    if (!stretchProblem) return
+    const baseRating = ranking?.rating ?? data?.virtualRating ?? null
+    if (!baseRating) return
+    const candidates = zerotrac
+      .filter((problem) => !solved.has(problem.TitleSlug) && problem.Rating >= baseRating + 50 && problem.Rating <= baseRating + 100)
+      .sort((left, right) => Math.abs(left.Rating - (baseRating + 75)) - Math.abs(right.Rating - (baseRating + 75)) || left.TitleSlug.localeCompare(right.TitleSlug))
+    if (candidates.length < 2) return
+    const currentIndex = candidates.findIndex((problem) => problem.TitleSlug === stretchProblem.problem.TitleSlug)
+    updateRecommendationSelection({ stretchSlug: candidates[(Math.max(currentIndex, -1) + 1) % candidates.length].TitleSlug })
+  }
 
   const targetPracticeSlug = selectedRecommendation?.titleSlug ?? studyContinuation?.problem.slug
   const targetSolved = Boolean(targetPracticeSlug && solved.has(targetPracticeSlug))
@@ -529,7 +631,7 @@ export const Dashboard = () => {
       status: stretchProblem ? "available" : "unavailable",
       title: stretchProblem?.problem.Title ?? "Stretch is optional",
       description: stretchProblem
-        ? `Optional challenge in your ${stretchProblem.low}–${stretchProblem.high} range. Attempting is success; solving is not required.`
+        ? `A calibrated +50–100 stretch (${stretchProblem.low}–${stretchProblem.high}). Attempting is success; solving is not required.`
         : (data?.totalSolved ?? 0) < MIN_SOLVES_FOR_STRETCH
           ? `Stretch unlocks after ${MIN_SOLVES_FOR_STRETCH} solved problems with rating evidence.`
           : "No calibrated stretch candidate is available today.",
@@ -602,7 +704,7 @@ export const Dashboard = () => {
     const weekSessions = days.reduce((sum, day) => sum + day.sessions, 0)
     const strongestDay = [...days].sort((a, b) => b.focusSeconds - a.focusSeconds)[0]
     return { days, todayActivity, weekFocusSeconds, weekSolves, weekSessions, strongestDay }
-  }, [activeSeconds, apseSession, clocks.isRunning, data?.recentSolves, data?.todaySolves, sessions, today])
+  }, [activeSeconds, apseSession, clocks.isRunning, data?.recentSolves, data?.todaySolves, localLogs, sessions, today])
 
   const primaryActionHref = primaryAction.titleSlug ? `https://leetcode.com/problems/${primaryAction.titleSlug}/` : undefined
   const maxFocus = Math.max(1, ...activity.days.map((day) => day.focusSeconds))
@@ -729,10 +831,35 @@ export const Dashboard = () => {
         <div className="divide-y divide-zinc-800/50">
           {questSteps.map((step, index) => {
             const href = step.titleSlug ? `https://leetcode.com/problems/${step.titleSlug}/` : undefined
+            const shuffleAvailable = step.id === "practice"
+              ? (practiceRecommendations.length || getStudyCandidates(solved).length) > 1
+              : step.id === "stretch" && (stretchProblem?.candidateCount ?? 0) > 1
             return <article key={step.id} className={`flex gap-3 p-4 sm:p-5 ${step.status === "complete" ? "bg-emerald-500/[0.025]" : ""}`}>
               <div className="flex flex-col items-center"><QuestIcon id={step.id} status={step.status} />{index < questSteps.length - 1 && <div className="mt-2 h-full min-h-5 w-px bg-zinc-800/70" />}</div>
               <div className="min-w-0 flex-1 pb-1"><div className="flex flex-wrap items-center gap-2"><p className="text-[8px] font-bold font-mono uppercase tracking-[0.16em] text-zinc-500">{index + 1}. {step.id === "review" ? "Memory recall" : step.id === "practice" ? "Target practice" : "Optional stretch"}</p>{step.status === "complete" && <span className="text-[8px] font-mono font-bold uppercase text-emerald-400">complete</span>}</div><h2 className={`mt-1 text-[13px] font-semibold ${step.status === "unavailable" ? "text-zinc-500" : "text-zinc-100"}`}>{step.title}</h2><p className="mt-1 text-[10px] leading-relaxed text-zinc-500">{step.description}</p>{step.badges && <div className="mt-2 flex flex-wrap gap-1.5">{step.badges.map((badge) => <Badge key={badge.label} badge={badge} />)}</div>}</div>
-              {step.status === "available" && (step.id === "review" ? <button type="button" onClick={() => setReviewOpen(true)} className="inline-flex h-8 shrink-0 items-center gap-1 self-center rounded-md border border-amber-400/40 bg-amber-400 px-2.5 text-[9px] font-bold text-zinc-950 hover:bg-amber-300">Recall <ChevronRight size={11} /></button> : href ? <ActionButton href={href} tone={step.id === "practice" ? "blue" : "zinc"} className="self-center">{step.actionLabel ?? "Open"}</ActionButton> : null)}
+              {step.status === "available" && (
+                step.id === "review" ? (
+                  <button type="button" onClick={() => setReviewOpen(true)} className="inline-flex h-8 shrink-0 items-center gap-1 self-center rounded-md border border-amber-400/40 bg-amber-400 px-2.5 text-[9px] font-bold text-zinc-950 hover:bg-amber-300">Recall <ChevronRight size={11} /></button>
+                ) : href ? (
+                  <div className="flex flex-col items-end gap-1.5 self-center shrink-0">
+                    <ActionButton href={href} tone={step.id === "practice" ? "blue" : "zinc"}>{step.actionLabel ?? "Open"}</ActionButton>
+                    <button
+                      type="button"
+                      disabled={!shuffleAvailable}
+                      onClick={() => {
+                        if (step.id === "practice") shufflePractice()
+                        else if (step.id === "stretch") shuffleStretch()
+                      }}
+                      className="group relative inline-flex items-center gap-1.5 overflow-hidden rounded-lg border border-sky-500/30 bg-gradient-to-r from-sky-950/70 via-zinc-900/90 to-blue-950/70 px-2.5 py-1 text-[9px] font-mono font-bold uppercase tracking-wider text-sky-300 shadow-[0_0_12px_rgba(56,189,248,0.15)] transition-all duration-200 hover:scale-[1.04] hover:border-sky-400/60 hover:text-white hover:shadow-[0_0_18px_rgba(56,189,248,0.35)] active:scale-95 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900/40 disabled:text-zinc-600 disabled:shadow-none disabled:hover:scale-100"
+                      title={shuffleAvailable ? "Choose another recommendation. Your choice stays after refresh." : "No other calibrated recommendation is available yet."}
+                    >
+                      <Shuffle size={10} className="text-sky-400 transition-transform duration-300 group-hover:rotate-180" />
+                      <span>Shuffle</span>
+                      <Sparkles size={9} className="text-amber-400 animate-pulse" />
+                    </button>
+                  </div>
+                ) : null
+              )}
             </article>
           })}
         </div>
@@ -744,13 +871,38 @@ export const Dashboard = () => {
           <div className="mt-5 flex h-[106px] items-end justify-between gap-1.5">
             {activity.days.map((day) => {
               const isToday = day.key === today
+              const isBestDay = day.focusSeconds > 0 && day.key === activity.strongestDay?.key
+              const isHovered = hoveredActivityKey === day.key
               const height = day.focusSeconds ? Math.max(8, (day.focusSeconds / maxFocus) * 70) : 3
               const label = `${day.dateLabel}: ${formatDuration(day.focusSeconds)} active, ${day.solves} solve${day.solves === 1 ? "" : "s"}, ${day.sessions} session${day.sessions === 1 ? "" : "s"}`
-              return <div key={day.key} className="group flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1.5" title={label} aria-label={label}>
+              return <button
+                key={day.key}
+                type="button"
+                onMouseEnter={() => setHoveredActivityKey(day.key)}
+                onMouseLeave={() => setHoveredActivityKey(null)}
+                onFocus={() => setHoveredActivityKey(day.key)}
+                onBlur={() => setHoveredActivityKey(null)}
+                className="group relative flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1.5 rounded-md outline-none focus-visible:ring-1 focus-visible:ring-amber-400/80"
+                aria-label={label}
+              >
+                {isHovered && (
+                  <div role="tooltip" className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 w-44 -translate-x-1/2 rounded-lg border border-zinc-700/80 bg-[#17171b] p-2.5 text-left shadow-xl shadow-black/50">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[9px] font-mono font-bold text-zinc-100">{isToday ? "Today" : day.dateLabel}</span>
+                      {isBestDay && <span className="rounded bg-amber-400/10 px-1 py-0.5 text-[7px] font-mono font-bold uppercase tracking-wide text-amber-300">Best day</span>}
+                    </div>
+                    <p className="mt-1.5 text-[12px] font-semibold tabular-nums text-zinc-100">{formatDuration(day.focusSeconds)} <span className="text-[9px] font-normal text-zinc-500">active practice</span></p>
+                    <div className="mt-2 grid grid-cols-2 gap-1.5 border-t border-zinc-800 pt-2 text-[8px] font-mono">
+                      <span className="text-zinc-400"><b className="text-emerald-400">{day.solves}</b> solved</span>
+                      <span className="text-zinc-400"><b className="text-sky-400">{day.sessions}</b> session{day.sessions === 1 ? "" : "s"}</span>
+                    </div>
+                    {isToday && <p className="mt-2 text-[8px] leading-snug text-zinc-500">Includes live focused time while this problem is open.</p>}
+                  </div>
+                )}
                 <span className={`text-[8px] font-mono tabular-nums transition-opacity ${day.focusSeconds ? "text-zinc-400" : "text-transparent"}`}>{formatCompactDuration(day.focusSeconds)}</span>
                 <div className={`w-full rounded-sm transition-all duration-300 group-hover:brightness-125 ${isToday ? "bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.22)]" : day.focusSeconds ? "bg-zinc-600" : "bg-zinc-800/60"}`} style={{ height: `${height}px`, maxWidth: 32 }} />
                 <span className={`text-[8px] font-mono ${isToday ? "font-bold text-amber-300" : "text-zinc-600"}`}>{day.label}</span>
-              </div>
+              </button>
             })}
           </div>
           <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 border-t border-zinc-800/50 pt-3 text-[9px] font-mono text-zinc-500"><span>{activity.weekSessions} focused sessions</span><span>Best day: {activity.strongestDay?.focusSeconds ? `${activity.strongestDay.dateLabel} · ${formatCompactDuration(activity.strongestDay.focusSeconds)}` : "start your first"}</span></div>

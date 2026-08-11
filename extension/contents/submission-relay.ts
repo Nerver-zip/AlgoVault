@@ -154,6 +154,7 @@ function showPostSolveDialog(titleSlug: string) {
         action: "post_solve_report",
         payload: { titleSlug, helpType }
       })
+      chrome.runtime.sendMessage({ action: "session_finish_v2" })
       wrapper.style.opacity = "0"
       wrapper.style.transform = "scale(0.95)"
       setTimeout(() => wrapper.remove(), 300)
@@ -234,6 +235,7 @@ window.addEventListener("message", ((event: MessageEvent) => {
 
   chrome.runtime.sendMessage({ action: "submission_result", payload })
   if (payload.statusDisplay === "Accepted") {
+    chrome.runtime.sendMessage({ action: "session_finish_v2", language: payload.language })
     window.postMessage({ type: "AV_SUBMISSION_RESULT_CONFIRMED", nonce: expectedNonce, detail: payload }, "*")
     chrome.storage.local.get("algovault.solvedSlugs", (result) => {
       const cached = result["algovault.solvedSlugs"] || {}

@@ -129,17 +129,18 @@ export const Weakness = () => {
     let filtered = all
     if (selectedTag) {
       const tagFiltered = all.filter((problem) => problem.tag === selectedTag)
-      // Only apply tag filter if it actually produces results
       if (tagFiltered.length > 0) {
         filtered = tagFiltered
       }
-      // If the selected tag has 0 results, show all and let the user know
     }
     if (diffFilter !== "all") {
-      filtered = filtered.filter((problem) => {
+      const diffFiltered = filtered.filter((problem) => {
         const meta = difficultyMeta(problem.actualRating, problem.difficulty)
         return meta.label === diffFilter
       })
+      if (diffFiltered.length > 0) {
+        filtered = diffFiltered
+      }
     }
     return filtered
   }, [data, selectedTag, diffFilter])

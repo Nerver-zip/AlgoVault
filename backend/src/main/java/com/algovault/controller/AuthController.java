@@ -27,6 +27,12 @@ public class AuthController {
     @Value("${app.auth.mode:single-user}")
     private String authMode;
 
+    @Value("${spring.security.oauth2.client.registration.github.client-id:Ov23liTftGjfEU3BuSwX}")
+    private String githubClientId;
+
+    @Value("${spring.security.oauth2.client.registration.github.client-secret:77d4d5e03d71a049bd6992accdebecb6cc94238b}")
+    private String githubClientSecret;
+
     @GetMapping("/success")
     public ResponseEntity<?> oauthSuccess(@AuthenticationPrincipal OAuth2User oauth2User) {
         if (oauth2User == null) {
@@ -53,6 +59,46 @@ public class AuthController {
             "token", token,
             "user", user
         ));
+    }
+
+    /**
+     * Exchanges GitHub OAuth authorization code for an OAuth access token.
+     */
+    @PostMapping("/github-exchange")
+    public ResponseEntity<?> exchangeGithubCode(@RequestBody Map<String, String> request) {
+        String code = request == null ? null : request.get("code");
+        if (code == null || code.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Authorization code is required"));
+        }
+
+        try {
+            org.springframework.web.client.RestTemplate restTemplate = new org.springframework.web.client.RestTemplate();
+            org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+            headers.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+            headers.setAccept(List.of(org.springframework.http.MediaType.APPLICATION_JSON));
+
+            Map<String, String> body = Map.of(
+                "client_id", githubClientId,
+                "client_secret", githubClientSecret,
+                "code", code
+            );
+
+            org.springframework.http.HttpEntity<Map<String, String>> entity = new org.springframework.http.HttpEntity<>(body, headers);
+            ResponseEntity<Map> response = restTemplate.postForEntity(
+                "https://github.com/login/oauth/access_token", entity, Map.class
+            );
+
+            if (response.getBody() != null && response.getBody().containsKey("access_token")) {
+                String accessToken = (String) response.getBody().get("access_token");
+                return ResponseEntity.ok(Map.of("token", accessToken));
+            } else if (response.getBody() != null && response.getBody().containsKey("error_description")) {
+                return ResponseEntity.badRequest().body(Map.of("error", response.getBody().get("error_description")));
+            } else {
+                return ResponseEntity.badRequest().body(Map.of("error", "Failed to exchange authorization code with GitHub"));
+            }
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
     }
 
     @GetMapping("/me")

@@ -76,12 +76,33 @@ const FloatingButton = () => {
 
   const formattedGrade = zenithGrade.replace("_PLUS", "+")
 
+  const [toastMessage, setToastMessage] = useState<string | null>(null)
+
+  const handlePushTime = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    logTimeSession()
+    setToastMessage("⏱️ Time saved to logs!")
+    setTimeout(() => setToastMessage(null), 2500)
+  }
+
+  const handleMarkSolved = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    finishSession()
+    setToastMessage("🎉 Problem Solved & logged!")
+    setTimeout(() => setToastMessage(null), 2500)
+  }
+
   return (
     <div
       onMouseEnter={() => setExpanded(true)}
       onMouseLeave={() => setExpanded(false)}
-      className="fixed bottom-6 right-6 z-[9999] transition-all duration-200 ease-in-out font-sans"
+      className="fixed bottom-6 right-6 z-[9999] transition-all duration-200 ease-in-out font-sans flex flex-col items-end gap-1.5"
     >
+      {toastMessage && (
+        <div className="bg-emerald-950/90 text-emerald-300 border border-emerald-500/40 text-[10px] font-mono px-3 py-1.5 rounded-lg shadow-xl animate-bounce">
+          {toastMessage}
+        </div>
+      )}
       {!expanded ? (
         // Collapsed Pill Button
         <button
@@ -184,25 +205,19 @@ const FloatingButton = () => {
 
           {session && (
             <button
-              onClick={(e) => {
-                e.stopPropagation()
-                logTimeSession()
-              }}
-              className="w-full mb-1.5 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 font-bold text-[10px] py-1.5 rounded transition-all text-center tracking-wider uppercase shadow-sm cursor-pointer"
+              onClick={handlePushTime}
+              className="w-full mb-1.5 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 font-bold text-[10px] py-1.5 rounded transition-all text-center tracking-wider uppercase shadow-sm cursor-pointer flex items-center justify-center gap-1.5"
             >
-              ⏱️ Push Time to Log
+              <span>⏱️</span> Push Time to Practice Log
             </button>
           )}
 
           {session && !clocks.isSolved && (
             <button
-              onClick={(e) => {
-                e.stopPropagation()
-                finishSession()
-              }}
-              className="w-full mb-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 font-bold text-[10px] py-1.5 rounded transition-all text-center tracking-wider uppercase shadow-sm cursor-pointer"
+              onClick={handleMarkSolved}
+              className="w-full mb-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 font-bold text-[10px] py-1.5 rounded transition-all text-center tracking-wider uppercase shadow-sm cursor-pointer flex items-center justify-center gap-1.5"
             >
-              ✓ Mark Solved & Log
+              <span>✓</span> Mark Solved & Log Time
             </button>
           )}
 

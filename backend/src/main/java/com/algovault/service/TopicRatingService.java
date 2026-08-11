@@ -1,5 +1,8 @@
 package com.algovault.service;
-import com.algovault.engine.EloEngine;
+
+import com.algovault.engine.Glicko2MasteryEngine;
+import com.algovault.engine.Glicko2MasteryEngine.GlickoRating;
+import com.algovault.engine.Glicko2MasteryEngine.MatchResult;
 import com.algovault.model.Submission;
 import com.algovault.model.TopicRating;
 import com.algovault.model.User;
@@ -11,6 +14,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.*;
 
 @Service
@@ -18,86 +23,38 @@ import java.util.*;
 @RequiredArgsConstructor
 @Slf4j
 public class TopicRatingService {
+
     private final SubmissionRepository submissionRepository;
     private final TopicRatingRepository topicRatingRepository;
     private final UserRepository userRepository;
-    private final EloEngine eloEngine;
+    private final Glicko2MasteryEngine glickoEngine;
 
     @Transactional
     public void recomputeElo(Long userId) {
-        log.info("Recomputing Topic Elo for user {}", userId);
+        log.info("Recomputing Glicko-2 Topic Ratings for user {}", userId);
         User user = userRepository.findById(userId).orElseThrow();
-        
-        // Fetch chronologically to simulate Elo sequence
+
         List<Submission> allSubs = submissionRepository.findByUserId(userId);
         allSubs.sort(Comparator.comparing(Submission::getSubmittedAt));
 
-        Map<String, TopicRating> tagRatings = new HashMap<>();
-
-        // Group into problem attempts
-        // Preserve the chronological first-seen order. HashMap iteration made
-        // a full recomputation non-deterministic even after sorting submissions.
-        Map<Long, List<Submission>> problemAttempts = new LinkedHashMap<>();
+        // Gather all distinct topic tags
+        Set<String> allTags = new HashSet<>();
         for (Submission sub : allSubs) {
-            problemAttempts.computeIfAbsent(sub.getProblem().getId(), k -> new ArrayList<>()).add(sub);
-        }
-
-        for (Map.Entry<Long, List<Submission>> entry : problemAttempts.entrySet()) {
-            List<Submission> subs = entry.getValue();
-            if (subs.isEmpty() || subs.get(0).getProblem().getActualRating() == null) continue;
-            
-            int problemRating = (int) Math.round(subs.get(0).getProblem().getActualRating());
-            List<String> tags = subs.get(0).getProblem().getTags();
-            if (tags == null) continue;
-
-            boolean isFirstTryAc = "Accepted".equals(subs.get(0).getVerdict());
-            boolean isEventualAc = subs.stream().anyMatch(s -> "Accepted".equals(s.getVerdict()));
-            
-            double score = isFirstTryAc ? 1.0 : (isEventualAc ? 0.7 : 0.0);
-
-            for (String tag : tags) {
-                TopicRating tr = tagRatings.computeIfAbsent(tag, k -> 
-                    TopicRating.builder().user(user).tag(k).eloRating(1200).peakRating(1200).problemsPlayed(0).build()
-                );
-
-                // Fractional tag attribution: a problem with N tags gives each tag
-                // score/N credit, preventing multi-tag double-counting.
-                double effectiveScore = tags.size() > 1 ? score / tags.size() : score;
-
-                Integer currentElo = tr.getEloRating() != null ? tr.getEloRating() : 1200;
-                Integer currentPlayed = tr.getProblemsPlayed() != null ? tr.getProblemsPlayed() : 0;
-                int newElo = eloEngine.calculateNewElo(currentElo, problemRating, effectiveScore, currentPlayed);
-                tr.setEloRating(newElo);
-                Integer peak = tr.getPeakRating() != null ? tr.getPeakRating() : 1200;
-                if (newElo > peak) tr.setPeakRating(newElo);
-                tr.setProblemsPlayed(currentPlayed + 1);
+            if (sub.getProblem() != null && sub.getProblem().getTags() != null) {
+                allTags.addAll(sub.getProblem().getTags());
             }
         }
 
-        // We only save if there's an actual update. In a real scenario we might delete old and insert new.
-        // For now, we update the existing DB records.
-        List<TopicRating> existing = topicRatingRepository.findByUserId(userId);
-        for (TopicRating ex : existing) {
-            TopicRating computed = tagRatings.get(ex.getTag());
-            if (computed != null) {
-                ex.setEloRating(computed.getEloRating());
-                ex.setPeakRating(computed.getPeakRating());
-                ex.setProblemsPlayed(computed.getProblemsPlayed());
-                tagRatings.remove(ex.getTag()); // already handled
-            }
+        for (String tag : allTags) {
+            recomputeEloForTag(user, tag);
         }
-        
-        // Save modifications to existing
-        topicRatingRepository.saveAll(existing);
-        // Save completely new topics
-        topicRatingRepository.saveAll(new ArrayList<>(tagRatings.values()));
     }
 
     @Transactional
     public void updateIncremental(Long userId, Submission submission) {
-        if (submission.getProblem() == null || submission.getProblem().getActualRating() == null) return;
+        if (submission.getProblem() == null || submission.getProblem().getTags() == null) return;
         List<String> tags = submission.getProblem().getTags();
-        if (tags == null || tags.isEmpty()) return;
+        if (tags.isEmpty()) return;
 
         User user = userRepository.findById(userId).orElseThrow();
         for (String tag : tags) {
@@ -108,46 +65,74 @@ public class TopicRatingService {
     @Transactional
     public void recomputeEloForTag(User user, String tag) {
         List<Submission> tagSubs = submissionRepository.findByUserIdAndTag(user.getId(), tag);
+        if (tagSubs.isEmpty()) return;
+
         tagSubs.sort(Comparator.comparing(Submission::getSubmittedAt));
 
         Map<Long, List<Submission>> problemAttemptsMap = new LinkedHashMap<>();
         for (Submission sub : tagSubs) {
-            if (sub.getProblem() != null && sub.getProblem().getActualRating() != null) {
+            if (sub.getProblem() != null) {
                 problemAttemptsMap.computeIfAbsent(sub.getProblem().getId(), k -> new ArrayList<>()).add(sub);
             }
         }
 
-        TopicRating tr = topicRatingRepository.findByUserIdAndTag(user.getId(), tag)
-            .orElseGet(() -> TopicRating.builder().user(user).tag(tag).eloRating(1200).peakRating(1200).problemsPlayed(0).build());
-
-        tr.setEloRating(1200);
-        tr.setPeakRating(1200);
-        tr.setProblemsPlayed(0);
+        GlickoRating gRating = new GlickoRating(1500.0, 350.0, 0.06);
+        int problemsPlayed = 0;
+        int maxRating = 1500;
+        LocalDateTime lastPracticedAt = null;
 
         for (List<Submission> subs : problemAttemptsMap.values()) {
-            int problemRating = (int) Math.round(subs.get(0).getProblem().getActualRating());
-            boolean isFirstTryAc = "Accepted".equals(subs.get(0).getVerdict());
+            if (subs.isEmpty()) continue;
+            Submission firstSub = subs.get(0);
+            Double rawProblemRating = firstSub.getProblem().getActualRating();
+            double problemRating = (rawProblemRating != null && rawProblemRating > 0) ? rawProblemRating : 1200.0;
+
+            boolean isFirstTryAc = "Accepted".equals(firstSub.getVerdict());
             boolean isEventualAc = subs.stream().anyMatch(s -> "Accepted".equals(s.getVerdict()));
             double score = isFirstTryAc ? 1.0 : (isEventualAc ? 0.7 : 0.0);
 
-            // Fractional tag attribution for multi-tag problems
-            List<String> tags = subs.get(0).getProblem().getTags();
-            int numTags = (tags != null) ? tags.size() : 1;
-            double effectiveScore = numTags > 1 ? score / numTags : score;
+            // Match opponent RD is assumed 50.0 for stable ZeroTrac problem ratings
+            MatchResult match = new MatchResult(problemRating, 50.0, score);
+            gRating = glickoEngine.updateRating(gRating, List.of(match));
 
-            Integer currentElo = tr.getEloRating() != null ? tr.getEloRating() : 1200;
-            Integer currentPlayed = tr.getProblemsPlayed() != null ? tr.getProblemsPlayed() : 0;
-            int newElo = eloEngine.calculateNewElo(currentElo, problemRating, effectiveScore, currentPlayed);
-            tr.setEloRating(newElo);
-            Integer peak = tr.getPeakRating() != null ? tr.getPeakRating() : 1200;
-            if (newElo > peak) tr.setPeakRating(newElo);
-            tr.setProblemsPlayed(currentPlayed + 1);
+            problemsPlayed++;
+            int currentRoundRating = (int) Math.round(gRating.rating);
+            if (currentRoundRating > maxRating) {
+                maxRating = currentRoundRating;
+            }
+            if (firstSub.getSubmittedAt() != null) {
+                lastPracticedAt = firstSub.getSubmittedAt();
+            }
         }
 
-        if (tr.getProblemsPlayed() == 0) {
-            topicRatingRepository.delete(tr);
-        } else {
-            topicRatingRepository.save(tr);
+        if (problemsPlayed == 0) return;
+
+        // Apply inactivity time decay if unpracticed for over 7 days
+        if (lastPracticedAt != null) {
+            long daysInactive = java.time.Duration.between(lastPracticedAt, LocalDateTime.now()).toDays();
+            if (daysInactive >= 7) {
+                double weeksInactive = daysInactive / 7.0;
+                double phi = gRating.rd / 173.7178;
+                double phiPrime = Math.sqrt(phi * phi + weeksInactive * gRating.volatility * gRating.volatility);
+                gRating.rd = Math.min(phiPrime * 173.7178, 350.0);
+            }
         }
+
+        TopicRating tr = topicRatingRepository.findByUserIdAndTag(user.getId(), tag)
+                .orElseGet(() -> TopicRating.builder().user(user).tag(tag).build());
+
+        int finalRating = (int) Math.round(gRating.rating);
+        tr.setEloRating(finalRating);
+        tr.setRd(gRating.rd);
+        tr.setVolatility(gRating.volatility);
+        int conservative = Math.max(800, (int) Math.round(gRating.rating - 1.96 * gRating.rd));
+        tr.setConservativeRating(conservative);
+
+        Integer prevPeak = tr.getPeakRating();
+        tr.setPeakRating(prevPeak == null ? maxRating : Math.max(prevPeak, maxRating));
+        tr.setProblemsPlayed(problemsPlayed);
+        tr.setLastPracticedAt(lastPracticedAt);
+
+        topicRatingRepository.save(tr);
     }
 }

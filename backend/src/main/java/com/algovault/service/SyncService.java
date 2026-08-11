@@ -109,11 +109,10 @@ public class SyncService {
 
     private void updateUserProfile(User user, SyncLeetcodeRequest request) {
         if (request.getUsername() != null && !request.getUsername().isBlank()) {
-            if (user.getLcUsername() != null && !user.getLcUsername().equalsIgnoreCase(request.getUsername().trim())) {
-                throw new IllegalArgumentException("Sync username does not match the authenticated user");
+            user.setLcUsername(request.getUsername().trim());
+            if (user.getUsername() == null || user.getUsername().isBlank()) {
+                user.setUsername(request.getUsername().trim());
             }
-            user.setLcUsername(request.getUsername());
-            user.setUsername(request.getUsername());
         }
         if (request.getProfile() != null) {
             user.setAvatarUrl(request.getProfile().getUserAvatar());

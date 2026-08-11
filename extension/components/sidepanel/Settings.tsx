@@ -7,10 +7,22 @@ import {
   setGithubPat as persistGithubPat,
   getGithubRepo,
   setGithubRepo as persistGithubRepo,
+  getGithubUser,
+  setGithubUser as persistGithubUser,
+  getGithubBranch,
+  setGithubBranch as persistGithubBranch,
+  clearGithubAuth,
   getLastSync
 } from "../../lib/storage"
 import { fetchUserStatus } from "../../lib/api/leetcode"
 import { getSettings, updateSettings, exportUserData } from "../../lib/api/backend"
+import {
+  authenticateGithub,
+  fetchUserGithubProfile,
+  fetchUserGithubRepos,
+  type GithubUser,
+  type GithubRepoItem
+} from "../../lib/api/github"
 
 interface SyncStatus {
   message?: string;
@@ -34,10 +46,20 @@ export const Settings = () => {
   const [username, setUsername] = useState<string>('');
   const [activeLcUser, setActiveLcUser] = useState<string | null>(null);
   const [loadingActiveUser, setLoadingActiveUser] = useState<boolean>(true);
+
+  // GitHub State
   const [githubPat, setGithubPat] = useState<string>('');
   const [githubRepo, setGithubRepo] = useState<string>('');
+  const [githubBranch, setGithubBranch] = useState<string>('main');
+  const [githubUser, setGithubUser] = useState<GithubUser | null>(null);
+  const [githubRepos, setGithubRepos] = useState<GithubRepoItem[]>([]);
+  const [authenticating, setAuthenticating] = useState<boolean>(false);
+  const [loadingRepos, setLoadingRepos] = useState<boolean>(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [manualPatMode, setManualPatMode] = useState<boolean>(false);
   const [githubSaved, setGithubSaved] = useState<boolean>(false);
   const [gitSyncStatus, setGitSyncStatus] = useState<SyncStatus | null>(null);
+
   const [syncHasMore, setSyncHasMore] = useState<boolean | null>(null);
   const [lastSync, setLastSync] = useState<number | null>(null);
   const [settingsSynced, setSettingsSynced] = useState<boolean>(false);
@@ -88,9 +110,29 @@ export const Settings = () => {
     });
 
     getUsername().then((value) => setUsername(value || ""));
-    getGithubPat().then((value) => setGithubPat(value || ""));
     getGithubRepo().then((value) => setGithubRepo(value || ""));
+    getGithubBranch().then((value) => setGithubBranch(value || "main"));
+    getGithubUser().then((val) => setGithubUser(val || null));
     getLastSync().then(setLastSync).catch(() => setLastSync(null));
+
+    // Load token and fetch repos/profile if present
+    getGithubPat().then((token) => {
+      if (token) {
+        setGithubPat(token);
+        // Refresh GitHub profile & repos
+        fetchUserGithubProfile(token).then((profile) => {
+          if (profile) {
+            setGithubUser(profile);
+            persistGithubUser(profile);
+          }
+        });
+        setLoadingRepos(true);
+        fetchUserGithubRepos(token).then((repos) => {
+          setGithubRepos(repos);
+          setLoadingRepos(false);
+        });
+      }
+    });
     
     const parseGitSyncStatus = (raw: any) => {
       if (typeof raw === "string") {
@@ -154,7 +196,6 @@ export const Settings = () => {
     };
   }, []);
 
-
   const toggleAccRate = () => {
     const val = !hideAccRate;
     setHideAccRate(val);
@@ -198,9 +239,97 @@ export const Settings = () => {
     chrome.runtime.sendMessage({ action: "stop_sync" });
   };
 
-  const handleGithubSave = async () => {
+  const handleConnectGithub = async () => {
+    setAuthenticating(true);
+    setAuthError(null);
+    try {
+      const res = await authenticateGithub();
+      if (res.ok && res.token) {
+        setGithubPat(res.token);
+        await persistGithubPat(res.token);
+        
+        // Fetch profile & repos
+        const profile = await fetchUserGithubProfile(res.token);
+        if (profile) {
+          setGithubUser(profile);
+          await persistGithubUser(profile);
+        }
+        setLoadingRepos(true);
+        const repos = await fetchUserGithubRepos(res.token);
+        setGithubRepos(repos);
+        setLoadingRepos(false);
+
+        // Auto-select first repo if none selected yet
+        if (!githubRepo && repos.length > 0) {
+          setGithubRepo(repos[0].full_name);
+          await persistGithubRepo(repos[0].full_name);
+          setGithubBranch(repos[0].default_branch || "main");
+          await persistGithubBranch(repos[0].default_branch || "main");
+        }
+
+        try {
+          await updateSettings({ githubPat: res.token, githubRepo: githubRepo || (repos[0]?.full_name ?? "") });
+        } catch (e) {
+          console.warn("Could not sync PAT to server settings:", e);
+        }
+      } else {
+        setAuthError(res.message || "OAuth authentication failed");
+      }
+    } catch (e: any) {
+      setAuthError(e.message || "Failed to start GitHub authorization");
+    } finally {
+      setAuthenticating(false);
+    }
+  };
+
+  const handleDisconnectGithub = async () => {
+    await clearGithubAuth();
+    setGithubPat('');
+    setGithubUser(null);
+    setGithubRepo('');
+    setGithubBranch('main');
+    setGithubRepos([]);
+    setGitSyncStatus(null);
+  };
+
+  const handleRepoChange = async (selected: string) => {
+    setGithubRepo(selected);
+    await persistGithubRepo(selected);
+
+    // Find default branch for this repo
+    const found = githubRepos.find(r => r.full_name.toLowerCase() === selected.toLowerCase());
+    if (found && found.default_branch) {
+      setGithubBranch(found.default_branch);
+      await persistGithubBranch(found.default_branch);
+    }
+
+    try {
+      await updateSettings({ githubRepo: selected });
+    } catch (e) {
+      console.warn("Could not sync repository setting to server:", e);
+    }
+  };
+
+  const handleBranchChange = async (branchVal: string) => {
+    setGithubBranch(branchVal);
+    await persistGithubBranch(branchVal);
+  };
+
+  const handleGithubSaveManual = async () => {
     persistGithubPat(githubPat.trim());
     persistGithubRepo(githubRepo.trim());
+    persistGithubBranch(githubBranch.trim());
+    
+    if (githubPat.trim()) {
+      const profile = await fetchUserGithubProfile(githubPat.trim());
+      if (profile) {
+        setGithubUser(profile);
+        await persistGithubUser(profile);
+      }
+      const repos = await fetchUserGithubRepos(githubPat.trim());
+      setGithubRepos(repos);
+    }
+
     setGithubSaved(true);
     setTimeout(() => setGithubSaved(false), 2000);
     try {
@@ -245,6 +374,8 @@ export const Settings = () => {
       setExporting(false);
     }
   };
+
+  const isConnected = Boolean(githubPat);
 
   return (
     <div className="grid gap-3.5">
@@ -436,63 +567,193 @@ export const Settings = () => {
         </div>
       </Card>
 
+      {/* GitHub Integration Section */}
       <Card className="p-3.5">
-        <h3 className="text-xs font-semibold uppercase tracking-widest text-zinc-400 mb-2">GitHub Synchronization</h3>
-        <p className="text-[11px] text-zinc-500 font-mono leading-relaxed mb-3.5">
-          Sync your accepted LeetCode solutions directly to your personal GitHub repository.
-        </p>
-
-        <div className="space-y-3">
-          <div>
-            <label className="text-[10px] text-zinc-400 block mb-1 font-mono">Personal Access Token (PAT)</label>
-            <input
-              type="password"
-              value={githubPat}
-              onChange={(e) => setGithubPat(e.target.value)}
-              placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-              className="w-full bg-zinc-900/30 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-[#dfa054] focus:ring-1 focus:ring-[#dfa054]/20 transition-all font-mono"
-            />
-          </div>
-
-          <div>
-            <label className="text-[10px] text-zinc-400 block mb-1 font-mono">Repository Path</label>
-            <input
-              type="text"
-              value={githubRepo}
-              onChange={(e) => setGithubRepo(e.target.value)}
-              placeholder="owner/repo (e.g. Somnath0707/AlgoVault)"
-              className="w-full bg-zinc-900/30 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-[#dfa054] focus:ring-1 focus:ring-[#dfa054]/20 transition-all font-mono"
-            />
-          </div>
-
-          <button
-            onClick={handleGithubSave}
-            className="w-full bg-[#dfa054] hover:bg-[#e5b376] text-zinc-950 font-semibold text-xs py-2 px-4 rounded-lg transition-colors border border-[#dfa054]/20 font-mono tracking-wider uppercase mt-2"
-          >
-            {githubSaved ? "Saved ✔" : "Save Credentials"}
-          </button>
-
-          {gitSyncStatus && (
-            <div className={`mt-3 p-3 rounded-lg border text-[10px] font-mono leading-relaxed ${
-              gitSyncStatus.success 
-                ? 'bg-emerald-950/20 border-emerald-900/30 text-emerald-400' 
-                : 'bg-red-950/20 border-red-900/30 text-red-400'
-            }`}>
-              <div className="font-bold uppercase mb-0.5">
-                {gitSyncStatus.success ? "Last Sync Succeeded ✓" : "Sync Failed ✗"}
-              </div>
-              <div className="truncate">Problem: {gitSyncStatus.problem}</div>
-              {gitSyncStatus.message && gitSyncStatus.message !== "Success" && (
-                <div className="mt-0.5 text-zinc-400 break-all">Error: {gitSyncStatus.message}</div>
-              )}
-              {gitSyncStatus.timestamp && (
-                <div className="text-zinc-600 mt-1.5 text-[8px] text-right">
-                  {new Date(gitSyncStatus.timestamp).toLocaleTimeString()}
-                </div>
-              )}
-            </div>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-xs font-semibold uppercase tracking-widest text-zinc-400">GitHub Synchronization</h3>
+          {isConnected && (
+            <span className="inline-flex items-center gap-1 text-[9px] font-mono font-semibold text-emerald-400 bg-emerald-950/40 border border-emerald-900/50 px-2 py-0.5 rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              Connected
+            </span>
           )}
         </div>
+        <p className="text-[11px] text-zinc-500 font-mono leading-relaxed mb-3.5">
+          Automatically sync your accepted LeetCode solutions to your personal GitHub repository.
+        </p>
+
+        {/* Connected View */}
+        {isConnected && (
+          <div className="space-y-3">
+            {/* Account Profile Header */}
+            <div className="flex items-center justify-between p-2.5 rounded-lg border border-zinc-800 bg-zinc-900/50">
+              <div className="flex items-center gap-2.5">
+                {githubUser?.avatar_url ? (
+                  <img src={githubUser.avatar_url} alt={githubUser.login} className="w-7 h-7 rounded-full border border-zinc-700" />
+                ) : (
+                  <div className="w-7 h-7 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-xs text-zinc-300 font-mono font-bold">
+                    {githubUser?.login?.charAt(0)?.toUpperCase() || "G"}
+                  </div>
+                )}
+                <div>
+                  <div className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
+                    {githubUser?.name || githubUser?.login || "GitHub User"}
+                    {githubUser?.html_url && (
+                      <a href={githubUser.html_url} target="_blank" rel="noreferrer" className="text-[10px] text-zinc-500 hover:text-amber-400">
+                        @{githubUser.login}
+                      </a>
+                    )}
+                  </div>
+                  <div className="text-[9px] text-zinc-500 font-mono">OAuth 2.0 Authorization Active</div>
+                </div>
+              </div>
+              <button
+                onClick={handleDisconnectGithub}
+                className="text-[10px] font-mono text-zinc-400 hover:text-red-400 bg-zinc-800 hover:bg-zinc-800/80 border border-zinc-700 px-2.5 py-1 rounded transition-colors"
+              >
+                Disconnect
+              </button>
+            </div>
+
+            {/* Repository Selector */}
+            <div>
+              <label className="text-[10px] text-zinc-400 block mb-1 font-mono flex justify-between items-center">
+                <span>Target Repository</span>
+                {loadingRepos && <span className="text-[9px] text-sky-400 animate-pulse font-mono">Loading repos...</span>}
+              </label>
+              
+              {githubRepos.length > 0 ? (
+                <select
+                  value={githubRepo}
+                  onChange={(e) => void handleRepoChange(e.target.value)}
+                  className="w-full bg-zinc-900/50 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-[#dfa054] transition-all font-mono"
+                >
+                  <option value="" disabled>-- Select a Repository --</option>
+                  {githubRepos.map((repo) => (
+                    <option key={repo.full_name} value={repo.full_name}>
+                      {repo.full_name} {repo.private ? "🔒" : "🌐"}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={githubRepo}
+                  onChange={(e) => handleRepoChange(e.target.value)}
+                  placeholder="owner/repo (e.g. Somnath0707/AlgoVault)"
+                  className="w-full bg-zinc-900/30 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-[#dfa054] transition-all font-mono"
+                />
+              )}
+            </div>
+
+            {/* Branch Selector */}
+            <div>
+              <label className="text-[10px] text-zinc-400 block mb-1 font-mono">Target Branch</label>
+              <input
+                type="text"
+                value={githubBranch}
+                onChange={(e) => handleBranchChange(e.target.value)}
+                placeholder="main"
+                className="w-full bg-zinc-900/30 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-[#dfa054] transition-all font-mono"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Not Connected View */}
+        {!isConnected && (
+          <div className="space-y-3">
+            {!manualPatMode ? (
+              <div>
+                <button
+                  onClick={handleConnectGithub}
+                  disabled={authenticating}
+                  className="w-full bg-[#dfa054] hover:bg-[#e5b376] text-zinc-950 font-semibold text-xs py-2.5 px-4 rounded-lg transition-all border border-[#dfa054]/20 font-mono tracking-wider uppercase flex items-center justify-center gap-2 shadow-sm disabled:opacity-50"
+                >
+                  {authenticating ? (
+                    <>
+                      <div className="w-3.5 h-3.5 rounded-full border-2 border-zinc-950 border-t-transparent animate-spin" />
+                      Authorizing with GitHub...
+                    </>
+                  ) : (
+                    <>
+                      Connect GitHub Account (OAuth)
+                    </>
+                  )}
+                </button>
+                <div className="mt-2.5 text-center">
+                  <button
+                    onClick={() => setManualPatMode(true)}
+                    className="text-[9px] font-mono text-zinc-500 hover:text-zinc-300 underline underline-offset-2"
+                  >
+                    Or use manual Personal Access Token (PAT)
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3 p-3 rounded-lg border border-zinc-800 bg-zinc-950/40">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-mono font-bold text-zinc-400">Manual PAT Token Fallback</span>
+                  <button onClick={() => setManualPatMode(false)} className="text-[9px] font-mono text-amber-400 hover:underline">Use 1-Click OAuth</button>
+                </div>
+                <div>
+                  <label className="text-[10px] text-zinc-400 block mb-1 font-mono">Personal Access Token (PAT)</label>
+                  <input
+                    type="password"
+                    value={githubPat}
+                    onChange={(e) => setGithubPat(e.target.value)}
+                    placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+                    className="w-full bg-zinc-900/30 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-[#dfa054] transition-all font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-zinc-400 block mb-1 font-mono">Repository Path</label>
+                  <input
+                    type="text"
+                    value={githubRepo}
+                    onChange={(e) => setGithubRepo(e.target.value)}
+                    placeholder="owner/repo (e.g. Somnath0707/AlgoVault)"
+                    className="w-full bg-zinc-900/30 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-[#dfa054] transition-all font-mono"
+                  />
+                </div>
+                <button
+                  onClick={handleGithubSaveManual}
+                  className="w-full bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold text-xs py-2 px-4 rounded-lg transition-colors border border-zinc-700 font-mono tracking-wider uppercase"
+                >
+                  {githubSaved ? "Saved ✔" : "Save Credentials"}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {authError && (
+          <div className="mt-3 text-[10px] text-red-400 font-mono bg-red-950/20 border border-red-900/30 p-2.5 rounded-lg">
+            ⚠️ Authorization Error: {authError}
+          </div>
+        )}
+
+        {/* Last Sync Status Box */}
+        {gitSyncStatus && (
+          <div className={`mt-3.5 p-3 rounded-lg border text-[10px] font-mono leading-relaxed ${
+            gitSyncStatus.success 
+              ? 'bg-emerald-950/20 border-emerald-900/30 text-emerald-400' 
+              : 'bg-red-950/20 border-red-900/30 text-red-400'
+          }`}>
+            <div className="font-bold uppercase mb-0.5 flex justify-between items-center">
+              <span>{gitSyncStatus.success ? "Last Sync Succeeded ✓" : "Sync Failed ✗"}</span>
+              {gitSyncStatus.message && (
+                <span className="text-[9px] font-normal text-zinc-400">[{gitSyncStatus.message}]</span>
+              )}
+            </div>
+            <div className="truncate text-zinc-200">Problem: {gitSyncStatus.problem}</div>
+            {gitSyncStatus.timestamp && (
+              <div className="text-zinc-600 mt-1 text-[8px] text-right">
+                {new Date(gitSyncStatus.timestamp).toLocaleTimeString()}
+              </div>
+            )}
+          </div>
+        )}
       </Card>
     </div>
   );

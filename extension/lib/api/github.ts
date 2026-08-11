@@ -1,23 +1,83 @@
 import { exchangeGithubCode } from "./backend";
 
-export const GITHUB_CLIENT_ID = process.env.PLASMO_PUBLIC_GITHUB_CLIENT_ID || 'beb4f0aa19ab8faf5004'; // default fallback for demonstration
+export const GITHUB_CLIENT_ID = process.env.PLASMO_PUBLIC_GITHUB_CLIENT_ID || 'Ov23liTftGjfEU3BuSwX';
+export const GITHUB_CLIENT_SECRET = process.env.PLASMO_PUBLIC_GITHUB_CLIENT_SECRET || '77d4d5e03d71a049bd6992accdebecb6cc94238b';
+
+export interface GithubUser {
+  login: string;
+  name: string | null;
+  avatar_url: string;
+  html_url: string;
+}
+
+export interface GithubRepoItem {
+  full_name: string;
+  name: string;
+  owner: { login: string };
+  default_branch: string;
+  private: boolean;
+  html_url: string;
+}
+
+/**
+ * Fetches authenticated user's profile from GitHub API.
+ */
+export async function fetchUserGithubProfile(token: string): Promise<GithubUser | null> {
+  try {
+    const res = await fetch("https://api.github.com/user", {
+      headers: {
+        Authorization: `token ${token}`,
+        Accept: "application/vnd.github.v3+json"
+      }
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) {
+    console.error("Failed to fetch GitHub profile:", e);
+    return null;
+  }
+}
+
+/**
+ * Fetches accessible repositories for the authenticated GitHub user.
+ */
+export async function fetchUserGithubRepos(token: string): Promise<GithubRepoItem[]> {
+  try {
+    const res = await fetch("https://api.github.com/user/repos?per_page=100&sort=updated&type=all", {
+      headers: {
+        Authorization: `token ${token}`,
+        Accept: "application/vnd.github.v3+json"
+      }
+    });
+    if (!res.ok) return [];
+    const repos = await res.json();
+    if (!Array.isArray(repos)) return [];
+    return repos.map((r: any) => ({
+      full_name: r.full_name,
+      name: r.name,
+      owner: { login: r.owner?.login || "" },
+      default_branch: r.default_branch || "main",
+      private: !!r.private,
+      html_url: r.html_url
+    }));
+  } catch (e) {
+    console.error("Failed to fetch GitHub repositories:", e);
+    return [];
+  }
+}
 
 /**
  * Commits a solution code file to the user's GitHub repository.
- *
- * @param pat GitHub Personal Access Token
- * @param repoPath Owner/Repo string (e.g. "Somnath0707/AlgoVault")
- * @param filePath Path inside the repo (e.g. "problems/shortest-bridge/Solution.java")
- * @param commitMessage Commit message
- * @param fileContent Raw text code content of the solution
+ * Handles existing file SHA check and branch target.
  */
 export async function commitToGithub(
   pat: string,
   repoPath: string,
   filePath: string,
   commitMessage: string,
-  fileContent: string
-): Promise<{ ok: boolean; message?: string }> {
+  fileContent: string,
+  branch?: string
+): Promise<{ ok: boolean; message?: string; alreadySynced?: boolean }> {
   try {
     const cleanRepo = repoPath.trim()
       .replace(/^https:\/\/github\.com\//, "")
@@ -33,28 +93,37 @@ export async function commitToGithub(
       "Content-Type": "application/json"
     };
 
-    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`;
+    const branchQuery = branch ? `?ref=${encodeURIComponent(branch)}` : "";
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}${branchQuery}`;
 
     // 1. Get file SHA if it already exists
     let sha: string | undefined = undefined;
+    let existingContent: string | undefined = undefined;
     try {
       const getRes = await fetch(apiUrl, { headers });
       if (getRes.ok) {
         const getJson = await getRes.json();
         sha = getJson.sha;
+        if (getJson.content) {
+          existingContent = getJson.content.replace(/\n/g, "");
+        }
       }
     } catch (e) {
       console.warn("Failed to check if file exists on GitHub", e);
     }
 
-    // 2. Base64 encode file contents. Since JavaScript btoa does not support UTF-8 natively,
-    // we use a safe encode helper using TextEncoder/Uint8Array/fromCharCode.
+    // 2. Base64 encode file contents
     const utf8Bytes = new TextEncoder().encode(fileContent);
     let binary = "";
     for (let i = 0; i < utf8Bytes.length; i++) {
       binary += String.fromCharCode(utf8Bytes[i]);
     }
     const base64Content = btoa(binary);
+
+    // Duplicate protection check: if existing base64 content matches exactly, skip commit
+    if (sha && existingContent && existingContent === base64Content) {
+      return { ok: true, alreadySynced: true, message: "File is already up to date on GitHub" };
+    }
 
     // 3. Commit the file
     const body: Record<string, any> = {
@@ -64,8 +133,11 @@ export async function commitToGithub(
     if (sha) {
       body.sha = sha;
     }
+    if (branch) {
+      body.branch = branch;
+    }
 
-    const putRes = await fetch(apiUrl, {
+    const putRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`, {
       method: "PUT",
       headers,
       body: JSON.stringify(body)
@@ -73,7 +145,7 @@ export async function commitToGithub(
 
     if (!putRes.ok) {
       const errorMsg = await putRes.text();
-      return { ok: false, message: `GitHub API error: ${putRes.status} - ${errorMsg}` };
+      return { ok: false, message: `GitHub API error (${putRes.status}): ${errorMsg}` };
     }
 
     return { ok: true };
@@ -129,15 +201,15 @@ export async function authenticateGithub(): Promise<{ ok: boolean; token?: strin
             return resolve({ ok: false, message: "No authorization code returned from GitHub" });
           }
 
-          // Send code to backend to exchange for access token
+          // Send authorization code to backend to exchange server-side for access token
           const res = await exchangeGithubCode(code);
           if (res.token) {
             resolve({ ok: true, token: res.token });
           } else {
-            resolve({ ok: false, message: "Backend did not return a valid token" });
+            resolve({ ok: false, message: res.error || "Backend did not return a valid token" });
           }
         } catch (err: any) {
-          resolve({ ok: false, message: err.message || "Failed to exchange code" });
+          resolve({ ok: false, message: err.message || "Failed to exchange authorization code" });
         }
       });
     });
@@ -145,4 +217,5 @@ export async function authenticateGithub(): Promise<{ ok: boolean; token?: strin
     return { ok: false, message: e.message || "Failed to start OAuth flow" };
   }
 }
+
 

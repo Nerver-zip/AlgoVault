@@ -95,9 +95,14 @@ export async function loadRecentAttendedContests(username: string, limit: number
 
 export async function loadContestLifecycle(username: string): Promise<ContestLifecycleItem[]> {
   const refreshedAt = new Date().toISOString()
+  const entrantHubPromise = Promise.race([
+    fetchEntrantHubHistoryBackend(username, "US").catch(() => []),
+    new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 1200))
+  ])
+
   const [officialResponse, entrantHubRes, pastResponse] = await Promise.all([
     sendMessage<any>({ action: "get_user_contest_history", payload: { username } }).catch(() => null),
-    fetchEntrantHubHistoryBackend(username, "US").catch(() => []),
+    entrantHubPromise,
     sendMessage<any>({ action: "get_leetcode_past_contests" }).catch(() => null)
   ])
 

@@ -21,8 +21,8 @@ import org.springframework.cache.annotation.Cacheable;
 @org.springframework.transaction.annotation.Transactional
 @RequiredArgsConstructor
 public class WeaknessService {
-    /** Fewer observations can be shown as exploration, but not prescribed as a weakness. */
-    private static final int MIN_RECOMMENDATION_EVIDENCE = 3;
+    /** Allow any weak tag with at least 1 attempt to generate recommendations */
+    private static final int MIN_RECOMMENDATION_EVIDENCE = 1;
 
     private final TagMasteryRepository tagMasteryRepository;
     private final ProblemRepository problemRepository;

@@ -16,7 +16,10 @@ export const STORAGE_KEYS = {
   CACHED_WEAKNESS: "algovault.cache.weakness",
   CURRENT_SESSION: "algovault.session.active",
   TODAY_SNAPSHOT: "algovault.todaySnapshot.v2",
+  TODAY_RECOMMENDATIONS: "algovault.today.recommendations.v1",
   LIVE_TIMER: "algovault.session.active",
   GITHUB_PAT: "algovault.github.pat",
-  GITHUB_REPO: "algovault.github.repo"
+  GITHUB_REPO: "algovault.github.repo",
+  GITHUB_USER: "algovault.github.user",
+  GITHUB_BRANCH: "algovault.github.branch"
 } as const;

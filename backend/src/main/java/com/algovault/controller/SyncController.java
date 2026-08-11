@@ -23,8 +23,9 @@ public class SyncController {
             syncService.syncLeetcode(user.getId(), request);
             return ResponseEntity.ok(Map.of("status", "success", "message", "Data synchronized successfully"));
         } catch (Exception e) {
-            org.slf4j.LoggerFactory.getLogger(SyncController.class).error("Sync failed", e);
-            return ResponseEntity.badRequest().body(Map.of("status", "error", "message", "Data synchronization failed. Please try again later."));
+            org.slf4j.LoggerFactory.getLogger(SyncController.class).error("Sync failed for user", e);
+            String errorMsg = e.getMessage() != null ? e.getMessage() : "Data synchronization failed. Please try again later.";
+            return ResponseEntity.badRequest().body(Map.of("status", "error", "message", errorMsg));
         }
     }
 }

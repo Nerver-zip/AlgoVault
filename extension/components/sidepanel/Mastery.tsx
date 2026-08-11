@@ -67,9 +67,9 @@ const timeSince = (dateStr?: string) => {
 /* ═══════════════════════════════════════════════════════════
    PREMIUM SVG RING GAUGE
    ═══════════════════════════════════════════════════════════ */
-const RingGauge = ({ score, size = 52, sw = 3.5 }: { score: number; size?: number; sw?: number }) => {
+const RingGauge = ({ score, size = 52, sw = 3.5, totalSolved = 100, rd = 50 }: { score: number; size?: number; sw?: number; totalSolved?: number; rd?: number }) => {
   const pct = Math.max(3, Math.min(100, (score / 2500) * 100))
-  const tier = getTier(score)
+  const tier = getTier(score, totalSolved, rd)
   const r = (size - sw * 2) / 2
   const c = 2 * Math.PI * r
 
@@ -253,7 +253,7 @@ export const Mastery = () => {
   )
 
   const { sorted, powerIndex, avgRd, avgVol, solved, attempted, firstAc, tierDist, top3, weakest, closestPromo, mostVolatile, mostPracticed } = analytics
-  const pi = getTier(powerIndex)
+  const pi = getTier(powerIndex, solved, avgRd)
   const conf = rdToConfidence(avgRd)
   const stability = getStability(avgVol)
   const nextTr = nextTier(powerIndex)

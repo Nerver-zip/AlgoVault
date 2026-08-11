@@ -47,18 +47,27 @@ async function archivePracticeLog(sessionInput: any, isSolved: boolean, language
   if (!session || !session.slug) return
 
   const now = Date.now()
+  const tElapsedStart = typeof session.tElapsedStart === "number" && !isNaN(session.tElapsedStart) ? session.tElapsedStart : now
+  const elapsedSecs = Math.floor(Math.max(0, now - tElapsedStart - (session.accPausedMs || 0)) / 1000)
+
   const accActiveMs = typeof session.accActiveMs === "number" && !isNaN(session.accActiveMs) ? session.accActiveMs : 0
   const activeOrigin = (typeof session.tActiveStart === "number" && !isNaN(session.tActiveStart))
     ? session.tActiveStart
-    : (typeof session.tElapsedStart === "number" && !isNaN(session.tElapsedStart) ? session.tElapsedStart : now)
+    : tElapsedStart
   const currentSegmentMs = session.st === "RUNNING" ? Math.max(0, now - activeOrigin) : 0
-  const activeSecs = Math.max(0, Math.floor((accActiveMs + currentSegmentMs) / 1000))
+  
+  let activeSecs = Math.max(0, Math.floor((accActiveMs + currentSegmentMs) / 1000))
+  if (activeSecs <= 0) {
+    if (elapsedSecs > 0) {
+      activeSecs = Math.max(1, elapsedSecs)
+    } else if (isSolved || session.st === "SOLVED") {
+      activeSecs = 1
+    } else {
+      return
+    }
+  }
 
-  if (activeSecs <= 0 && !isSolved) return
-
-  const tElapsedStart = typeof session.tElapsedStart === "number" && !isNaN(session.tElapsedStart) ? session.tElapsedStart : now
-  const elapsedSecs = Math.floor(Math.max(0, now - tElapsedStart - (session.accPausedMs || 0)) / 1000)
-  const focusScore = elapsedSecs > 0 ? Math.min(100, Math.round((activeSecs / elapsedSecs) * 100)) : 100
+  const focusScore = elapsedSecs > 0 ? Math.min(100, Math.round((activeSecs / Math.max(1, elapsedSecs)) * 100)) : 100
 
   const logId = session.id || String(tElapsedStart)
   const logItem = {
@@ -330,9 +339,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: false })
         return
       }
-      await archivePracticeLog(session, false, message.language)
+      const updated = transitionSession(session, session.st === "SOLVED" ? "SOLVED" : (session.st === "RUNNING" ? "RUNNING" : "PAUSED"), session.pr, Date.now())
+      await storage.set(ACTIVE_SESSION_KEY, updated)
+      await archivePracticeLog(updated, session.st === "SOLVED", message.language)
+      chrome.runtime.sendMessage({ action: "session_updated_v2", session: updated })
       chrome.runtime.sendMessage({ action: "dashboard_refresh" })
-      sendResponse({ ok: true })
+      sendResponse({ ok: true, session: updated })
     })
     return true
   }

@@ -43,8 +43,8 @@ spring:
       client:
         registration:
           github:
-            client-id: ${GITHUB_CLIENT_ID:dummy}
-            client-secret: ${GITHUB_CLIENT_SECRET:dummy}
+            client-id: ${GITHUB_CLIENT_ID:Ov23liTftGjfEU3BuSwX}
+            client-secret: ${GITHUB_CLIENT_SECRET:77d4d5e03d71a049bd6992accdebecb6cc94238b}
 
 jwt:
   secret: ${JWT_SECRET:algovault_default_super_secret_jwt_key_32_bytes_minimum_length}

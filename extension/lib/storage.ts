@@ -152,6 +152,20 @@ export async function setTodaySnapshot(snapshot: TodaySnapshot): Promise<void> {
   await setTyped(STORAGE_KEYS.TODAY_SNAPSHOT, snapshot)
 }
 
+export interface TodayRecommendationSelection {
+  practiceSlug?: string
+  stretchSlug?: string
+}
+
+/** Keeps a manually shuffled Today recommendation stable across panel reloads. */
+export async function getTodayRecommendationSelection(): Promise<TodayRecommendationSelection> {
+  return (await getTyped<TodayRecommendationSelection>(STORAGE_KEYS.TODAY_RECOMMENDATIONS)) ?? {}
+}
+
+export async function setTodayRecommendationSelection(selection: TodayRecommendationSelection): Promise<void> {
+  await setTyped(STORAGE_KEYS.TODAY_RECOMMENDATIONS, selection)
+}
+
 export async function getLiveTimer(): Promise<any | null> {
   return getTyped<any>("algovault.session.active")
 }
@@ -236,6 +250,30 @@ export async function getGithubRepo(): Promise<string | null> {
 
 export async function setGithubRepo(repo: string): Promise<void> {
   await setTyped(STORAGE_KEYS.GITHUB_REPO, repo)
+}
+
+export async function getGithubUser(): Promise<any | null> {
+  return getTyped<any>(STORAGE_KEYS.GITHUB_USER)
+}
+
+export async function setGithubUser(user: any): Promise<void> {
+  await setTyped(STORAGE_KEYS.GITHUB_USER, user)
+}
+
+export async function getGithubBranch(): Promise<string | null> {
+  return getTyped<string>(STORAGE_KEYS.GITHUB_BRANCH)
+}
+
+export async function setGithubBranch(branch: string): Promise<void> {
+  await setTyped(STORAGE_KEYS.GITHUB_BRANCH, branch)
+}
+
+export async function clearGithubAuth(): Promise<void> {
+  await storage.remove(STORAGE_KEYS.GITHUB_PAT)
+  await storage.remove(STORAGE_KEYS.GITHUB_USER)
+  await storage.remove(STORAGE_KEYS.GITHUB_REPO)
+  await storage.remove(STORAGE_KEYS.GITHUB_BRANCH)
+  await storage.remove("algovault.gitSyncStatus")
 }
 
 // ─── Export the raw storage instance ──────────────────────────────
