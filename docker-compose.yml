@@ -44,6 +44,7 @@ services:
       SPRING_DATASOURCE_USERNAME: algovault
       SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-algovaultpass}
       SPRING_REDIS_HOST: redis
+      JAVA_TOOL_OPTIONS: "-Xmx256m -XX:+UseG1GC"
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-Ov23liTftGjfEU3BuSwX}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-77d4d5e03d71a049bd6992accdebecb6cc94238b}
       JWT_SECRET: ${JWT_SECRET:-supersecretjwtkeythatisatleast32characterslong12345}
