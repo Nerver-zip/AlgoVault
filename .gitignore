@@ -32,8 +32,10 @@ target/
 .env.production.local
 
 # Screenshots & Zips
-*.png
+/*.png
 *.zip
 tsconfig.tsbuildinfo
 release/
+!extension/build/chrome-mv3-prod/**
+
 
