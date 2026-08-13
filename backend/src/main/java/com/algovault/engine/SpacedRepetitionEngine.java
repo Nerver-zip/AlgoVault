@@ -173,7 +173,8 @@ public class SpacedRepetitionEngine {
     private double nextRecallStability(double prevS, double difficulty, int grade) {
         double hardPenalty = (grade == 2) ? W[14] : 1.0;
         double easyBonus = (grade == 4) ? W[15] : 1.0;
-        double retrievability = Math.pow(1.0 + FACTOR * prevS, DECAY);
+        // Retrievability R at scheduled review date: R = DESIRED_RETENTION (0.90)
+        double retrievability = DESIRED_RETENTION;
 
         double newS = prevS * (1.0 + Math.exp(W[8])
                 * (11.0 - difficulty)
@@ -193,7 +194,8 @@ public class SpacedRepetitionEngine {
      * and w14 is reused here as the retrievability scaling.
      */
     private double nextForgetStability(double prevS, double difficulty) {
-        double retrievability = Math.pow(1.0 + FACTOR * prevS, DECAY);
+        // Retrievability R at scheduled review date: R = DESIRED_RETENTION (0.90)
+        double retrievability = DESIRED_RETENTION;
 
         double newS = W[11]
                 * Math.pow(difficulty, -W[12])
