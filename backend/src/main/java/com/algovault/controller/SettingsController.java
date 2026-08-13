@@ -20,15 +20,15 @@ public class SettingsController {
     private final UserContextService userContextService;
 
     @GetMapping
-    public ResponseEntity<UserSettings> getSettings(HttpServletRequest request) {
+    public ResponseEntity<Map<String, Object>> getSettings(HttpServletRequest request) {
         User user = userContextService.resolveUser(request);
         return userSettingsRepository.findByUserId(user.getId())
-            .map(ResponseEntity::ok)
+            .map(settings -> ResponseEntity.ok(settingsResponse(settings)))
             .orElse(ResponseEntity.notFound().build());
     }
 
     @PostMapping
-    public ResponseEntity<UserSettings> updateSettings(HttpServletRequest request, @RequestBody Map<String, Object> preferences) {
+    public ResponseEntity<Map<String, Object>> updateSettings(HttpServletRequest request, @RequestBody Map<String, Object> preferences) {
         User user = userContextService.resolveUser(request);
         
         if (preferences == null) {
@@ -49,10 +49,6 @@ public class SettingsController {
                 if (value != null && (!(value instanceof String) || ((String) value).length() > 50)) {
                     return ResponseEntity.badRequest().build();
                 }
-            } else if ("githubPat".equals(key) || "githubRepo".equals(key)) {
-                if (value != null && (!(value instanceof String) || ((String) value).length() > 255)) {
-                    return ResponseEntity.badRequest().build();
-                }
             } else {
                 return ResponseEntity.badRequest().build();
             }
@@ -61,7 +57,14 @@ public class SettingsController {
         UserSettings settings = userSettingsRepository.findByUserId(user.getId())
             .orElseGet(() -> UserSettings.builder().user(user).build());
 
-        settings.setPreferences(preferences);
-        return ResponseEntity.ok(userSettingsRepository.save(settings));
+        // Never accept credentials in a generic settings document. GitHub
+        // credentials intentionally stay in the extension's local storage.
+        settings.setPreferences(new java.util.HashMap<>(preferences));
+        UserSettings saved = userSettingsRepository.save(settings);
+        return ResponseEntity.ok(settingsResponse(saved));
+    }
+
+    private Map<String, Object> settingsResponse(UserSettings settings) {
+        return Map.of("preferences", (Object) (settings.getPreferences() == null ? Map.of() : settings.getPreferences()));
     }
 }

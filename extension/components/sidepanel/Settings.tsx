@@ -12,10 +12,11 @@ import {
   getGithubBranch,
   setGithubBranch as persistGithubBranch,
   clearGithubAuth,
+  setJwtToken,
   getLastSync
 } from "../../lib/storage"
 import { fetchUserStatus } from "../../lib/api/leetcode"
-import { getSettings, updateSettings, exportUserData } from "../../lib/api/backend"
+import { getSettings, updateSettings, exportUserData, logout, authenticateGithubToken } from "../../lib/api/backend"
 import {
   authenticateGithub,
   fetchUserGithubProfile,
@@ -94,14 +95,6 @@ export const Settings = () => {
               if (prefs.celebrationTheme !== undefined) {
                 setCelebrationTheme(prefs.celebrationTheme);
                 chrome.storage.sync.set({ celebrationTheme: prefs.celebrationTheme });
-              }
-              if (prefs.githubPat !== undefined) {
-                setGithubPat(prefs.githubPat);
-                persistGithubPat(prefs.githubPat);
-              }
-              if (prefs.githubRepo !== undefined) {
-                setGithubRepo(prefs.githubRepo);
-                persistGithubRepo(prefs.githubRepo);
               }
             }
           })
@@ -244,7 +237,8 @@ export const Settings = () => {
     setAuthError(null);
     try {
       const res = await authenticateGithub();
-      if (res.ok && res.token) {
+      if (res.ok && res.token && res.jwt) {
+        await setJwtToken(res.jwt);
         setGithubPat(res.token);
         await persistGithubPat(res.token);
         
@@ -267,11 +261,6 @@ export const Settings = () => {
           await persistGithubBranch(repos[0].default_branch || "main");
         }
 
-        try {
-          await updateSettings({ githubPat: res.token, githubRepo: githubRepo || (repos[0]?.full_name ?? "") });
-        } catch (e) {
-          console.warn("Could not sync PAT to server settings:", e);
-        }
       } else {
         setAuthError(res.message || "OAuth authentication failed");
       }
@@ -283,6 +272,7 @@ export const Settings = () => {
   };
 
   const handleDisconnectGithub = async () => {
+    await logout().catch(() => undefined);
     await clearGithubAuth();
     setGithubPat('');
     setGithubUser(null);
@@ -303,11 +293,6 @@ export const Settings = () => {
       await persistGithubBranch(found.default_branch);
     }
 
-    try {
-      await updateSettings({ githubRepo: selected });
-    } catch (e) {
-      console.warn("Could not sync repository setting to server:", e);
-    }
   };
 
   const handleBranchChange = async (branchVal: string) => {
@@ -316,27 +301,30 @@ export const Settings = () => {
   };
 
   const handleGithubSaveManual = async () => {
-    persistGithubPat(githubPat.trim());
+    const manualToken = githubPat.trim();
+    if (!manualToken) {
+      setAuthError("Enter a fine-grained GitHub token first.");
+      return;
+    }
+    setAuthError(null);
+    const auth = await authenticateGithubToken(manualToken);
+    await setJwtToken(auth.token);
+    persistGithubPat(manualToken);
     persistGithubRepo(githubRepo.trim());
     persistGithubBranch(githubBranch.trim());
     
-    if (githubPat.trim()) {
-      const profile = await fetchUserGithubProfile(githubPat.trim());
+    if (manualToken) {
+      const profile = await fetchUserGithubProfile(manualToken);
       if (profile) {
         setGithubUser(profile);
         await persistGithubUser(profile);
       }
-      const repos = await fetchUserGithubRepos(githubPat.trim());
+      const repos = await fetchUserGithubRepos(manualToken);
       setGithubRepos(repos);
     }
 
     setGithubSaved(true);
     setTimeout(() => setGithubSaved(false), 2000);
-    try {
-      await updateSettings({ githubPat: githubPat.trim(), githubRepo: githubRepo.trim() });
-    } catch (e) {
-      console.error("Failed to sync github credentials to server:", e);
-    }
   };
 
   const handleSyncSettings = async () => {
@@ -681,6 +669,9 @@ export const Settings = () => {
                     </>
                   )}
                 </button>
+                <p className="mt-2 text-[9px] text-zinc-500 font-mono leading-relaxed">
+                  OAuth can write only public repositories. For a private repo, use a fine-grained PAT restricted to that repo.
+                </p>
                 <div className="mt-2.5 text-center">
                   <button
                     onClick={() => setManualPatMode(true)}
@@ -693,7 +684,7 @@ export const Settings = () => {
             ) : (
               <div className="space-y-3 p-3 rounded-lg border border-zinc-800 bg-zinc-950/40">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-mono font-bold text-zinc-400">Manual PAT Token Fallback</span>
+                  <span className="text-[10px] font-mono font-bold text-zinc-400">Fine-grained PAT (private repo)</span>
                   <button onClick={() => setManualPatMode(false)} className="text-[9px] font-mono text-amber-400 hover:underline">Use 1-Click OAuth</button>
                 </div>
                 <div>
@@ -705,6 +696,7 @@ export const Settings = () => {
                     placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
                     className="w-full bg-zinc-900/30 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-[#dfa054] transition-all font-mono"
                   />
+                  <p className="mt-1 text-[9px] text-zinc-500 font-mono">Restrict it to one repository with Contents: Read and write. It stays only in this extension.</p>
                 </div>
                 <div>
                   <label className="text-[10px] text-zinc-400 block mb-1 font-mono">Repository Path</label>

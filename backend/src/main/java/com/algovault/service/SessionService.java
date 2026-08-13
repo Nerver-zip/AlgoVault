@@ -220,9 +220,9 @@ public class SessionService {
                 zs.setFocusScore(request.getFocusScore() != null ? request.getFocusScore() : 100.0);
                 zs.setTimeSpentSeconds(request.getTimeSpentSeconds() != null ? request.getTimeSpentSeconds() : 0);
                 
-                String g = zs.getGrade();
-                boolean isVerified = "S_PLUS".equals(g) || "S".equals(g) || "A".equals(g) || "B".equals(g);
-                zs.setIsVerified(isVerified);
+                // Browser telemetry is user-controlled. It may inform private
+                // coaching, but it must never be represented as verified.
+                zs.setIsVerified(false);
                 
                 zs.setReason(request.getReason());
                 zs.setSolvedAt(submittedAt);

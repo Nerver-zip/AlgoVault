@@ -1,12 +1,20 @@
 import { BACKEND_URL } from "../constants"
-import { getJwtToken, getUsername, clearJwtToken } from "../storage"
+import { getJwtToken, clearJwtToken } from "../storage"
 import type { ActiveSession, DashboardData, PredictionResult, RevisionQueueItem, SessionData, WeaknessSnapshot } from "../types"
 
-export const exchangeGithubCode = async (code: string) => {
+export const getGithubOAuthState = async (): Promise<string> => {
+  const res = await fetch(`${BACKEND_URL}/api/auth/github-state`)
+  if (!res.ok) throw new Error("Could not start secure GitHub authorization")
+  const payload = await res.json()
+  if (!payload?.state || typeof payload.state !== "string") throw new Error("Invalid OAuth state response")
+  return payload.state
+}
+
+export const exchangeGithubCode = async (code: string, state: string, codeVerifier: string, redirectUri: string) => {
   const res = await fetch(`${BACKEND_URL}/api/auth/github-exchange`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code })
+    body: JSON.stringify({ code, state, codeVerifier, redirectUri })
   });
   if (!res.ok) {
     const errorMsg = await res.text().catch(() => "");
@@ -15,38 +23,42 @@ export const exchangeGithubCode = async (code: string) => {
   return res.json();
 }
 
-// Older callers still consume a few untyped backend endpoints. Typed endpoint
-// wrappers should opt in explicitly while this preserves their compatibility.
+export const authenticateGithubToken = async (token: string) => {
+  const res = await fetch(`${BACKEND_URL}/api/auth/github-token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token })
+  })
+  if (!res.ok) throw new Error("GitHub token verification failed")
+  return res.json() as Promise<{ token: string; githubToken: string; username: string }>
+}
+
+// Every API request requires the JWT issued after server-verified GitHub OAuth.
 async function backendFetch<T = any>(path: string, init: RequestInit = {}): Promise<T> {
   const jwt = await getJwtToken()
-  const username = await getUsername()
   const headers = new Headers(init.headers)
   headers.set("Content-Type", headers.get("Content-Type") || "application/json")
 
-  if (jwt) {
-    headers.set("Authorization", `Bearer ${jwt}`)
-  } else if (username) {
-    headers.set("Authorization", `Bearer ${await getLocalToken(username)}`)
-  }
+  if (!jwt) throw new Error("Connect GitHub in Settings before using cloud features.")
+  headers.set("Authorization", `Bearer ${jwt}`)
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 15000);
 
-  const res = await fetch(`${BACKEND_URL}${path}`, {
-    ...init,
-    headers,
-    signal: controller.signal
-  })
-  clearTimeout(timeoutId);
+  let res: Response
+  try {
+    res = await fetch(`${BACKEND_URL}${path}`, {
+      ...init,
+      headers,
+      signal: controller.signal
+    })
+  } finally {
+    clearTimeout(timeoutId)
+  }
 
   if (res.status === 401) {
     await clearJwtToken()
-    localToken = null
-    localTokenUsername = null
-    if (username) {
-      return backendFetch(path, init)
-    }
-    throw new Error("Open LeetCode and choose the account you want to sync first.")
+    throw new Error("Your session expired. Reconnect GitHub in Settings.")
   }
 
   if (!res.ok) {
@@ -96,30 +108,7 @@ export const addToVault = async (payload: Record<string, any>) => {
   })
 }
 
-export const startSession = async (mode = "PRACTICE"): Promise<ActiveSession> => {
-  return backendFetch<ActiveSession>("/api/sessions/start", {
-    method: "POST",
-    body: JSON.stringify({ mode })
-  })
-}
-
-export const fetchCurrentSession = async (): Promise<ActiveSession | null> => backendFetch<ActiveSession | null>("/api/sessions/current")
-
 export const fetchAllSessions = async (): Promise<SessionData[]> => backendFetch<SessionData[]>("/api/sessions/all")
-
-export const sendSessionEvent = async (payload: Record<string, unknown>): Promise<ActiveSession | null> => {
-  return backendFetch<ActiveSession | null>("/api/sessions/event", {
-    method: "POST",
-    body: JSON.stringify(payload)
-  })
-}
-
-export const sendSessionHeartbeat = async (payload: Record<string, unknown>): Promise<ActiveSession | null> => {
-  return backendFetch<ActiveSession | null>("/api/sessions/heartbeat", {
-    method: "POST",
-    body: JSON.stringify(payload)
-  })
-}
 
 export const sendSubmissionResult = async (payload: Record<string, unknown>): Promise<ActiveSession | null> => {
   return backendFetch<ActiveSession | null>("/api/sessions/submission", {
@@ -132,12 +121,6 @@ export const sendSelfReport = async (payload: Record<string, any>) => {
   return backendFetch("/api/sessions/self-report", {
     method: "POST",
     body: JSON.stringify(payload)
-  })
-}
-
-export const endSession = async (): Promise<ActiveSession | null> => {
-  return backendFetch<ActiveSession | null>("/api/sessions/end", {
-    method: "POST"
   })
 }
 
@@ -168,23 +151,15 @@ export const updateSettings = async (preferences: Record<string, any>) => {
   })
 }
 
+export const logout = async (): Promise<void> => {
+  try {
+    await backendFetch("/api/auth/logout", { method: "POST" })
+  } finally {
+    await clearJwtToken()
+  }
+}
+
 export const exportUserData = async (): Promise<Blob> => {
   const data = await backendFetch("/api/export/json")
   return new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
-}
-let localToken: string | null = null
-let localTokenUsername: string | null = null
-
-async function getLocalToken(username: string) {
-  if (localToken && localTokenUsername === username) return localToken
-  const response = await fetch(`${BACKEND_URL}/api/auth/extension-login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username })
-  })
-  if (!response.ok) throw new Error(await response.text().catch(() => "Unable to connect your local profile."))
-  const payload = await response.json()
-  localToken = payload.token
-  localTokenUsername = username
-  return payload.token as string
 }

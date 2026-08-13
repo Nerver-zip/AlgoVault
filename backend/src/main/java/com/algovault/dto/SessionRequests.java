@@ -24,6 +24,7 @@ public class SessionRequests {
         @Size(max = 200)
         private String title;
         private LocalDateTime timestamp;
+        @Size(max = 25)
         private Map<String, Object> metadata;
     }
 
@@ -56,10 +57,13 @@ public class SessionRequests {
         
         // Zenith Mode Telemetry
         private Boolean isZenith;
+        @Pattern(regexp = "^(S_PLUS|S|A|B|C|D|F)$")
         private String grade;
         private Double focusScore;
         private Integer timeSpentSeconds;
+        @Size(max = 500)
         private String reason;
+        @Size(max = 200000)
         private String codeSubmitted;
     }
 

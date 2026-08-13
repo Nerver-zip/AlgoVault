@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -8,9 +6,7 @@ services:
     environment:
       POSTGRES_DB: algovault
       POSTGRES_USER: algovault
-      POSTGRES_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-algovaultpass}
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?set SPRING_DATASOURCE_PASSWORD in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -23,8 +19,6 @@ services:
     image: redis:7-alpine
     container_name: algovault-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -42,12 +36,15 @@ services:
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/algovault
       SPRING_DATASOURCE_USERNAME: algovault
-      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-algovaultpass}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?set SPRING_DATASOURCE_PASSWORD in .env}
       SPRING_REDIS_HOST: redis
       JAVA_TOOL_OPTIONS: "-Xmx256m -XX:+UseG1GC"
-      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-Ov23liTftGjfEU3BuSwX}
-      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-77d4d5e03d71a049bd6992accdebecb6cc94238b}
-      JWT_SECRET: ${JWT_SECRET:-supersecretjwtkeythatisatleast32characterslong12345}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:?set GITHUB_CLIENT_ID in .env}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:?set GITHUB_CLIENT_SECRET in .env}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_ISSUER: ${JWT_ISSUER:-algovault-api}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-algovault-extension}
+      JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-3600000}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-chrome-extension://nglebofiomebgndkkdecnmolafjdphhf}
     depends_on:
       postgres:

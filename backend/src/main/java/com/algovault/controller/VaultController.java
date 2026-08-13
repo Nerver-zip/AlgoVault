@@ -6,6 +6,7 @@ import com.algovault.service.VaultService;
 import com.algovault.service.UserContextService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -14,13 +15,15 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/vault")
 @RequiredArgsConstructor
+@Validated
 public class VaultController {
 
     private final VaultService vaultService;
     private final UserContextService userContextService;
 
     @GetMapping
-    public ResponseEntity<List<VaultEntry>> getVault(HttpServletRequest request, @RequestParam(required = false) String query) {
+    public ResponseEntity<List<VaultEntry>> getVault(HttpServletRequest request,
+            @RequestParam(required = false) @jakarta.validation.constraints.Size(max = 200) String query) {
         User user = userContextService.resolveUser(request);
         return ResponseEntity.ok(vaultService.searchVault(user.getId(), query));
     }

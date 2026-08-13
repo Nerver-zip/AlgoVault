@@ -656,6 +656,11 @@ export const Dashboard = () => {
       }
     })
     const byDay = new Map(days.map((day) => [day.key, day]))
+    const daySolvedSlugs = new Map<string, Set<string>>()
+    for (const day of days) {
+      daySolvedSlugs.set(day.key, new Set<string>())
+    }
+
     const activeSessionSlug = apseSession?.slug
     for (const session of sessions) {
       if (activeSessionSlug && (String(session.id) === activeSessionSlug || (session as any).slug === activeSessionSlug)) continue
@@ -674,37 +679,55 @@ export const Dashboard = () => {
         continue
       }
       const date = new Date(log.ts)
-      const bucket = byDay.get(dateKey(date))
+      const key = dateKey(date)
+      const bucket = byDay.get(key)
       if (!bucket) continue
       const logSecs = Number(log.actSecs ?? log.activeSecs ?? log.focusSeconds ?? 0)
       bucket.focusSeconds += Math.max(0, logSecs)
       bucket.sessions += 1
-      if (log.solved) bucket.solves += 1
+      if ((log.solved || log.isSolved) && log.slug) {
+        daySolvedSlugs.get(key)?.add(log.slug)
+      }
     }
 
     if (apseSession && clocks.activeSeconds > 0) {
       const started = new Date(apseSession.tElapsedStart || Date.now())
-      const bucket = byDay.get(dateKey(started)) ?? byDay.get(today)
+      const key = dateKey(started) ?? today
+      const bucket = byDay.get(key) ?? byDay.get(today)
       if (bucket) {
         bucket.focusSeconds += clocks.activeSeconds
         bucket.sessions += 1
-        if (clocks.isSolved) bucket.solves += 1
+        if (clocks.isSolved && apseSession.slug) {
+          daySolvedSlugs.get(key)?.add(apseSession.slug)
+        }
       }
     }
+
     for (const solve of data?.recentSolves ?? []) {
       const solvedAt = parseDate(solve.solvedAt)
       if (!solvedAt) continue
-      const bucket = byDay.get(dateKey(solvedAt))
-      if (bucket) bucket.solves += 1
+      const key = dateKey(solvedAt)
+      if (solve.titleSlug) {
+        daySolvedSlugs.get(key)?.add(solve.titleSlug)
+      }
     }
+
+    for (const day of days) {
+      const solvedSet = daySolvedSlugs.get(day.key)
+      day.solves = solvedSet ? solvedSet.size : 0
+    }
+
     const todayActivity = byDay.get(today)
-    if (todayActivity && data?.todaySolves) todayActivity.solves = Math.max(todayActivity.solves, data.todaySolves)
+    if (todayActivity && data?.todaySolves) {
+      todayActivity.solves = Math.max(todayActivity.solves, data.todaySolves)
+    }
+
     const weekFocusSeconds = days.reduce((sum, day) => sum + day.focusSeconds, 0)
     const weekSolves = days.reduce((sum, day) => sum + day.solves, 0)
     const weekSessions = days.reduce((sum, day) => sum + day.sessions, 0)
     const strongestDay = [...days].sort((a, b) => b.focusSeconds - a.focusSeconds)[0]
     return { days, todayActivity, weekFocusSeconds, weekSolves, weekSessions, strongestDay }
-  }, [activeSeconds, apseSession, clocks.isRunning, data?.recentSolves, data?.todaySolves, localLogs, sessions, today])
+  }, [apseSession, clocks.activeSeconds, clocks.isSolved, data?.recentSolves, data?.todaySolves, localLogs, sessions, today])
 
   const primaryActionHref = primaryAction.titleSlug ? `https://leetcode.com/problems/${primaryAction.titleSlug}/` : undefined
   const maxFocus = Math.max(1, ...activity.days.map((day) => day.focusSeconds))

@@ -1,7 +1,8 @@
-import { exchangeGithubCode } from "./backend";
+import { exchangeGithubCode, getGithubOAuthState } from "./backend";
 
-export const GITHUB_CLIENT_ID = process.env.PLASMO_PUBLIC_GITHUB_CLIENT_ID || 'Ov23liTftGjfEU3BuSwX';
-export const GITHUB_CLIENT_SECRET = process.env.PLASMO_PUBLIC_GITHUB_CLIENT_SECRET || '77d4d5e03d71a049bd6992accdebecb6cc94238b';
+// Client IDs identify an OAuth app and are public by design. The client
+// secret is deliberately backend-only and must never be bundled here.
+export const GITHUB_CLIENT_ID = process.env.PLASMO_PUBLIC_GITHUB_CLIENT_ID || '';
 
 export interface GithubUser {
   login: string;
@@ -18,6 +19,20 @@ export interface GithubRepoItem {
   private: boolean;
   html_url: string;
 }
+
+const base64Url = (bytes: Uint8Array): string => {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+};
+
+const createPkcePair = async (): Promise<{ verifier: string; challenge: string }> => {
+  const random = new Uint8Array(32);
+  crypto.getRandomValues(random);
+  const verifier = base64Url(random);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  return { verifier, challenge: base64Url(new Uint8Array(digest)) };
+};
 
 /**
  * Fetches authenticated user's profile from GitHub API.
@@ -183,10 +198,16 @@ export function getExtensionForLanguage(lang?: string): string {
  * Initiates the GitHub OAuth flow using the Chrome Identity API,
  * retrieves the authorization code, and exchanges it via the backend.
  */
-export async function authenticateGithub(): Promise<{ ok: boolean; token?: string; message?: string }> {
+export async function authenticateGithub(): Promise<{ ok: boolean; token?: string; jwt?: string; message?: string }> {
   try {
+    if (!GITHUB_CLIENT_ID) return { ok: false, message: "GitHub OAuth client ID is not configured." };
     const redirectUri = chrome.identity.getRedirectURL();
-    const authUrl = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=repo`;
+    const state = await getGithubOAuthState();
+    const pkce = await createPkcePair();
+    // `public_repo` is intentionally narrower than GitHub's broad `repo`
+    // scope. A private repository requires a user-created fine-grained token
+    // restricted to that specific repository.
+    const authUrl = `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(GITHUB_CLIENT_ID)}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=public_repo&state=${encodeURIComponent(state)}&code_challenge=${encodeURIComponent(pkce.challenge)}&code_challenge_method=S256`;
     
     return new Promise((resolve) => {
       chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true }, async (responseUrl) => {
@@ -197,14 +218,18 @@ export async function authenticateGithub(): Promise<{ ok: boolean; token?: strin
         try {
           const urlParams = new URLSearchParams(new URL(responseUrl).search);
           const code = urlParams.get('code');
+          const returnedState = urlParams.get('state');
           if (!code) {
             return resolve({ ok: false, message: "No authorization code returned from GitHub" });
           }
+          if (returnedState !== state) {
+            return resolve({ ok: false, message: "OAuth state validation failed. Please try again." });
+          }
 
-          // Send authorization code to backend to exchange server-side for access token
-          const res = await exchangeGithubCode(code);
-          if (res.token) {
-            resolve({ ok: true, token: res.token });
+          // The backend validates both the authorization code and GitHub identity.
+          const res = await exchangeGithubCode(code, state, pkce.verifier, redirectUri);
+          if (res.token && res.githubToken) {
+            resolve({ ok: true, token: res.githubToken, jwt: res.token });
           } else {
             resolve({ ok: false, message: res.error || "Backend did not return a valid token" });
           }
@@ -217,5 +242,3 @@ export async function authenticateGithub(): Promise<{ ok: boolean; token?: strin
     return { ok: false, message: e.message || "Failed to start OAuth flow" };
   }
 }
-
-

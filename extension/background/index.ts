@@ -4,13 +4,8 @@ import { commitToGithub, getExtensionForLanguage } from "../lib/api/github"
 import { type LeetCodeRegion } from "../lib/api/entranthub"
 import {
   fetchPrediction,
-  fetchCurrentSession,
   sendSelfReport,
-  sendSessionEvent,
-  sendSessionHeartbeat,
   sendSubmissionResult,
-  startSession,
-  endSession,
   fetchContests,
   syncLeetcode,
 
@@ -467,70 +462,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "get_solved_problem_slugs") {
     getSolvedProblemSlugs()
       .then((data) => sendResponse({ ok: true, data }))
-      .catch((err) => sendResponse({ ok: false, error: err.message }))
-    return true
-  }
-
-  if (message.action === "session_start") {
-    // Forward legacy session_start to APSE v2
-    const slug = message.slug || message.titleSlug
-    if (slug) {
-      const now = Date.now()
-      const newSession = createSession(slug, sender.tab?.id || null, now)
-      storage.set(ACTIVE_SESSION_KEY, newSession).then(() => {
-        sendResponse({ ok: true, data: newSession })
-      })
-    } else {
-      sendResponse({ ok: true })
-    }
-    return true
-  }
-
-  if (message.action === "session_pause") {
-    storage.get<any>(ACTIVE_SESSION_KEY).then(async (session) => {
-      if (session && session.st === "RUNNING") {
-        const updated = transitionSession(session, "PAUSED", "MANUAL", Date.now())
-        await storage.set(ACTIVE_SESSION_KEY, updated)
-        sendResponse({ ok: true, data: updated })
-      } else {
-        sendResponse({ ok: true })
-      }
-    })
-    return true
-  }
-
-  if (message.action === "session_resume") {
-    storage.get<any>(ACTIVE_SESSION_KEY).then(async (session) => {
-      if (session && session.st === "PAUSED") {
-        const updated = transitionSession(session, "RUNNING", null, Date.now())
-        await storage.set(ACTIVE_SESSION_KEY, updated)
-        sendResponse({ ok: true, data: updated })
-      } else {
-        sendResponse({ ok: true })
-      }
-    })
-    return true
-  }
-
-  if (message.action === "session_end") {
-    storage.remove(ACTIVE_SESSION_KEY).then(() => {
-      sendResponse({ ok: true })
-    })
-    return true
-  }
-
-  if (message.action === "session_event") {
-    sendSessionEvent(message.payload)
-      .then((data) => sendResponse({ ok: true, data }))
-      .catch((err) => sendResponse({ ok: false, error: err.message }))
-    return true
-  }
-
-  if (message.action === "session_heartbeat") {
-    sendSessionHeartbeat(message.payload)
-      .then(async (data) => {
-        sendResponse({ ok: true, data })
-      })
       .catch((err) => sendResponse({ ok: false, error: err.message }))
     return true
   }

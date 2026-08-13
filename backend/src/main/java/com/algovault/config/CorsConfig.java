@@ -29,14 +29,14 @@ public class CorsConfig {
                     }
                 }
                 
-                // Always allow Chrome Extension origins for the companion extension
-                origins.add("chrome-extension://*");
+                // Allow explicit companion Chrome Extension origin
+                origins.add("chrome-extension://nglebofiomebgndkkdecnmolafjdphhf");
 
                 registry.addMapping("/api/**")
                         .allowedOriginPatterns(origins.toArray(new String[0]))
                         .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-                        .allowedHeaders("*")
-                        .allowCredentials(true);
+                        .allowedHeaders("Authorization", "Content-Type")
+                        .allowCredentials(false);
             }
         };
     }

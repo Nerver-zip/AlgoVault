@@ -3171,7 +3171,3 @@ impl SegmentTree {
 export function getPatternExhibit(patternId: string): PatternExhibitData {
   return PATTERN_EXHIBITS[patternId] || PATTERN_EXHIBITS["prefix-sum"]
 }
-
-export function getPatternLesson(patternId: string): PatternExhibitData | undefined {
-  return PATTERN_EXHIBITS[patternId]
-}
