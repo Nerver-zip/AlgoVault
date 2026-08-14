@@ -422,7 +422,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     isSyncing = true
     syncAbortController = new AbortController()
-    runSync(message.username, message.startOffset || 0, syncAbortController.signal)
+    runSync(message.username, message.startOffset || 0, syncAbortController.signal, Boolean(message.forceFullSync))
       .then((res) => {
         isSyncing = false
         sendResponse(res)
@@ -431,6 +431,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         isSyncing = false
         sendResponse({ ok: false, error: error.message })
       })
+    return true
+  }
+
+  if (message.action === "reset_sync_state") {
+    Promise.all([
+      storage.remove("algovault.latestSyncedSubmissionTimestamp"),
+      storage.remove("algovault.solvedSlugs"),
+      storage.remove("algovault.syncHasMore"),
+      storage.remove("algovault.lastSync")
+    ]).then(() => {
+      chrome.storage.local.set({ syncStatus: { status: "INFO", message: "Sync cache reset. Ready for clean full sync.", count: 0, subCount: 0 } })
+      sendResponse({ ok: true })
+    }).catch((err) => sendResponse({ ok: false, error: err.message }))
     return true
   }
 
@@ -729,12 +742,19 @@ async function updateGithubHelpReport(report: any) {
   })
 }
 
-async function runSync(username: string, startOffset = 0, signal?: AbortSignal) {
+async function runSync(username: string, startOffset = 0, signal?: AbortSignal, forceFullSync = false) {
   if (!username || !username.trim()) {
     throw new Error("LeetCode username is required")
   }
   const normalizedUsername = username.trim()
   await setUsername(normalizedUsername)
+
+  if (forceFullSync) {
+    await storage.remove("algovault.latestSyncedSubmissionTimestamp")
+    await storage.remove("algovault.solvedSlugs")
+    await storage.remove("algovault.syncHasMore")
+    startOffset = 0
+  }
 
   const updateStatus = (status: string, msg: string, count = 0, subCount = 0) => {
     chrome.storage.local.set({ syncStatus: { status, message: msg, count, subCount } })
@@ -742,7 +762,7 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal) 
 
   try {
     if (signal?.aborted) throw new Error("Sync stopped by user");
-    const isHistoryBackfill = startOffset > 0
+    const isHistoryBackfill = startOffset > 0 && !forceFullSync
     updateStatus("RUNNING", isHistoryBackfill ? `Syncing older history from submission ${startOffset + 1}...` : "Verifying LeetCode session...")
     const statusRes = await fetchUserStatus()
     const sessionUser = statusRes.data?.userStatus?.username
@@ -756,7 +776,7 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal) 
     const profile = profileRes.data.matchedUser
 
     const problems: any[] = []
-    const cachedSolved = await storage.get<any>("algovault.solvedSlugs")
+    const cachedSolved = forceFullSync ? null : await storage.get<any>("algovault.solvedSlugs")
     const isCacheValid = cachedSolved && cachedSolved.fetchedAt && (Date.now() - cachedSolved.fetchedAt < 15 * 60 * 1000) && Array.isArray(cachedSolved.rawProblems)
 
     if (isCacheValid) {
@@ -820,7 +840,7 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal) 
     const maxSubmissionsToSync = 400
 
     // Read the timestamp of the last successfully synced submission
-    const latestSyncedTs = await storage.get<number>("algovault.latestSyncedSubmissionTimestamp") || 0
+    const latestSyncedTs = forceFullSync ? 0 : ((await storage.get<number>("algovault.latestSyncedSubmissionTimestamp")) || 0)
     let foundAlreadySynced = false
 
     while (hasNext && rawSubs.length < maxSubmissionsToSync && !foundAlreadySynced) {

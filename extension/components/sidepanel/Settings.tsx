@@ -228,6 +228,21 @@ export const Settings = () => {
     setSyncStatus({ status: 'RUNNING', message: 'Starting sync...', count: 0, subCount: 0 });
   };
 
+  const handleForceFullSync = () => {
+    if (!username) {
+        alert("Please enter a username first.");
+        return;
+    }
+    chrome.runtime.sendMessage({ action: "sync_history", username, forceFullSync: true });
+    setSyncStatus({ status: 'RUNNING', message: 'Starting clean full sync (fetching all history from scratch)...', count: 0, subCount: 0 });
+  };
+
+  const handleResetSyncCache = () => {
+    chrome.runtime.sendMessage({ action: "reset_sync_state" }, () => {
+      setSyncStatus({ status: 'INFO', message: 'Sync checkpoint reset. Ready for fresh sync.', count: 0, subCount: 0 });
+    });
+  };
+
   const handleStopSync = () => {
     chrome.runtime.sendMessage({ action: "stop_sync" });
   };
@@ -505,10 +520,29 @@ export const Settings = () => {
         ) : (
             <button
                 onClick={handleSync}
-                className="w-full bg-[#dfa054] hover:bg-[#e5b376] text-zinc-950 font-semibold text-xs py-2 px-4 rounded-lg transition-colors border border-[#dfa054]/20 font-mono tracking-wider uppercase"
+                className="w-full bg-[#dfa054] hover:bg-[#e5b376] text-zinc-950 font-semibold text-xs py-2 px-4 rounded-lg transition-colors border border-[#dfa054]/20 font-mono tracking-wider uppercase cursor-pointer"
             >
-                Full Sync / Refresh
+                ⚡ Quick Sync / Incremental Refresh
             </button>
+        )}
+
+        {syncStatus?.status !== 'RUNNING' && (
+          <div className="mt-2.5 flex items-center gap-2">
+            <button
+              onClick={handleForceFullSync}
+              className="flex-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white font-mono text-[10px] py-1.5 px-3 rounded-lg border border-zinc-800 transition-colors uppercase tracking-wider flex items-center justify-center gap-1.5 cursor-pointer"
+              title="Pulls all historical submissions from scratch, ignoring cached checkpoints"
+            >
+              <span>🔄 Force Full Re-Sync</span>
+            </button>
+            <button
+              onClick={handleResetSyncCache}
+              className="px-2.5 py-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 font-mono text-[10px] rounded-lg border border-zinc-800 transition-colors cursor-pointer"
+              title="Reset sync checkpoint if data was wiped on server"
+            >
+              Reset Cache
+            </button>
+          </div>
         )}
 
         {syncStatus?.status === 'SUCCESS' && (

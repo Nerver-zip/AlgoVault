@@ -1,5 +1,5 @@
 import { BACKEND_URL } from "../constants"
-import { getJwtToken, clearJwtToken } from "../storage"
+import { getJwtToken, setJwtToken, clearJwtToken, getGithubPat } from "../storage"
 import type { ActiveSession, DashboardData, PredictionResult, RevisionQueueItem, SessionData, WeaknessSnapshot } from "../types"
 
 export const getGithubOAuthState = async (): Promise<string> => {
@@ -33,9 +33,28 @@ export const authenticateGithubToken = async (token: string) => {
   return res.json() as Promise<{ token: string; githubToken: string; username: string }>
 }
 
+async function trySilentRefresh(): Promise<string | null> {
+  const pat = await getGithubPat()
+  if (!pat) return null
+  try {
+    const authRes = await authenticateGithubToken(pat)
+    if (authRes?.token) {
+      await setJwtToken(authRes.token)
+      return authRes.token
+    }
+  } catch {
+    // Silent fail if network issue or invalid token
+  }
+  return null
+}
+
 // Every API request requires the JWT issued after server-verified GitHub OAuth.
 async function backendFetch<T = any>(path: string, init: RequestInit = {}): Promise<T> {
-  const jwt = await getJwtToken()
+  let jwt = await getJwtToken()
+  if (!jwt) {
+    jwt = await trySilentRefresh()
+  }
+
   const headers = new Headers(init.headers)
   headers.set("Content-Type", headers.get("Content-Type") || "application/json")
 
@@ -57,6 +76,32 @@ async function backendFetch<T = any>(path: string, init: RequestInit = {}): Prom
   }
 
   if (res.status === 401) {
+    // Attempt one automatic token refresh and retry
+    const freshJwt = await trySilentRefresh()
+    if (freshJwt) {
+      const retryHeaders = new Headers(init.headers)
+      retryHeaders.set("Content-Type", retryHeaders.get("Content-Type") || "application/json")
+      retryHeaders.set("Authorization", `Bearer ${freshJwt}`)
+      
+      const retryController = new AbortController();
+      const retryTimeoutId = setTimeout(() => retryController.abort(), 15000);
+      try {
+        const retryRes = await fetch(`${BACKEND_URL}${path}`, {
+          ...init,
+          headers: retryHeaders,
+          signal: retryController.signal
+        })
+        if (retryRes.ok) {
+          if (retryRes.status === 204) return null as T
+          const text = await retryRes.text().catch(() => "")
+          if (!text.trim()) return null as T
+          return JSON.parse(text) as T
+        }
+      } finally {
+        clearTimeout(retryTimeoutId)
+      }
+    }
+
     await clearJwtToken()
     throw new Error("Your session expired. Reconnect GitHub in Settings.")
   }

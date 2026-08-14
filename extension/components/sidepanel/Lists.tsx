@@ -3,14 +3,19 @@ import { Lightbulb } from "lucide-react"
 import { Card } from "../ui/Card"
 import { ProgressBar } from "../ui/ProgressBar"
 import { STUDY_LISTS } from "../../lib/study-lists"
-import { normalizeZerotracPayload } from "../../lib/zerotrac"
+import { buildZerotracRatingMap, normalizeZerotracPayload } from "../../lib/zerotrac"
+import { CompanyPrepView } from "./CompanyPrepView"
 import { motion, AnimatePresence } from "framer-motion"
 
+// Module-level in-memory cache for instant 0ms tab switching
+let memorySolvedSlugs: Set<string> = new Set()
+let memoryZerotracData: any[] = []
+
 export const Lists = () => {
-  const [activeList, setActiveList] = useState<"neetcode" | "striver" | "zerotrac">("neetcode")
-  const [solvedSlugs, setSolvedSlugs] = useState<Set<string>>(new Set())
-  const [zerotracData, setZerotracData] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
+  const [activeList, setActiveList] = useState<"neetcode" | "striver" | "zerotrac" | "companies">("neetcode")
+  const [solvedSlugs, setSolvedSlugs] = useState<Set<string>>(memorySolvedSlugs)
+  const [zerotracData, setZerotracData] = useState<any[]>(memoryZerotracData)
+  const [isSyncing, setIsSyncing] = useState(memoryZerotracData.length === 0)
 
   // ZeroTrac Filters state
   const [keyword, setKeyword] = useState("")
@@ -28,7 +33,7 @@ export const Lists = () => {
 
   // 1. Restore cached ZeroTrac & List state on mount
   useEffect(() => {
-    chrome.storage.local.get("algovault.zerotracState", (res) => {
+    chrome.storage.local.get(["algovault.zerotracState", "algovault.solvedSlugs", "zerotracData"], (res) => {
       const state = res?.["algovault.zerotracState"]
       if (state) {
         if (state.activeList) setActiveList(state.activeList)
@@ -41,6 +46,16 @@ export const Lists = () => {
         if (state.sortBy) setSortBy(state.sortBy)
         if (state.sortOrder) setSortOrder(state.sortOrder)
         if (typeof state.currentPage === "number") setCurrentPage(state.currentPage)
+      }
+
+      if (memorySolvedSlugs.size === 0 && res?.["algovault.solvedSlugs"] && Array.isArray(res["algovault.solvedSlugs"])) {
+        const s = new Set<string>(res["algovault.solvedSlugs"])
+        memorySolvedSlugs = s
+        setSolvedSlugs(s)
+      }
+      if (memoryZerotracData.length === 0 && res?.["zerotracData"] && Array.isArray(res["zerotracData"])) {
+        memoryZerotracData = res["zerotracData"]
+        setZerotracData(res["zerotracData"])
       }
     })
   }, [])
@@ -63,8 +78,8 @@ export const Lists = () => {
     })
   }, [activeList, keyword, contestNumber, ratingMin, ratingMax, statusFilter, questionIndexFilter, sortBy, sortOrder, currentPage])
 
+  // 3. Fetch fresh background updates without blocking the UI
   useEffect(() => {
-    setLoading(true)
     Promise.all([
       new Promise<string[]>((resolve) => {
         chrome.runtime.sendMessage({ action: "get_solved_problem_slugs" }, (res) => {
@@ -77,14 +92,20 @@ export const Lists = () => {
         })
       })
     ]).then(([slugs, zerotrac]) => {
-      setSolvedSlugs(new Set(slugs))
+      const s = new Set(slugs)
+      memorySolvedSlugs = s
+      memoryZerotracData = zerotrac
+      setSolvedSlugs(s)
       setZerotracData(zerotrac)
-      setLoading(false)
+      setIsSyncing(false)
     }).catch((err) => {
       console.error("Failed to load list details:", err)
-      setLoading(false)
+      setIsSyncing(false)
     })
   }, [])
+
+  // Pre-index ZeroTrac ratings by slug for instant company statistics calculation
+  const zerotracRatingMap = useMemo(() => buildZerotracRatingMap(zerotracData), [zerotracData])
 
   // Find NeetCode and Striver list objects
   const neetcodeList = STUDY_LISTS.find(l => l.id === "neetcode-150")
@@ -255,10 +276,6 @@ export const Lists = () => {
     return <span className="ml-1 text-[8px] text-[#dfa054]">{sortOrder === "asc" ? "▲" : "▼"}</span>
   }
 
-  if (loading) {
-    return <div className="p-4 text-center text-zinc-500 text-xs font-mono animate-pulse">Loading study sheets...</div>
-  }
-
   return (
     <div className="grid gap-3.5 font-sans select-none">
       <div className="flex items-end justify-between px-1">
@@ -270,25 +287,27 @@ export const Lists = () => {
       </div>
       {/* List Type Switcher */}
       <div className="flex bg-zinc-950 p-1 rounded-lg border border-zinc-800 shadow-inner">
-        {(["neetcode", "striver", "zerotrac"] as const).map((opt) => (
+        {(["neetcode", "striver", "zerotrac", "companies"] as const).map((opt) => (
           <button
             key={opt}
             onClick={() => {
               setActiveList(opt)
               setCurrentPage(1)
             }}
-            className={`flex-1 text-[10px] font-semibold py-2 rounded-md transition-all font-mono ${
+            className={`flex-1 text-[10px] font-semibold py-2 rounded-md transition-all font-mono cursor-pointer ${
               activeList === opt 
                 ? "bg-zinc-900 text-[#dfa054] border border-zinc-800/80 shadow" 
                 : "text-zinc-500 hover:text-zinc-300"
             }`}
           >
-            {opt === "neetcode" ? "NeetCode 150" : opt === "striver" ? "Striver SDE" : "ZeroTrac"}
+            {opt === "neetcode" ? "NeetCode 150" : opt === "striver" ? "Striver SDE" : opt === "zerotrac" ? "ZeroTrac" : "Companies"}
           </button>
         ))}
       </div>
 
-      {activeList !== "zerotrac" ? (
+      {activeList === "companies" ? (
+        <CompanyPrepView solvedSlugs={solvedSlugs} zerotracRatingMap={zerotracRatingMap} />
+      ) : activeList !== "zerotrac" ? (
         // NeetCode & Striver Lists Rendering
         <div className="grid gap-3.5">
           {nextStudyProblem && (
