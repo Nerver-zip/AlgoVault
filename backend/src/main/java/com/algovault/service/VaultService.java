@@ -26,6 +26,9 @@ public class VaultService {
 
     public VaultEntry saveEntry(Long userId, VaultEntry entry) {
         User user = userRepository.findById(userId).orElseThrow();
+        // POST is create-only. Never honour a client-supplied primary key: doing
+        // so lets a caller overwrite another user's row by changing `id`.
+        entry.setId(null);
         entry.setUser(user);
 
         if (entry.getProblem() != null && entry.getProblem().getTitleSlug() != null) {

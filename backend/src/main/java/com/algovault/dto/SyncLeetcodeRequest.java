@@ -13,12 +13,15 @@ public class SyncLeetcodeRequest {
     @jakarta.validation.Valid
     private ProfileInfo profile;
 
+    @Size(max = 5000)
     private List<@jakarta.validation.Valid ProblemInfo> solvedProblems;
+    @Size(max = 500)
     private List<@jakarta.validation.Valid SubmissionInfo> submissions;
 
     @jakarta.validation.Valid
     private ContestRankingInfo contestRanking;
 
+    @Size(max = 1000)
     private List<@jakarta.validation.Valid ContestHistoryInfo> contestHistory;
 
     @Data
@@ -41,6 +44,7 @@ public class SyncLeetcodeRequest {
         private String titleSlug;
         @Size(max = 50)
         private String difficulty;
+        @Size(max = 20)
         private List<@jakarta.validation.Valid TagInfo> topicTags;
     }
 

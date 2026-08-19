@@ -9,12 +9,10 @@
     "package": "plasmo package && node scripts/post-build.js"
   },
   "dependencies": {
-    "@plasmohq/messaging": "^0.6.2",
     "@plasmohq/storage": "^1.11.0",
     "canvas-confetti": "^1.9.4",
     "framer-motion": "^12.42.2",
     "lucide-react": "^0.395.0",
-    "plasmo": "0.89.2",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "recharts": "^2.12.7"
@@ -26,9 +24,10 @@
     "@types/react": "18.3.3",
     "@types/react-dom": "18.3.0",
     "autoprefixer": "^10.4.19",
-    "postcss": "^8.4.38",
+    "plasmo": "0.90.5",
+    "postcss": "8.5.26",
     "sharp": "^0.35.2",
-    "svgo": "^3.3.3",
+    "svgo": "3.3.4",
     "tailwindcss": "^3.4.4",
     "typescript": "5.4.5"
   },

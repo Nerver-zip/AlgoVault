@@ -1,16 +1,71 @@
 import React, { useEffect, useState, useMemo } from "react"
-import { Lightbulb } from "lucide-react"
+import { Lightbulb, RotateCcw, ExternalLink } from "lucide-react"
 import { Card } from "../ui/Card"
 import { ProgressBar } from "../ui/ProgressBar"
 import { STUDY_LISTS } from "../../lib/study-lists"
-import { normalizeZerotracPayload } from "../../lib/zerotrac"
+import { buildZerotracRatingMap, normalizeZerotracPayload } from "../../lib/zerotrac"
+import { CompanyPrepView } from "./CompanyPrepView"
 import { motion, AnimatePresence } from "framer-motion"
 
+// Module-level in-memory cache for instant 0ms tab switching
+let memorySolvedSlugs: Set<string> = new Set()
+let memoryZerotracData: any[] = []
+
+const extractSlugsFromStorage = (res: any): Set<string> => {
+  const slugs = new Set<string>()
+
+  // 1. Direct algovault.solvedSlugs
+  const solvedData = res?.["algovault.solvedSlugs"]
+  if (Array.isArray(solvedData)) {
+    for (const s of solvedData) if (s) slugs.add(String(s).toLowerCase().trim())
+  } else if (solvedData && typeof solvedData === "object") {
+    if (Array.isArray(solvedData.slugs)) {
+      for (const s of solvedData.slugs) if (s) slugs.add(String(s).toLowerCase().trim())
+    }
+    if (Array.isArray(solvedData.rawProblems)) {
+      for (const p of solvedData.rawProblems) {
+        if (p?.titleSlug) slugs.add(String(p.titleSlug).toLowerCase().trim())
+      }
+    }
+  }
+
+  // 2. Today snapshot solved
+  const todaySnap = res?.["algovault.todaySnapshot"]
+  if (todaySnap) {
+    if (Array.isArray(todaySnap.solved)) {
+      for (const s of todaySnap.solved) {
+        const slug = typeof s === "string" ? s : s?.slug || s?.titleSlug
+        if (slug) slugs.add(String(slug).toLowerCase().trim())
+      }
+    }
+    if (Array.isArray(todaySnap.data?.recentSubmissions)) {
+      for (const sub of todaySnap.data.recentSubmissions) {
+        if (sub?.titleSlug && (sub.statusDisplay === "Accepted" || sub.status === 10)) {
+          slugs.add(String(sub.titleSlug).toLowerCase().trim())
+        }
+      }
+    }
+  }
+
+  // 3. Local session logs
+  for (const [key, val] of Object.entries(res || {})) {
+    if (key.startsWith("algovault.logs.") && Array.isArray(val)) {
+      for (const log of val) {
+        if ((log.solved || log.isSolved) && log.slug) {
+          slugs.add(String(log.slug).toLowerCase().trim())
+        }
+      }
+    }
+  }
+
+  return slugs
+}
+
 export const Lists = () => {
-  const [activeList, setActiveList] = useState<"neetcode" | "striver" | "zerotrac">("neetcode")
-  const [solvedSlugs, setSolvedSlugs] = useState<Set<string>>(new Set())
-  const [zerotracData, setZerotracData] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
+  const [activeList, setActiveList] = useState<"neetcode" | "striver" | "zerotrac" | "companies">("neetcode")
+  const [solvedSlugs, setSolvedSlugs] = useState<Set<string>>(memorySolvedSlugs)
+  const [zerotracData, setZerotracData] = useState<any[]>(memoryZerotracData)
+  const [isSyncing, setIsSyncing] = useState(memoryZerotracData.length === 0)
 
   // ZeroTrac Filters state
   const [keyword, setKeyword] = useState("")
@@ -28,7 +83,7 @@ export const Lists = () => {
 
   // 1. Restore cached ZeroTrac & List state on mount
   useEffect(() => {
-    chrome.storage.local.get("algovault.zerotracState", (res) => {
+    chrome.storage.local.get(null, (res) => {
       const state = res?.["algovault.zerotracState"]
       if (state) {
         if (state.activeList) setActiveList(state.activeList)
@@ -41,6 +96,19 @@ export const Lists = () => {
         if (state.sortBy) setSortBy(state.sortBy)
         if (state.sortOrder) setSortOrder(state.sortOrder)
         if (typeof state.currentPage === "number") setCurrentPage(state.currentPage)
+      }
+
+      const cachedSlugs = extractSlugsFromStorage(res)
+      if (cachedSlugs.size > 0) {
+        memorySolvedSlugs = cachedSlugs
+        setSolvedSlugs(cachedSlugs)
+      }
+
+      const zerotracCache = res?.["zerotracData"] || res?.["algovault.zerotrac.data.v2"]
+      if (Array.isArray(zerotracCache) && zerotracCache.length > 0) {
+        memoryZerotracData = zerotracCache
+        setZerotracData(zerotracCache)
+        setIsSyncing(false)
       }
     })
   }, [])
@@ -63,8 +131,8 @@ export const Lists = () => {
     })
   }, [activeList, keyword, contestNumber, ratingMin, ratingMax, statusFilter, questionIndexFilter, sortBy, sortOrder, currentPage])
 
+  // 3. Fetch fresh background updates without blocking the UI
   useEffect(() => {
-    setLoading(true)
     Promise.all([
       new Promise<string[]>((resolve) => {
         chrome.runtime.sendMessage({ action: "get_solved_problem_slugs" }, (res) => {
@@ -77,27 +145,43 @@ export const Lists = () => {
         })
       })
     ]).then(([slugs, zerotrac]) => {
-      setSolvedSlugs(new Set(slugs))
-      setZerotracData(zerotrac)
-      setLoading(false)
+      if (slugs && slugs.length > 0) {
+        const merged = new Set(memorySolvedSlugs)
+        for (const s of slugs) if (s) merged.add(String(s).toLowerCase().trim())
+        memorySolvedSlugs = merged
+        setSolvedSlugs(merged)
+      }
+
+      if (zerotrac && zerotrac.length > 0) {
+        memoryZerotracData = zerotrac
+        setZerotracData(zerotrac)
+      }
+      setIsSyncing(false)
     }).catch((err) => {
       console.error("Failed to load list details:", err)
-      setLoading(false)
+      setIsSyncing(false)
     })
   }, [])
 
+  // Pre-index ZeroTrac ratings by slug for instant company statistics calculation
+  const zerotracRatingMap = useMemo(() => buildZerotracRatingMap(zerotracData), [zerotracData])
+
   // Find NeetCode and Striver list objects
-  const neetcodeList = STUDY_LISTS.find(l => l.id === "neetcode-150")
-  const striverList = STUDY_LISTS.find(l => l.id === "striver-sde")
+  const neetcodeList = STUDY_LISTS.find((l) => l.id === "neetcode-150")
+  const striverList = STUDY_LISTS.find((l) => l.id === "striver-sde")
 
   const currentStudyList = activeList === "neetcode" ? neetcodeList : striverList
-  const nextStudyProblem = currentStudyList?.problems.find((problem) => !solvedSlugs.has(problem.slug))
+  const nextStudyProblem = currentStudyList?.problems.find(
+    (problem) => !solvedSlugs.has(problem.slug.toLowerCase().trim())
+  )
 
   // Calculate solved stats for current study list
   const listStats = useMemo(() => {
     if (!currentStudyList) return { total: 0, solved: 0, percent: 0 }
     const total = currentStudyList.problems.length
-    const solved = currentStudyList.problems.filter(p => solvedSlugs.has(p.slug)).length
+    const solved = currentStudyList.problems.filter((p) =>
+      solvedSlugs.has(p.slug.toLowerCase().trim())
+    ).length
     const percent = total > 0 ? Math.round((solved / total) * 100) : 0
     return { total, solved, percent }
   }, [currentStudyList, solvedSlugs])
@@ -106,7 +190,7 @@ export const Lists = () => {
   const groupedProblems = useMemo(() => {
     if (!currentStudyList) return {}
     const groups: Record<string, typeof currentStudyList.problems> = {}
-    currentStudyList.problems.forEach(p => {
+    currentStudyList.problems.forEach((p) => {
       groups[p.topic] = groups[p.topic] || []
       groups[p.topic].push(p)
     })
@@ -117,7 +201,7 @@ export const Lists = () => {
   useEffect(() => {
     if (currentStudyList) {
       const initial: Record<string, boolean> = {}
-      currentStudyList.problems.forEach(p => {
+      currentStudyList.problems.forEach((p) => {
         initial[p.topic] = true
       })
       setExpandedTopics(initial)
@@ -127,7 +211,7 @@ export const Lists = () => {
   // Filter and sort ZeroTrac problems
   const filteredZerotrac = useMemo(() => {
     if (!zerotracData.length) return []
-    
+
     const filtered = zerotracData.filter((p) => {
       // 1. Rating Interval
       const rating = p.Rating || 0
@@ -135,7 +219,7 @@ export const Lists = () => {
 
       // 2. Keyword Match (Title or Slug)
       if (keyword) {
-        const query = keyword.toLowerCase()
+        const query = keyword.toLowerCase().trim()
         const titleMatch = p.Title && typeof p.Title === "string" && p.Title.toLowerCase().includes(query)
         const slugMatch = p.TitleSlug && typeof p.TitleSlug === "string" && p.TitleSlug.toLowerCase().includes(query)
         if (!titleMatch && !slugMatch) return false
@@ -143,14 +227,15 @@ export const Lists = () => {
 
       // 3. Contest ID/Number Match
       if (contestNumber) {
-        const query = contestNumber.toLowerCase()
+        const query = contestNumber.toLowerCase().trim()
         const contestMatch = p.ContestID_en && p.ContestID_en.toLowerCase().includes(query)
         const contestSlugMatch = p.ContestSlug && p.ContestSlug.toLowerCase().includes(query)
         if (!contestMatch && !contestSlugMatch) return false
       }
 
       // 4. Status Check
-      const isSolved = solvedSlugs.has(p.TitleSlug)
+      const cleanSlug = String(p.TitleSlug || "").toLowerCase().trim()
+      const isSolved = solvedSlugs.has(cleanSlug)
       if (statusFilter === "open" && isSolved) return false
       if (statusFilter === "done" && !isSolved) return false
 
@@ -225,7 +310,7 @@ export const Lists = () => {
   }, [activePage, totalPages])
 
   const toggleTopic = (topic: string) => {
-    setExpandedTopics(prev => ({ ...prev, [topic]: !prev[topic] }))
+    setExpandedTopics((prev) => ({ ...prev, [topic]: !prev[topic] }))
   }
 
   const handleResetFilters = () => {
@@ -242,21 +327,12 @@ export const Lists = () => {
 
   const handleSort = (field: "rating" | "index" | "contest" | "title" | "id") => {
     if (sortBy === field) {
-      setSortOrder(prev => prev === "asc" ? "desc" : "asc")
+      setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"))
     } else {
       setSortBy(field)
       setSortOrder("desc")
     }
     setCurrentPage(1)
-  }
-
-  const renderSortIndicator = (field: "rating" | "index" | "contest" | "title" | "id") => {
-    if (sortBy !== field) return null
-    return <span className="ml-1 text-[8px] text-[#dfa054]">{sortOrder === "asc" ? "▲" : "▼"}</span>
-  }
-
-  if (loading) {
-    return <div className="p-4 text-center text-zinc-500 text-xs font-mono animate-pulse">Loading study sheets...</div>
   }
 
   return (
@@ -268,27 +344,30 @@ export const Lists = () => {
         </div>
         <span className="text-[10px] font-mono text-zinc-600">{solvedSlugs.size} solved</span>
       </div>
+
       {/* List Type Switcher */}
       <div className="flex bg-zinc-950 p-1 rounded-lg border border-zinc-800 shadow-inner">
-        {(["neetcode", "striver", "zerotrac"] as const).map((opt) => (
+        {(["neetcode", "striver", "zerotrac", "companies"] as const).map((opt) => (
           <button
             key={opt}
             onClick={() => {
               setActiveList(opt)
               setCurrentPage(1)
             }}
-            className={`flex-1 text-[10px] font-semibold py-2 rounded-md transition-all font-mono ${
+            className={`flex-1 text-[10px] font-semibold py-2 rounded-md transition-all font-mono cursor-pointer ${
               activeList === opt 
                 ? "bg-zinc-900 text-[#dfa054] border border-zinc-800/80 shadow" 
                 : "text-zinc-500 hover:text-zinc-300"
             }`}
           >
-            {opt === "neetcode" ? "NeetCode 150" : opt === "striver" ? "Striver SDE" : "ZeroTrac"}
+            {opt === "neetcode" ? "NeetCode 150" : opt === "striver" ? "Striver SDE" : opt === "zerotrac" ? "ZeroTrac" : "Companies"}
           </button>
         ))}
       </div>
 
-      {activeList !== "zerotrac" ? (
+      {activeList === "companies" ? (
+        <CompanyPrepView solvedSlugs={solvedSlugs} zerotracRatingMap={zerotracRatingMap} />
+      ) : activeList !== "zerotrac" ? (
         // NeetCode & Striver Lists Rendering
         <div className="grid gap-3.5">
           {nextStudyProblem && (
@@ -301,7 +380,9 @@ export const Lists = () => {
                 <div className="min-w-0">
                   <div className="panel-label tracking-widest text-[#dfa054]/80">Continue {currentStudyList?.name}</div>
                   <div className="mt-1.5 truncate text-lg font-bold text-zinc-50 drop-shadow-md">{nextStudyProblem.title}</div>
-                  <div className="mt-1.5 text-[10px] text-zinc-400 font-medium uppercase tracking-wider">{nextStudyProblem.topic} <span className="mx-1.5 text-zinc-600">•</span> {listStats.solved}/{listStats.total} complete</div>
+                  <div className="mt-1.5 text-[10px] text-zinc-400 font-medium uppercase tracking-wider">
+                    {nextStudyProblem.topic} <span className="mx-1.5 text-zinc-600">•</span> {listStats.solved}/{listStats.total} complete
+                  </div>
                 </div>
                 <a
                   href={`https://leetcode.com/problems/${nextStudyProblem.slug}/`}
@@ -314,6 +395,7 @@ export const Lists = () => {
               </div>
             </Card>
           )}
+
           {/* Progress Header */}
           <Card className="p-4 bg-[#111] border border-zinc-900/80 shadow-inner">
             <div className="flex justify-between items-center mb-3">
@@ -329,7 +411,9 @@ export const Lists = () => {
           <div className="flex flex-col gap-2.5">
             {Object.entries(groupedProblems).map(([topic, problems]) => {
               const isExpanded = !!expandedTopics[topic]
-              const topicSolved = problems.filter(p => solvedSlugs.has(p.slug)).length
+              const topicSolved = problems.filter((p) =>
+                solvedSlugs.has(p.slug.toLowerCase().trim())
+              ).length
               const topicTotal = problems.length
               const isTopicComplete = topicSolved === topicTotal
 
@@ -347,7 +431,7 @@ export const Lists = () => {
                   {/* Topic Header Toggle */}
                   <button
                     onClick={() => toggleTopic(topic)}
-                    className="w-full px-4 py-4 flex justify-between items-center hover:bg-white/5 transition-colors outline-none focus-visible:bg-white/5"
+                    className="w-full px-4 py-4 flex justify-between items-center hover:bg-white/5 transition-colors outline-none focus-visible:bg-white/5 cursor-pointer"
                   >
                     <div className="flex items-center gap-2">
                       <span className={`text-[9px] transition-transform duration-300 cubic-bezier(0.2, 0.8, 0.2, 1) ${isExpanded ? "rotate-90 text-[#dfa054]" : "rotate-0 text-zinc-500"}`}>▶</span>
@@ -374,13 +458,14 @@ export const Lists = () => {
                         className="px-4 pb-4 pt-1 flex flex-col gap-1.5 bg-gradient-to-b from-[#161616] to-[#0f0f0f] overflow-hidden"
                       >
                         {problems.map((p, idx) => {
-                          const isSolved = solvedSlugs.has(p.slug)
-                          const difficulty = (p.difficulty || "medium").toLowerCase()
+                          const cleanSlug = p.slug.toLowerCase().trim()
+                          const isSolved = solvedSlugs.has(cleanSlug)
+                          const diff = p.difficulty || "Medium"
                           
                           let diffColor = "text-amber-400 bg-amber-500/10 border-amber-500/20"
-                          if (difficulty === "easy") {
+                          if (diff === "Easy") {
                             diffColor = "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                          } else if (difficulty === "hard") {
+                          } else if (diff === "Hard") {
                             diffColor = "text-red-400 bg-red-500/10 border-red-500/20"
                           }
                           
@@ -434,7 +519,7 @@ export const Lists = () => {
                                   </a>
                                 )}
                                 <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-widest ${diffColor}`}>
-                                  {difficulty}
+                                  {diff}
                                 </span>
                               </div>
                             </motion.div>
@@ -635,7 +720,7 @@ export const Lists = () => {
                   <option value="id">ID {sortBy === "id" ? (sortOrder === "asc" ? "↑" : "↓") : ""}</option>
                 </select>
                 <button
-                  onClick={() => setSortOrder(prev => prev === "asc" ? "desc" : "asc")}
+                  onClick={() => setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"))}
                   className="text-xs text-zinc-400 hover:text-zinc-200 px-1 py-0.5 rounded border border-zinc-800 bg-zinc-950 font-mono"
                   title="Toggle sort direction"
                 >
@@ -653,143 +738,133 @@ export const Lists = () => {
               <div className="flex flex-col gap-2">
                 {/* Modern Card List for Problems */}
                 <div className="flex flex-col gap-1.5">
-                  {paginatedItems.map((p, idx) => {
-                    const isSolved = solvedSlugs.has(p.TitleSlug)
+                  {paginatedItems.map((p) => {
+                    const cleanSlug = String(p.TitleSlug || "").toLowerCase().trim()
+                    const isSolved = solvedSlugs.has(cleanSlug)
                     const ratingVal = Math.round(p.Rating || 0)
                     const problemId = p.ID || p.QuestionID || (p as any).id || (p as any).questionId
 
                     // Color code ZeroTrac rating badges:
-                    let ratingBg = "bg-emerald-500/10 text-emerald-400 border-emerald-500/25"
-                    if (ratingVal >= 2300) ratingBg = "bg-purple-500/15 text-purple-300 border-purple-500/30"
-                    else if (ratingVal >= 2000) ratingBg = "bg-rose-500/12 text-rose-400 border-rose-500/25"
-                    else if (ratingVal >= 1700) ratingBg = "bg-orange-500/12 text-orange-400 border-orange-500/25"
-                    else if (ratingVal >= 1400) ratingBg = "bg-amber-500/12 text-amber-400 border-amber-500/25"
-
-                    const indexStr = p.ProblemIndex ? String(p.ProblemIndex).trim() : ""
-                    const normalizedIndex = indexStr.replace("Q", "").replace(/^0+/, "")
-                    let indexBadge = "bg-zinc-800/80 text-zinc-400 border-zinc-700/50"
-                    if (normalizedIndex === "1") indexBadge = "bg-emerald-950/40 text-emerald-400 border-emerald-500/30"
-                    else if (normalizedIndex === "2") indexBadge = "bg-amber-950/40 text-amber-400 border-amber-500/30"
-                    else if (normalizedIndex === "3") indexBadge = "bg-orange-950/40 text-orange-400 border-orange-500/30"
-                    else if (normalizedIndex === "4") indexBadge = "bg-rose-950/40 text-rose-400 border-rose-500/30"
+                    let ratingBadgeColor = "text-emerald-400 border-emerald-500/20 bg-emerald-500/10"
+                    if (ratingVal >= 2300) {
+                      ratingBadgeColor = "text-purple-400 border-purple-500/20 bg-purple-500/10"
+                    } else if (ratingVal >= 2000) {
+                      ratingBadgeColor = "text-rose-400 border-rose-500/20 bg-rose-500/10"
+                    } else if (ratingVal >= 1700) {
+                      ratingBadgeColor = "text-orange-400 border-orange-500/20 bg-orange-500/10"
+                    } else if (ratingVal >= 1400) {
+                      ratingBadgeColor = "text-amber-400 border-amber-500/20 bg-amber-500/10"
+                    }
 
                     return (
-                      <Card 
-                        key={p.TitleSlug || idx}
-                        className={`p-2.5 transition-all duration-200 border group ${
+                      <motion.div 
+                        key={p.TitleSlug || p.ID}
+                        whileHover={{ scale: 1.008 }}
+                        transition={{ type: "spring", stiffness: 400, damping: 25 }}
+                        className={`flex items-center justify-between p-3 rounded-xl border transition-all ${
                           isSolved 
-                            ? "bg-zinc-950/40 border-zinc-900 opacity-75 hover:opacity-100" 
-                            : "bg-zinc-950/70 border-zinc-800/70 hover:border-zinc-700 hover:bg-zinc-900/40 shadow-sm"
+                            ? "bg-zinc-950/40 border-zinc-850/60 opacity-80" 
+                            : "bg-zinc-950/80 border-zinc-800/80 hover:border-zinc-700 shadow-sm"
                         }`}
                       >
-                        <div className="flex items-center justify-between gap-2.5">
-                          {/* Left: Question Number + Checkbox + Title + Meta */}
-                          <div className="flex items-center gap-2 min-w-0 flex-1">
-                            {/* Question ID / Number on far left (only rendered when ID exists) */}
-                            {problemId ? (
-                              <span 
-                                className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded text-center shrink-0 min-w-[36px] tabular-nums bg-zinc-900 text-[#dfa054] border border-[#dfa054]/30"
-                                title={`Problem #${problemId}`}
-                              >
-                                #{problemId}
-                              </span>
-                            ) : null}
+                        <div className="flex items-center gap-3 min-w-0 pr-2">
+                          <span 
+                            className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-all ${
+                              isSolved 
+                                ? "bg-emerald-500 border-emerald-500 text-zinc-950 shadow-[0_0_8px_rgba(16,185,129,0.5)]" 
+                                : "border-zinc-700 bg-zinc-900 text-transparent"
+                            }`}
+                          >
+                            {isSolved && (
+                              <svg className="w-2.5 h-2.5 drop-shadow-sm" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M5 13l4 4L19 7"></path>
+                              </svg>
+                            )}
+                          </span>
 
-                            {/* Solved Checkbox */}
-                            <span 
-                              className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 transition-all ${
-                                isSolved 
-                                  ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-400" 
-                                  : "border-zinc-800 bg-zinc-950 text-transparent group-hover:border-zinc-700"
-                              }`}
-                              title={isSolved ? "Solved" : "Unsolved"}
-                            >
-                              {isSolved && <span className="text-[9px] font-bold">✓</span>}
-                            </span>
-
-                            <div className="min-w-0 flex-1">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              {problemId && (
+                                <span className="text-[10px] text-zinc-500 font-mono shrink-0">#{problemId}</span>
+                              )}
                               <a
                                 href={`https://leetcode.com/problems/${p.TitleSlug}/`}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className={`truncate text-xs font-semibold hover:text-[#dfa054] transition-colors block ${
-                                  isSolved ? "text-zinc-500 line-through" : "text-zinc-100"
+                                className={`truncate text-[13px] font-semibold tracking-wide hover:underline ${
+                                  isSolved ? "text-zinc-400" : "text-zinc-100 hover:text-sky-300"
                                 }`}
-                                title={`Open ${p.Title} on LeetCode`}
                               >
                                 {p.Title}
                               </a>
-                              <div className="mt-0.5 flex items-center gap-1.5 text-[9.5px] font-mono text-zinc-500">
-                                <span className="truncate max-w-[150px]" title={p.ContestID_en}>
-                                  {p.ContestID_en || p.ContestSlug || "Contest"}
-                                </span>
-                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 mt-0.5 font-mono text-[9.5px] text-zinc-500">
+                              <span>{p.ContestID_en || "Contest"}</span>
+                              <span>•</span>
+                              <span className="text-zinc-400">{p.ProblemIndex || "Q"}</span>
                             </div>
                           </div>
-
-                          {/* Right: Index + Rating Pill */}
-                          <div className="flex items-center gap-2 shrink-0">
-                            {/* Question Index (Q1-Q4) */}
-                            <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border uppercase ${indexBadge}`}>
-                              {p.ProblemIndex || "Q?"}
-                            </span>
-
-                            {/* Elo Rating Badge */}
-                            <span className={`text-[10.5px] font-mono font-bold px-2 py-0.5 rounded-md border tabular-nums ${ratingBg}`}>
-                              {ratingVal}
-                            </span>
-                          </div>
                         </div>
-                      </Card>
+
+                        <div className="flex items-center gap-2 shrink-0 font-mono">
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${ratingBadgeColor}`}>
+                            ★ {ratingVal}
+                          </span>
+                          <a
+                            href={`https://leetcode.com/problems/${p.TitleSlug}/`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="p-1 rounded-lg text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 transition-colors"
+                            title="Open Problem on LeetCode"
+                          >
+                            <ExternalLink size={12} />
+                          </a>
+                        </div>
+                      </motion.div>
                     )
                   })}
                 </div>
 
-                {/* Compact Pagination Bar */}
-                <div className="flex flex-wrap items-center justify-between gap-2 bg-zinc-950/60 border border-zinc-800/80 p-2 px-3 rounded-xl font-mono text-[10px] text-zinc-400">
-                  <div className="flex items-center gap-1 shrink-0 select-none">
-                    <span>Showing <strong className="text-zinc-200">{Math.min(totalItems, (activePage - 1) * 15 + 1)}–{Math.min(totalItems, activePage * 15)}</strong> of {totalItems}</span>
-                  </div>
-                  
-                  {/* Page Navigation */}
-                  <div className="flex items-center gap-1">
-                    <button 
-                      onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                {/* Pagination Controls */}
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-between px-1 pt-2 font-mono text-xs text-zinc-400">
+                    <button
                       disabled={activePage === 1}
-                      className="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-300"
+                      onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                      className="px-2.5 py-1 rounded bg-zinc-900 border border-zinc-800 disabled:opacity-40 hover:bg-zinc-850 cursor-pointer disabled:cursor-not-allowed"
                     >
-                      ‹
+                      Previous
                     </button>
-                    
-                    {pageNumbers.map((page, idx) => {
-                      if (page === "...") {
-                        return <span key={idx} className="px-1 text-zinc-600 select-none">...</span>
-                      }
-                      const isCurrent = activePage === page
-                      return (
-                        <button
-                          key={idx}
-                          onClick={() => setCurrentPage(Number(page))}
-                          className={`px-2 py-0.5 rounded font-bold transition-all ${
-                            isCurrent 
-                              ? "bg-sky-500/20 border border-sky-500/40 text-sky-300" 
-                              : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
-                          }`}
-                        >
-                          {page}
-                        </button>
-                      )
-                    })}
 
-                    <button 
-                      onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                    <div className="flex items-center gap-1">
+                      {pageNumbers.map((num, i) =>
+                        typeof num === "number" ? (
+                          <button
+                            key={i}
+                            onClick={() => setCurrentPage(num)}
+                            className={`w-6 h-6 rounded flex items-center justify-center text-[10.5px] font-bold cursor-pointer ${
+                              activePage === num
+                                ? "bg-sky-500 text-zinc-950 shadow-sm"
+                                : "bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-zinc-800/80"
+                            }`}
+                          >
+                            {num}
+                          </button>
+                        ) : (
+                          <span key={i} className="px-1 text-zinc-600">...</span>
+                        )
+                      )}
+                    </div>
+
+                    <button
                       disabled={activePage === totalPages}
-                      className="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-300"
+                      onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                      className="px-2.5 py-1 rounded bg-zinc-900 border border-zinc-800 disabled:opacity-40 hover:bg-zinc-850 cursor-pointer disabled:cursor-not-allowed"
                     >
-                      ›
+                      Next
                     </button>
                   </div>
-                </div>
+                )}
               </div>
             )}
           </div>

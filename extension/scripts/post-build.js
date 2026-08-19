@@ -6,6 +6,20 @@ const dirs = [
   path.join(__dirname, '../build/chrome-mv3-prod')
 ];
 
+function backendHostPermission() {
+  const rawUrl = process.env.PLASMO_PUBLIC_BACKEND_URL;
+  if (!rawUrl) return null;
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    return `${url.origin}/*`;
+  } catch {
+    throw new Error('PLASMO_PUBLIC_BACKEND_URL must be a valid http(s) URL.');
+  }
+}
+
+const exactBackendPermission = backendHostPermission();
+
 // Sync chrome-mv3-prod to chrome-mv3-dev so both build targets have identical updated files
 const prodDir = path.join(__dirname, '../build/chrome-mv3-prod');
 const devDir = path.join(__dirname, '../build/chrome-mv3-dev');
@@ -20,6 +34,12 @@ dirs.forEach(dir => {
     try {
       const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
       let modified = false;
+      if (exactBackendPermission && Array.isArray(manifest.host_permissions)
+          && !manifest.host_permissions.includes(exactBackendPermission)) {
+        manifest.host_permissions.push(exactBackendPermission);
+        modified = true;
+        console.log(`Added exact backend host permission in ${manifestPath}`);
+      }
       if (Array.isArray(manifest.content_scripts)) {
         manifest.content_scripts.forEach(cs => {
           if (Array.isArray(cs.js)) {

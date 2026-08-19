@@ -1,16 +1,11 @@
 import { fetchUserProfile, fetchSolvedProblems, fetchAllSubmissions, fetchContestHistory, fetchProblemMetadata, fetchUserStatus, fetchContestQuestions, fetchReplayEvents, fetchUpcomingContests, fetchPastContests } from "../lib/api/leetcode"
-import { getUserSettings, getUsername, setLastSync, setUsername, storage, getGithubPat, getGithubRepo, getZerotracData, getZerotracLastFetched, setZerotracData } from "../lib/storage"
+import { getUserSettings, getUsername, setLastSync, setUsername, storage, getGithubPat, getGithubRepo, getGithubAutoSync, setGithubAutoSync, getZerotracData, getZerotracLastFetched, setZerotracData, clearGithubAuth, clearJwtToken } from "../lib/storage"
 import { commitToGithub, getExtensionForLanguage } from "../lib/api/github"
 import { type LeetCodeRegion } from "../lib/api/entranthub"
 import {
   fetchPrediction,
-  fetchCurrentSession,
   sendSelfReport,
-  sendSessionEvent,
-  sendSessionHeartbeat,
   sendSubmissionResult,
-  startSession,
-  endSession,
   fetchContests,
   syncLeetcode,
 
@@ -427,7 +422,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     isSyncing = true
     syncAbortController = new AbortController()
-    runSync(message.username, message.startOffset || 0, syncAbortController.signal)
+    runSync(message.username, message.startOffset || 0, syncAbortController.signal, Boolean(message.forceFullSync))
       .then((res) => {
         isSyncing = false
         sendResponse(res)
@@ -436,6 +431,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         isSyncing = false
         sendResponse({ ok: false, error: error.message })
       })
+    return true
+  }
+
+  if (message.action === "reset_sync_state") {
+    Promise.all([
+      storage.remove("algovault.latestSyncedSubmissionTimestamp"),
+      storage.remove("algovault.solvedSlugs"),
+      storage.remove("algovault.syncHasMore"),
+      storage.remove("algovault.lastSync")
+    ]).then(() => {
+      chrome.storage.local.set({ syncStatus: { status: "INFO", message: "Sync cache reset. Ready for clean full sync.", count: 0, subCount: 0 } })
+      sendResponse({ ok: true })
+    }).catch((err) => sendResponse({ ok: false, error: err.message }))
     return true
   }
 
@@ -471,66 +479,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true
   }
 
-  if (message.action === "session_start") {
-    // Forward legacy session_start to APSE v2
-    const slug = message.slug || message.titleSlug
-    if (slug) {
-      const now = Date.now()
-      const newSession = createSession(slug, sender.tab?.id || null, now)
-      storage.set(ACTIVE_SESSION_KEY, newSession).then(() => {
-        sendResponse({ ok: true, data: newSession })
-      })
-    } else {
-      sendResponse({ ok: true })
-    }
-    return true
-  }
-
-  if (message.action === "session_pause") {
-    storage.get<any>(ACTIVE_SESSION_KEY).then(async (session) => {
-      if (session && session.st === "RUNNING") {
-        const updated = transitionSession(session, "PAUSED", "MANUAL", Date.now())
-        await storage.set(ACTIVE_SESSION_KEY, updated)
-        sendResponse({ ok: true, data: updated })
-      } else {
-        sendResponse({ ok: true })
-      }
-    })
-    return true
-  }
-
-  if (message.action === "session_resume") {
-    storage.get<any>(ACTIVE_SESSION_KEY).then(async (session) => {
-      if (session && session.st === "PAUSED") {
-        const updated = transitionSession(session, "RUNNING", null, Date.now())
-        await storage.set(ACTIVE_SESSION_KEY, updated)
-        sendResponse({ ok: true, data: updated })
-      } else {
-        sendResponse({ ok: true })
-      }
-    })
-    return true
-  }
-
-  if (message.action === "session_end") {
-    storage.remove(ACTIVE_SESSION_KEY).then(() => {
-      sendResponse({ ok: true })
-    })
-    return true
-  }
-
-  if (message.action === "session_event") {
-    sendSessionEvent(message.payload)
+  if (message.action === "get_problem_metadata_batch") {
+    const slugs = Array.isArray(message.slugs) ? message.slugs : []
+    fetchProblemMetadata(slugs)
       .then((data) => sendResponse({ ok: true, data }))
-      .catch((err) => sendResponse({ ok: false, error: err.message }))
-    return true
-  }
-
-  if (message.action === "session_heartbeat") {
-    sendSessionHeartbeat(message.payload)
-      .then(async (data) => {
-        sendResponse({ ok: true, data })
-      })
       .catch((err) => sendResponse({ ok: false, error: err.message }))
     return true
   }
@@ -575,8 +527,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
         })
 
-        syncAcceptedSubmissionToGithub(payload, helpType).catch((gitErr) => {
-          console.error("Error during GitHub sync operation:", gitErr)
+        getGithubAutoSync().then((isAutoSync) => {
+          if (isAutoSync) {
+            syncAcceptedSubmissionToGithub(payload, helpType).catch((gitErr) => {
+              console.error("Error during GitHub sync operation:", gitErr)
+            })
+          } else {
+            console.log("[AlgoVault] GitHub Auto-Sync is disabled; skipping automatic solution commit.")
+          }
         })
       }
 
@@ -615,6 +573,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     addToVault(message.payload)
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }))
+    return true
+  }
+
+  if (message.action === "set_github_auto_sync") {
+    setGithubAutoSync(message.enabled).then(() => {
+      sendResponse({ ok: true, enabled: message.enabled })
+    })
+    return true
+  }
+
+  if (message.action === "get_github_auto_sync") {
+    getGithubAutoSync().then((val) => {
+      sendResponse({ ok: true, enabled: val })
+    })
     return true
   }
 })
@@ -726,6 +698,9 @@ async function buildGithubArtifact(payload: any, helpType: string, sessionData?:
 
 async function syncAcceptedSubmissionToGithub(payload: any, helpType = "PENDING_SELF_REPORT", sessionData?: any) {
   if (!payload?.titleSlug) return
+  const isAutoSyncEnabled = await getGithubAutoSync()
+  if (!isAutoSyncEnabled) return
+
   const artifact = await buildGithubArtifact(payload, helpType, sessionData)
   await storage.set(`algovault.gitSolve.${payload.titleSlug}`, artifact)
 
@@ -769,6 +744,10 @@ async function syncAcceptedSubmissionToGithub(payload: any, helpType = "PENDING_
   for (const write of writes) {
     const result = await commitToGithub(pat, repo, write.path, write.message, write.content)
     if (!result.ok) {
+      if (result.revoked) {
+        await clearGithubAuth()
+        await clearJwtToken()
+      }
       await storage.set("algovault.gitSyncStatus", {
         success: false,
         message: result.message,
@@ -791,6 +770,11 @@ async function syncAcceptedSubmissionToGithub(payload: any, helpType = "PENDING_
 
 async function updateGithubHelpReport(report: any) {
   if (!report?.titleSlug || !report.helpType) return
+  const isAutoSyncEnabled = await getGithubAutoSync()
+  if (!isAutoSyncEnabled) {
+    console.log("[AlgoVault] GitHub Auto-Sync is disabled; skipping updateGithubHelpReport.")
+    return
+  }
   const artifact = await storage.get<any>(`algovault.gitSolve.${report.titleSlug}`)
   if (!artifact?.payload) return
   await syncAcceptedSubmissionToGithub(artifact.payload, report.helpType, {
@@ -798,12 +782,19 @@ async function updateGithubHelpReport(report: any) {
   })
 }
 
-async function runSync(username: string, startOffset = 0, signal?: AbortSignal) {
+async function runSync(username: string, startOffset = 0, signal?: AbortSignal, forceFullSync = false) {
   if (!username || !username.trim()) {
     throw new Error("LeetCode username is required")
   }
   const normalizedUsername = username.trim()
   await setUsername(normalizedUsername)
+
+  if (forceFullSync) {
+    await storage.remove("algovault.latestSyncedSubmissionTimestamp")
+    await storage.remove("algovault.solvedSlugs")
+    await storage.remove("algovault.syncHasMore")
+    startOffset = 0
+  }
 
   const updateStatus = (status: string, msg: string, count = 0, subCount = 0) => {
     chrome.storage.local.set({ syncStatus: { status, message: msg, count, subCount } })
@@ -811,7 +802,7 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal) 
 
   try {
     if (signal?.aborted) throw new Error("Sync stopped by user");
-    const isHistoryBackfill = startOffset > 0
+    const isHistoryBackfill = startOffset > 0 && !forceFullSync
     updateStatus("RUNNING", isHistoryBackfill ? `Syncing older history from submission ${startOffset + 1}...` : "Verifying LeetCode session...")
     const statusRes = await fetchUserStatus()
     const sessionUser = statusRes.data?.userStatus?.username
@@ -825,7 +816,7 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal) 
     const profile = profileRes.data.matchedUser
 
     const problems: any[] = []
-    const cachedSolved = await storage.get<any>("algovault.solvedSlugs")
+    const cachedSolved = forceFullSync ? null : await storage.get<any>("algovault.solvedSlugs")
     const isCacheValid = cachedSolved && cachedSolved.fetchedAt && (Date.now() - cachedSolved.fetchedAt < 15 * 60 * 1000) && Array.isArray(cachedSolved.rawProblems)
 
     if (isCacheValid) {
@@ -889,7 +880,7 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal) 
     const maxSubmissionsToSync = 400
 
     // Read the timestamp of the last successfully synced submission
-    const latestSyncedTs = await storage.get<number>("algovault.latestSyncedSubmissionTimestamp") || 0
+    const latestSyncedTs = forceFullSync ? 0 : ((await storage.get<number>("algovault.latestSyncedSubmissionTimestamp")) || 0)
     let foundAlreadySynced = false
 
     while (hasNext && rawSubs.length < maxSubmissionsToSync && !foundAlreadySynced) {
@@ -1066,36 +1057,55 @@ async function getCachedZerotracRatings() {
     }
   }
 
-  const mapData = await fetchZerotracRatingsBackend()
-  if (!mapData || typeof mapData !== "object" || Array.isArray(mapData)) throw new Error("ZeroTrac returned an invalid payload")
-  
-  const data = Object.entries(mapData).map(([slug, details]: [string, any]) => {
-    // Handle both legacy (details is just a number rating) and new (details is ZerotracInfo object)
-    const isObject = details && typeof details === "object";
-    const rating = isObject ? (details.rating ?? 1500) : (typeof details === "number" ? details : 1500);
-    const title = isObject ? (details.title ?? slug) : slug;
-    const contestId = isObject ? (details.contestId ?? "") : "";
-    
-    return {
-      TitleSlug: slug,
-      Rating: rating,
-      Title: title,
-      ContestID_en: contestId,
-      ContestSlug: contestId ? contestId.toLowerCase().replace(/\s+/g, '-') : "",
-      ProblemIndex: isObject ? (details.problemIndex ?? "?") : "?"
-    };
-  })
-  
-  await setZerotracData(data)
-  
-  // Re-build memory cache map on fetch
-  const tempMap = new Map()
-  for (const item of data) {
-    if (item && item.TitleSlug) {
-      tempMap.set(item.TitleSlug.toLowerCase(), item)
+  let data: any[] = []
+
+  try {
+    const mapData = await fetchZerotracRatingsBackend()
+    if (mapData && typeof mapData === "object" && !Array.isArray(mapData)) {
+      data = Object.entries(mapData).map(([slug, details]: [string, any]) => {
+        const isObject = details && typeof details === "object";
+        const rating = isObject ? (details.rating ?? 1500) : (typeof details === "number" ? details : 1500);
+        const title = isObject ? (details.title ?? slug) : slug;
+        const contestId = isObject ? (details.contestId ?? "") : "";
+        
+        return {
+          TitleSlug: slug,
+          Rating: rating,
+          Title: title,
+          ContestID_en: contestId,
+          ContestSlug: contestId ? contestId.toLowerCase().replace(/\s+/g, '-') : "",
+          ProblemIndex: isObject ? (details.problemIndex ?? "?") : "?"
+        };
+      })
+    }
+  } catch (err) {
+    console.warn("Backend zerotrac fetch failed, falling back to GitHub raw data.json", err)
+  }
+
+  if (data.length === 0) {
+    try {
+      const res = await fetch("https://raw.githubusercontent.com/zerotrac/leetcode_problem_rating/main/data.json")
+      if (res.ok) {
+        const rawJson = await res.json()
+        data = normalizeZerotracPayload(rawJson)
+      }
+    } catch (ghErr) {
+      console.error("Direct GitHub ZeroTrac fetch also failed:", ghErr)
     }
   }
-  zerotracInMemoryMap = tempMap
+
+  if (data.length > 0) {
+    await setZerotracData(data)
+    
+    // Re-build memory cache map on fetch
+    const tempMap = new Map()
+    for (const item of data) {
+      if (item && item.TitleSlug) {
+        tempMap.set(item.TitleSlug.toLowerCase(), item)
+      }
+    }
+    zerotracInMemoryMap = tempMap
+  }
 
   return data
 }

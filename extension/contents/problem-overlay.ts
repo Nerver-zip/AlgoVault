@@ -2,6 +2,7 @@ import type { PlasmoCSConfig } from "plasmo"
 import { STUDY_LISTS } from "../lib/study-lists"
 import { getLeetCodeProblemSlug } from "../lib/leetcode-url"
 import { showZenithQuestModal } from "./ZenithSystemOverlay"
+import { PROBLEM_SLUG_TO_COMPANIES } from "../lib/company-data"
 
 export const config: PlasmoCSConfig = {
   matches: ["https://leetcode.com/problems/*", "https://leetcode.com/contest/*/problems/*"],
@@ -245,20 +246,45 @@ const injectAlgoVaultOverlay = () => {
   }
 
   // 2. Inject Rating (Replacing Difficulty Tag)
-  const diffTag = Array.from(document.querySelectorAll('div[class*="text-difficulty"]')).find(el => {
-    const text = el.textContent?.trim();
-    return text === "Easy" || text === "Medium" || text === "Hard";
-  }) as HTMLElement;
+  const findProblemHeaderElements = (): { diffTag: HTMLElement | null; metadataRow: HTMLElement | null } => {
+    const candidates = Array.from(document.querySelectorAll('div, span, button, a'))
+    
+    // Check difficulty tag first
+    for (const el of candidates) {
+      const text = el.textContent?.trim()
+      if (text === "Easy" || text === "Medium" || text === "Hard") {
+        if (el.children.length <= 1 && el.parentElement) {
+          const parent = el.parentElement as HTMLElement
+          const parentText = parent.textContent || ""
+          if (parentText.includes("Topics") || parentText.includes("Companies") || parentText.includes("Hint") || parent.classList.toString().includes("flex") || parent.classList.toString().includes("items-center")) {
+            return { diffTag: el as HTMLElement, metadataRow: parent }
+          }
+        }
+      }
+    }
 
-  const currentSlug = getLeetCodeProblemSlug();
-  const injectedSlug = diffTag?.getAttribute("data-algovault-rating");
+    // Fallback: search Topics or Companies button
+    for (const el of candidates) {
+      const text = el.textContent?.trim() || ""
+      if (text === "Topics" || text === "Companies" || text.startsWith("Topics") || text.startsWith("Companies")) {
+        if (el.parentElement) {
+          return { diffTag: null, metadataRow: el.parentElement as HTMLElement }
+        }
+      }
+    }
+
+    return { diffTag: null, metadataRow: null }
+  }
+
+  const { diffTag, metadataRow } = findProblemHeaderElements()
+  const currentSlug = getLeetCodeProblemSlug()
+  const injectedSlug = diffTag?.getAttribute("data-algovault-rating")
 
   if (diffTag && currentSlug && injectedSlug !== currentSlug) {
-    diffTag.setAttribute("data-algovault-rating", currentSlug);
-    diffTag.querySelector(".av-rating")?.remove();
+    diffTag.setAttribute("data-algovault-rating", currentSlug)
+    diffTag.querySelector(".av-rating")?.remove()
 
     const applyRating = (rating: number) => {
-      // LeetCode is a SPA. Ignore async responses whose page context is stale.
       if (getLeetCodeProblemSlug() !== currentSlug) return
       if (!Number.isFinite(rating)) return
 
@@ -275,7 +301,6 @@ const injectAlgoVaultOverlay = () => {
       ratingInjected = true
     }
 
-    // Fetch rating for current problem via background to bypass CSP.
     chrome.runtime.sendMessage({ action: "get_problem_rating", slug: currentSlug }, (data) => {
       if (data && typeof data.Rating === "number") {
         applyRating(data.Rating)
@@ -283,8 +308,255 @@ const injectAlgoVaultOverlay = () => {
     })
   }
 
-    // Remove Study Lists overlay button if present
-    document.getElementById('av-lists-btn')?.remove();
+  // 3. Native Compact In-Page Companies Pill
+  const targetRow = metadataRow || diffTag?.parentElement
+  if (currentSlug && targetRow) {
+    const existingCompanyBtn = document.getElementById("av-company-trigger-btn")
+    const injectedForSlug = existingCompanyBtn?.getAttribute("data-slug")
+
+    if (!existingCompanyBtn || injectedForSlug !== currentSlug) {
+      existingCompanyBtn?.remove()
+
+      const companyEvidences = PROBLEM_SLUG_TO_COMPANIES.get(currentSlug.toLowerCase()) || []
+      if (companyEvidences.length > 0) {
+        // Look for LeetCode's native locked Companies button
+        const nativeLockedBtn = Array.from(targetRow.querySelectorAll('button, div, span, a')).find(el => {
+          const t = el.textContent?.trim() || ""
+          return (t === "Companies" || t.startsWith("Companies")) && el.id !== "av-company-trigger-btn" && el.children.length <= 2
+        }) as HTMLElement | null
+
+        // Create sleek native-styled unlocked pill button
+        const btn = document.createElement("button")
+        btn.id = "av-company-trigger-btn"
+        btn.setAttribute("data-slug", currentSlug)
+        btn.className = "flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full cursor-pointer transition-colors"
+        btn.title = `Asked by ${companyEvidences.length} companies in interviews (Click to explore)`
+        
+        btn.innerHTML = `
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.85; flex-shrink: 0;"><rect width="16" height="20" x="4" y="2" rx="2" ry="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01"/><path d="M16 6h.01"/><path d="M12 6h.01"/><path d="M12 10h.01"/><path d="M12 14h.01"/><path d="M16 10h.01"/><path d="M16 14h.01"/><path d="M8 10h.01"/><path d="M8 14h.01"/></svg>
+          <span>Companies</span>
+          <span style="font-size: 10px; color: #a1a1aa; font-family: ui-monospace, monospace; margin-left: 2px;">(${companyEvidences.length})</span>
+        `
+
+        Object.assign(btn.style, {
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "5px",
+          padding: "3px 10px",
+          borderRadius: "9999px",
+          fontSize: "12px",
+          fontWeight: "500",
+          backgroundColor: "rgba(255, 255, 255, 0.08)",
+          color: "#d1d5db",
+          border: "none",
+          cursor: "pointer",
+          transition: "all 0.15s ease",
+          userSelect: "none",
+          marginLeft: nativeLockedBtn ? "0px" : "6px",
+          verticalAlign: "middle",
+          boxSizing: "border-box"
+        })
+
+        btn.onmouseenter = () => {
+          btn.style.backgroundColor = "rgba(255, 255, 255, 0.15)"
+          btn.style.color = "#ffffff"
+        }
+        btn.onmouseleave = () => {
+          btn.style.backgroundColor = "rgba(255, 255, 255, 0.08)"
+          btn.style.color = "#d1d5db"
+        }
+
+        btn.onclick = (e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          showCompanyModal(currentSlug, companyEvidences)
+        }
+
+        if (nativeLockedBtn && nativeLockedBtn.parentElement) {
+          // Replace or insert directly before the locked button and hide the locked button
+          nativeLockedBtn.style.display = "none"
+          nativeLockedBtn.parentElement.insertBefore(btn, nativeLockedBtn)
+        } else {
+          // Insert next to Hint or at the end of metadata row
+          targetRow.appendChild(btn)
+        }
+      }
+    }
+  }
+
+  // Helper: Floating Company Modal Popover
+  function showCompanyModal(slug: string, evidences: any[]) {
+    const existing = document.getElementById("av-company-modal")
+    if (existing) {
+      existing.remove()
+      return
+    }
+
+    const backdrop = document.createElement("div")
+    backdrop.id = "av-company-modal"
+    Object.assign(backdrop.style, {
+      position: "fixed",
+      inset: "0",
+      zIndex: "999999",
+      backgroundColor: "rgba(0, 0, 0, 0.7)",
+      backdropFilter: "blur(6px)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontFamily: "system-ui, -apple-system, sans-serif"
+    })
+
+    const modal = document.createElement("div")
+    Object.assign(modal.style, {
+      width: "480px",
+      maxWidth: "92vw",
+      maxHeight: "80vh",
+      backgroundColor: "#121214",
+      border: "1px solid rgba(223, 160, 84, 0.3)",
+      borderRadius: "14px",
+      boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.8), 0 0 20px rgba(223, 160, 84, 0.15)",
+      display: "flex",
+      flexDirection: "column",
+      overflow: "hidden",
+      color: "#e4e4e7"
+    })
+
+    const header = document.createElement("div")
+    Object.assign(header.style, {
+      padding: "14px 16px",
+      borderBottom: "1px solid #27272a",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      backgroundColor: "#18181b"
+    })
+
+    header.innerHTML = `
+      <div style="flex: 1;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 15px;">🏢</span>
+          <span style="font-weight: 700; font-size: 13px; color: #f4f4f5;">Interview Companies</span>
+          <span style="font-size: 10px; font-family: monospace; font-weight: 700; background: rgba(223, 160, 84, 0.15); color: #dfa054; padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(223, 160, 84, 0.3);">${evidences.length} Companies</span>
+        </div>
+        <div style="font-size: 11px; color: #a1a1aa; margin-top: 2px;">Verified LeetCode candidate submissions</div>
+      </div>
+      <button id="av-modal-close-btn" style="background: none; border: none; color: #a1a1aa; font-size: 16px; cursor: pointer; padding: 4px 8px; border-radius: 6px;">✕</button>
+    `
+
+    const searchContainer = document.createElement("div")
+    Object.assign(searchContainer.style, {
+      padding: "10px 16px",
+      borderBottom: "1px solid #27272a",
+      backgroundColor: "#121214"
+    })
+    const searchInput = document.createElement("input")
+    searchInput.placeholder = "Search companies asking this question..."
+    Object.assign(searchInput.style, {
+      width: "100%",
+      backgroundColor: "#1c1c1f",
+      border: "1px solid #3f3f46",
+      borderRadius: "8px",
+      padding: "7px 12px",
+      fontSize: "12px",
+      color: "#f4f4f5",
+      outline: "none",
+      boxSizing: "border-box"
+    })
+    searchContainer.appendChild(searchInput)
+
+    const list = document.createElement("div")
+    Object.assign(list.style, {
+      padding: "12px 16px",
+      overflowY: "auto",
+      flex: "1",
+      display: "flex",
+      flexDirection: "column",
+      gap: "8px"
+    })
+
+    const renderList = (filter: string) => {
+      list.innerHTML = ""
+      const q = filter.toLowerCase().trim()
+      const filtered = evidences.filter((e: any) => e.companyName.toLowerCase().includes(q))
+      if (filtered.length === 0) {
+        list.innerHTML = `<div style="text-align: center; color: #71717a; font-size: 12px; padding: 24px;">No companies found matching "${filter}"</div>`
+        return
+      }
+
+      for (const ev of filtered) {
+        const card = document.createElement("div")
+        Object.assign(card.style, {
+          padding: "10px 12px",
+          borderRadius: "8px",
+          backgroundColor: "#18181b",
+          border: "1px solid #27272a",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "12px"
+        })
+
+        const freqColor = ev.frequencyScore >= 75 ? "#10b981" : ev.frequencyScore >= 50 ? "#dfa054" : "#a1a1aa"
+
+        card.innerHTML = `
+          <div style="min-width: 0; flex: 1;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-weight: 600; font-size: 12px; color: #f4f4f5;">${ev.companyName}</span>
+              <span style="font-size: 9px; font-family: monospace; padding: 1px 5px; border-radius: 4px; background: rgba(255,255,255,0.06); color: #a1a1aa; border: 1px solid #3f3f46;">${ev.timeframeLabel}</span>
+            </div>
+            <div style="margin-top: 6px; display: flex; align-items: center; gap: 8px;">
+              <div style="flex: 1; height: 4px; background: #27272a; border-radius: 9999px; overflow: hidden;">
+                <div style="width: ${ev.frequencyScore}%; height: 100%; background: ${freqColor}; border-radius: 9999px;"></div>
+              </div>
+              <span style="font-size: 10px; font-family: monospace; font-weight: 700; color: ${freqColor};">${Math.round(ev.frequencyScore)}% Freq</span>
+            </div>
+          </div>
+        `
+        list.appendChild(card)
+      }
+    }
+
+    renderList("")
+    searchInput.oninput = (e: any) => renderList(e.target.value)
+
+    const footer = document.createElement("div")
+    Object.assign(footer.style, {
+      padding: "10px 16px",
+      borderTop: "1px solid #27272a",
+      backgroundColor: "#18181b",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      fontSize: "11px",
+      color: "#a1a1aa"
+    })
+    footer.innerHTML = `
+      <span>Source: LeetCode Verified Interview Records</span>
+      <span style="color: #dfa054; font-family: monospace; font-weight: 700;">AlgoVault</span>
+    `
+
+    modal.appendChild(header)
+    modal.appendChild(searchContainer)
+    modal.appendChild(list)
+    modal.appendChild(footer)
+    backdrop.appendChild(modal)
+    document.body.appendChild(backdrop)
+
+    backdrop.onclick = (e) => {
+      if (e.target === backdrop) backdrop.remove()
+    }
+    header.querySelector("#av-modal-close-btn")?.addEventListener("click", () => backdrop.remove())
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        backdrop.remove()
+        window.removeEventListener("keydown", handleKey)
+      }
+    }
+    window.addEventListener("keydown", handleKey)
+  }
+
+  // Remove Study Lists overlay button if present
+  document.getElementById('av-lists-btn')?.remove();
 
   // Helper to make Zenith button freely draggable across the screen
   const makeElementDraggable = (el: HTMLElement, storageKey: string, onClickHandler: () => void) => {
@@ -504,7 +776,7 @@ const observer = new MutationObserver((mutations) => {
     return;
   }
 
-  if (ratingInjected && !document.querySelector('div[class*="text-difficulty"] span')) ratingInjected = false;
+  if (ratingInjected && !document.querySelector('.av-rating')) ratingInjected = false;
   if (predictionInjected && !document.getElementById('av-solve-chance-bubble')) predictionInjected = false;
   
   if (observerTimeout) window.clearTimeout(observerTimeout);

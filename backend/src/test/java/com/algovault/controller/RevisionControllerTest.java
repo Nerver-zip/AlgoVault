@@ -13,7 +13,6 @@ import org.mockito.MockitoAnnotations;
 import org.springframework.http.ResponseEntity;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -62,10 +61,8 @@ class RevisionControllerTest {
     @Test
     void reviewCard_callsService() {
         HttpServletRequest request = mock(HttpServletRequest.class);
-        Map<String, Integer> body = new HashMap<>();
-        body.put("quality", 5);
-
-        ResponseEntity<Map<String, String>> response = revisionController.reviewCard(request, 10L, body);
+        ResponseEntity<Map<String, String>> response = revisionController.reviewCard(
+            request, 10L, new RevisionController.ReviewRequest(5));
 
         assertNotNull(response);
         assertEquals(200, response.getStatusCodeValue());

@@ -35,18 +35,6 @@
   "content_scripts": [
     {
       "matches": [
-        "https://leetcode.com/problems/*",
-        "https://leetcode.com/contest/*/problems/*"
-      ],
-      "js": [
-        "main-world-interceptor.40ff4bf7.js"
-      ],
-      "run_at": "document_start",
-      "css": [],
-      "world": "MAIN"
-    },
-    {
-      "matches": [
         "https://leetcode.com/problems/*"
       ],
       "js": [
@@ -57,13 +45,15 @@
     },
     {
       "matches": [
-        "http://localhost:8080/api/auth/success*"
+        "https://leetcode.com/problems/*",
+        "https://leetcode.com/contest/*/problems/*"
       ],
       "js": [
-        "auth-success.f172ad12.js"
+        "main-world-interceptor.40ff4bf7.js"
       ],
-      "run_at": "document_end",
-      "css": []
+      "run_at": "document_start",
+      "css": [],
+      "world": "MAIN"
     },
     {
       "matches": [
@@ -115,7 +105,7 @@
         "https://leetcode.com/contest/*/problems/*"
       ],
       "js": [
-        "floating-button.124de113.js"
+        "solve-celebration.e2d6314d.js"
       ],
       "css": []
     },
@@ -131,20 +121,20 @@
     },
     {
       "matches": [
-        "https://leetcode.com/u/*"
+        "https://leetcode.com/problems/*",
+        "https://leetcode.com/contest/*/problems/*"
       ],
       "js": [
-        "profile-overlay.2f269a27.js"
+        "floating-button.124de113.js"
       ],
       "css": []
     },
     {
       "matches": [
-        "https://leetcode.com/problems/*",
-        "https://leetcode.com/contest/*/problems/*"
+        "https://leetcode.com/u/*"
       ],
       "js": [
-        "solve-celebration.e2d6314d.js"
+        "profile-overlay.2f269a27.js"
       ],
       "css": []
     }
@@ -173,15 +163,7 @@
         "https://leetcode.com/*"
       ],
       "resources": [
-        "floating-button.95bad065.css"
-      ]
-    },
-    {
-      "matches": [
-        "https://leetcode.com/*"
-      ],
-      "resources": [
-        "floating-button.95bad065.css"
+        "solve-celebration.95bad065.css"
       ]
     },
     {
@@ -190,7 +172,15 @@
         "https://leetcode.com/*"
       ],
       "resources": [
-        "floating-button.95bad065.css"
+        "solve-celebration.95bad065.css"
+      ]
+    },
+    {
+      "matches": [
+        "https://leetcode.com/*"
+      ],
+      "resources": [
+        "solve-celebration.95bad065.css"
       ]
     }
   ]

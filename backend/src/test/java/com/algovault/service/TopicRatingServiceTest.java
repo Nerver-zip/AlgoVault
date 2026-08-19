@@ -1,6 +1,6 @@
 package com.algovault.service;
 
-import com.algovault.engine.EloEngine;
+import com.algovault.engine.Glicko2MasteryEngine;
 import com.algovault.model.*;
 import com.algovault.repository.SubmissionRepository;
 import com.algovault.repository.TopicRatingRepository;
@@ -29,7 +29,7 @@ class TopicRatingServiceTest {
     private UserRepository userRepository;
 
     @Mock
-    private EloEngine eloEngine;
+    private Glicko2MasteryEngine glickoEngine;
 
     @InjectMocks
     private TopicRatingService topicRatingService;
@@ -47,7 +47,8 @@ class TopicRatingServiceTest {
 
     @Test
     void testEloRecomputeAndIncrementalAgreement() {
-        when(eloEngine.calculateNewElo(anyInt(), anyInt(), anyDouble(), anyInt())).thenReturn(1250);
+        when(glickoEngine.updateRating(any(), any())).thenReturn(
+            new Glicko2MasteryEngine.GlickoRating(1250.0, 100.0, 0.06));
 
         Submission sub1 = Submission.builder()
                 .id(100L)

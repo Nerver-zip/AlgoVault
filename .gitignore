@@ -7,7 +7,6 @@ extension/build/*
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-package-lock.json
 
 # Java / Maven
 target/
@@ -36,6 +35,6 @@ target/
 *.zip
 tsconfig.tsbuildinfo
 release/
+temp/
 !extension/build/chrome-mv3-prod/**
-
 

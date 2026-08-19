@@ -21,5 +21,6 @@ export const STORAGE_KEYS = {
   GITHUB_PAT: "algovault.github.pat",
   GITHUB_REPO: "algovault.github.repo",
   GITHUB_USER: "algovault.github.user",
-  GITHUB_BRANCH: "algovault.github.branch"
+  GITHUB_BRANCH: "algovault.github.branch",
+  GITHUB_AUTO_SYNC: "algovault.github.autoSync"
 } as const;

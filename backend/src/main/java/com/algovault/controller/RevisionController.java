@@ -6,6 +6,10 @@ import com.algovault.service.RevisionService;
 import com.algovault.service.UserContextService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -17,6 +21,8 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class RevisionController {
 
+    public record ReviewRequest(@NotNull @Min(0) @Max(5) Integer quality) {}
+
     private final RevisionService revisionService;
     private final UserContextService userContextService;
 
@@ -27,10 +33,10 @@ public class RevisionController {
     }
 
     @PostMapping("/{cardId}")
-    public ResponseEntity<Map<String, String>> reviewCard(HttpServletRequest request, @PathVariable Long cardId, @RequestBody Map<String, Integer> body) {
+    public ResponseEntity<Map<String, String>> reviewCard(HttpServletRequest request, @PathVariable Long cardId,
+            @Valid @RequestBody ReviewRequest body) {
         User user = userContextService.resolveUser(request);
-        int quality = body != null && body.containsKey("quality") ? body.get("quality") : 4;
-        revisionService.reviewCard(user.getId(), cardId, quality);
+        revisionService.reviewCard(user.getId(), cardId, body.quality());
         return ResponseEntity.ok(Map.of("status", "success"));
     }
 }

@@ -3,144 +3,140 @@ package com.algovault.controller;
 import com.algovault.model.User;
 import com.algovault.repository.UserRepository;
 import com.algovault.service.JwtService;
+import com.algovault.service.OAuthStateService;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.oauth2.core.user.OAuth2User;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
 import org.springframework.beans.factory.annotation.Value;
-import java.util.Map;
-import java.util.List;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.client.RestTemplate;
 
+import java.util.List;
+import java.util.Map;
+
+/**
+ * OAuth is the only production account-creation path. A LeetCode username is
+ * public information, so it is deliberately never accepted as authentication.
+ */
 @RestController
 @RequestMapping("/api/auth")
 @RequiredArgsConstructor
 public class AuthController {
-
     private final JwtService jwtService;
     private final UserRepository userRepository;
+    private final OAuthStateService oauthStateService;
+    private final RestTemplate restTemplate;
 
-    @Value("${app.auth.mode:single-user}")
-    private String authMode;
-
-    @Value("${spring.security.oauth2.client.registration.github.client-id:Ov23liTftGjfEU3BuSwX}")
+    @Value("${github.oauth.client-id}")
     private String githubClientId;
 
-    @Value("${spring.security.oauth2.client.registration.github.client-secret:77d4d5e03d71a049bd6992accdebecb6cc94238b}")
+    @Value("${github.oauth.client-secret}")
     private String githubClientSecret;
 
-    @GetMapping("/success")
-    public ResponseEntity<?> oauthSuccess(@AuthenticationPrincipal OAuth2User oauth2User) {
-        if (oauth2User == null) {
-            return ResponseEntity.badRequest().body("OAuth Login Failed");
+    @jakarta.annotation.PostConstruct
+    void validateOAuthConfiguration() {
+        if (githubClientId == null || githubClientId.isBlank() || githubClientSecret == null || githubClientSecret.isBlank()) {
+            throw new IllegalStateException("GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET must be configured");
         }
-        
-        String githubLogin = oauth2User.getAttribute("login");
-        String avatarUrl = oauth2User.getAttribute("avatar_url");
-        String githubIdStr = "github:" + oauth2User.getAttribute("id");
-        
-        User user = userRepository.findByGithubId(githubIdStr).orElseGet(() -> {
-            User newUser = User.builder()
-                .githubId(githubIdStr)
-                .username(githubLogin)
-                .avatarUrl(avatarUrl)
-                .virtualRating(1500)
-                .build();
-            return userRepository.save(newUser);
-        });
+    }
 
-        String token = jwtService.generateToken(user.getId(), user.getUsername());
-        
-        return ResponseEntity.ok(Map.of(
-            "token", token,
-            "user", user
-        ));
+    public record OAuthStateResponse(String state) {}
+    public record GithubExchangeRequest(
+        @NotBlank @Size(max = 300) String code,
+        @NotBlank @Pattern(regexp = "^[A-Za-z0-9_-]{43}$") String state,
+        @NotBlank @Pattern(regexp = "^[A-Za-z0-9._~-]{43,128}$") String codeVerifier,
+        @NotBlank @Pattern(regexp = "^https://[a-p]{32}\\.chromiumapp\\.org/$") String redirectUri
+    ) {}
+    public record GithubTokenRequest(@NotBlank @Size(max = 500) String token) {}
+    public record GithubExchangeResponse(String token, String githubToken, String username) {}
+
+    @GetMapping("/github-state")
+    public ResponseEntity<OAuthStateResponse> githubState() {
+        return ResponseEntity.ok(new OAuthStateResponse(oauthStateService.issue()));
+    }
+
+    @PostMapping("/github-exchange")
+    public ResponseEntity<?> exchangeGithubCode(@Valid @RequestBody GithubExchangeRequest request) {
+        if (!oauthStateService.consume(request.state())) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Invalid or expired OAuth state"));
+        }
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+            ResponseEntity<Map> tokenResponse = restTemplate.postForEntity(
+                "https://github.com/login/oauth/access_token",
+                new org.springframework.http.HttpEntity<>(Map.of(
+                    "client_id", githubClientId,
+                    "client_secret", githubClientSecret,
+                    "code", request.code(),
+                    "code_verifier", request.codeVerifier(),
+                    "redirect_uri", request.redirectUri()
+                ), headers),
+                Map.class
+            );
+            String githubToken = tokenResponse.getBody() == null ? null : (String) tokenResponse.getBody().get("access_token");
+            if (githubToken == null || githubToken.isBlank()) {
+                return ResponseEntity.status(401).body(Map.of("error", "GitHub did not grant an access token"));
+            }
+
+            return ResponseEntity.ok(authenticateGithubToken(githubToken));
+        } catch (Exception exception) {
+            return ResponseEntity.status(401).body(Map.of("error", "GitHub authorization could not be verified"));
+        }
     }
 
     /**
-     * Exchanges GitHub OAuth authorization code for an OAuth access token.
+     * Optional path for a user-created, fine-grained PAT. The token is used
+     * once to verify the GitHub identity and is never written to our database.
      */
-    @PostMapping("/github-exchange")
-    public ResponseEntity<?> exchangeGithubCode(@RequestBody Map<String, String> request) {
-        String code = request == null ? null : request.get("code");
-        if (code == null || code.isBlank()) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Authorization code is required"));
-        }
-
+    @PostMapping("/github-token")
+    public ResponseEntity<?> authenticateGithubToken(@Valid @RequestBody GithubTokenRequest request) {
         try {
-            org.springframework.web.client.RestTemplate restTemplate = new org.springframework.web.client.RestTemplate();
-            org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
-            headers.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
-            headers.setAccept(List.of(org.springframework.http.MediaType.APPLICATION_JSON));
-
-            Map<String, String> body = Map.of(
-                "client_id", githubClientId,
-                "client_secret", githubClientSecret,
-                "code", code
-            );
-
-            org.springframework.http.HttpEntity<Map<String, String>> entity = new org.springframework.http.HttpEntity<>(body, headers);
-            ResponseEntity<Map> response = restTemplate.postForEntity(
-                "https://github.com/login/oauth/access_token", entity, Map.class
-            );
-
-            if (response.getBody() != null && response.getBody().containsKey("access_token")) {
-                String accessToken = (String) response.getBody().get("access_token");
-                return ResponseEntity.ok(Map.of("token", accessToken));
-            } else if (response.getBody() != null && response.getBody().containsKey("error_description")) {
-                return ResponseEntity.badRequest().body(Map.of("error", response.getBody().get("error_description")));
-            } else {
-                return ResponseEntity.badRequest().body(Map.of("error", "Failed to exchange authorization code with GitHub"));
-            }
-        } catch (Exception e) {
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+            return ResponseEntity.ok(authenticateGithubToken(request.token()));
+        } catch (Exception exception) {
+            return ResponseEntity.status(401).body(Map.of("error", "GitHub token could not be verified"));
         }
+    }
+
+    private GithubExchangeResponse authenticateGithubToken(String githubToken) {
+        HttpHeaders githubHeaders = new HttpHeaders();
+        githubHeaders.setBearerAuth(githubToken);
+        githubHeaders.setAccept(List.of(MediaType.valueOf("application/vnd.github+json")));
+        ResponseEntity<Map> profileResponse = restTemplate.exchange(
+            "https://api.github.com/user", org.springframework.http.HttpMethod.GET,
+            new org.springframework.http.HttpEntity<>(githubHeaders), Map.class
+        );
+        Map profile = profileResponse.getBody();
+        Object rawId = profile == null ? null : profile.get("id");
+        String login = profile == null ? null : (String) profile.get("login");
+        if (rawId == null || login == null || login.isBlank()) {
+            throw new IllegalArgumentException("Could not verify GitHub identity");
+        }
+        String githubId = "github:" + rawId;
+        String avatarUrl = profile.get("avatar_url") instanceof String avatar ? avatar : null;
+        User user = userRepository.findByGithubId(githubId).orElseGet(() -> userRepository.save(User.builder()
+            .githubId(githubId).username(login).avatarUrl(avatarUrl).virtualRating(1500).build()));
+        return new GithubExchangeResponse(jwtService.generateToken(user.getId(), user.getUsername()), githubToken, user.getUsername());
     }
 
     @GetMapping("/me")
-    public ResponseEntity<?> getMe(@AuthenticationPrincipal Long userId) {
-        if (userId == null) {
-            return ResponseEntity.status(401).body("Unauthorized");
-        }
-        return userRepository.findById(userId)
-            .map(ResponseEntity::ok)
-            .orElse(ResponseEntity.notFound().build());
+    public ResponseEntity<?> getMe(@org.springframework.security.core.annotation.AuthenticationPrincipal Long userId) {
+        if (userId == null) return ResponseEntity.status(401).build();
+        return userRepository.findById(userId).map(ResponseEntity::ok).orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * Local-only bootstrap for the companion extension. It deliberately
-     * permits exactly one persisted profile: once linked, a different
-     * LeetCode username cannot create another local account.
-     */
-    @PostMapping("/extension-login")
-    public ResponseEntity<?> extensionLogin(@RequestBody Map<String, String> request) {
-        if (!"single-user".equalsIgnoreCase(authMode)) {
-            return ResponseEntity.status(403).body("Local extension access is disabled.");
+    @PostMapping("/logout")
+    public ResponseEntity<Void> logout(@RequestHeader(HttpHeaders.AUTHORIZATION) String authorization) {
+        if (authorization == null || !authorization.startsWith("Bearer ")) {
+            return ResponseEntity.status(401).build();
         }
-        String username = request == null ? null : request.get("username");
-        if (username == null || username.isBlank() || username.length() > 100) {
-            return ResponseEntity.badRequest().body("A LeetCode username is required.");
-        }
-        String normalized = username.trim();
-        List<User> users = userRepository.findAll();
-        User user = users.stream()
-                .filter(u -> normalized.equalsIgnoreCase(u.getLcUsername()))
-                .findFirst()
-                .orElse(null);
-
-        if (user == null) {
-            // Create a new user for this new LeetCode ID instead of blocking it
-            user = userRepository.save(User.builder()
-                .githubId("local:" + normalized.toLowerCase())
-                .username(normalized)
-                .lcUsername(normalized)
-                .virtualRating(1500)
-                .build());
-        }
-        return ResponseEntity.ok(Map.of("token", jwtService.generateToken(user.getId(), user.getUsername())));
+        jwtService.revokeToken(authorization.substring(7));
+        return ResponseEntity.noContent().build();
     }
 }
