@@ -72,7 +72,7 @@
         code: body.code || body.typed_code || captured.code,
         codeLang: body.lang || captured.lang
       }
-    }, '*');
+    }, window.location.origin || '*');
   }
 
   // Monkey-patch window.fetch

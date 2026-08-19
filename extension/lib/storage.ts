@@ -39,9 +39,30 @@ export async function getUsername(): Promise<string | null> {
 export async function setUsername(username: string): Promise<void> {
   const current = await getUsername()
   if (current && current.toLowerCase() !== username.toLowerCase()) {
-    await storage.remove("algovault.latestSyncedSubmissionTimestamp")
-    await storage.remove("algovault.solvedSlugs")
-    await storage.remove("algovault.cache.contest_snapshot")
+    // Purge ALL user-scoped caches to prevent cross-account data bleed
+    await Promise.all([
+      storage.remove("algovault.latestSyncedSubmissionTimestamp"),
+      storage.remove("algovault.solvedSlugs"),
+      storage.remove("algovault.syncHasMore"),
+      storage.remove(STORAGE_KEYS.LAST_SYNC),
+      storage.remove(STORAGE_KEYS.CACHED_DASHBOARD),
+      storage.remove(STORAGE_KEYS.CACHED_MASTERY),
+      storage.remove(STORAGE_KEYS.CACHED_HEATMAP),
+      storage.remove(STORAGE_KEYS.CACHED_CONTESTS),
+      storage.remove(STORAGE_KEYS.CACHED_WEAKNESS),
+      storage.remove(STORAGE_KEYS.TODAY_SNAPSHOT),
+      storage.remove(STORAGE_KEYS.TODAY_RECOMMENDATIONS),
+      storage.remove(STORAGE_KEYS.CURRENT_SESSION),
+      storage.remove("algovault.cache.contest_snapshot"),
+      storage.remove("algovault.session.store"),
+      storage.remove("algovault.logs.index"),
+    ])
+    // Clear monthly log buckets (algovault.logs.YYYY_MM)
+    const allData = await chrome.storage.local.get(null)
+    const logBucketKeys = Object.keys(allData).filter(k => k.startsWith("algovault.logs.") && k !== "algovault.logs.index")
+    if (logBucketKeys.length > 0) {
+      await chrome.storage.local.remove(logBucketKeys)
+    }
   }
   await setTyped(STORAGE_KEYS.USERNAME, username)
 }
@@ -266,6 +287,64 @@ export async function getGithubBranch(): Promise<string | null> {
 
 export async function setGithubBranch(branch: string): Promise<void> {
   await setTyped(STORAGE_KEYS.GITHUB_BRANCH, branch)
+}
+
+export async function getGithubAutoSync(): Promise<boolean> {
+  try {
+    const val = await storage.get<any>(STORAGE_KEYS.GITHUB_AUTO_SYNC)
+    if (val === false || val === "false" || val === 0 || val === "0") {
+      return false
+    }
+    if (typeof chrome !== "undefined" && chrome.storage) {
+      if (chrome.storage.local) {
+        const localData = await chrome.storage.local.get([STORAGE_KEYS.GITHUB_AUTO_SYNC, "algovault.github.autoSync", "githubAutoSync"])
+        if (
+          localData[STORAGE_KEYS.GITHUB_AUTO_SYNC] === false ||
+          localData[STORAGE_KEYS.GITHUB_AUTO_SYNC] === "false" ||
+          localData["algovault.github.autoSync"] === false ||
+          localData["algovault.github.autoSync"] === "false" ||
+          localData["githubAutoSync"] === false ||
+          localData["githubAutoSync"] === "false"
+        ) {
+          return false
+        }
+      }
+      if (chrome.storage.sync) {
+        const syncData = await chrome.storage.sync.get(["githubAutoSync", "algovault.github.autoSync"])
+        if (
+          syncData["githubAutoSync"] === false ||
+          syncData["githubAutoSync"] === "false" ||
+          syncData["algovault.github.autoSync"] === false ||
+          syncData["algovault.github.autoSync"] === "false"
+        ) {
+          return false
+        }
+      }
+    }
+    return true
+  } catch {
+    return true
+  }
+}
+
+export async function setGithubAutoSync(enabled: boolean): Promise<void> {
+  const boolVal = Boolean(enabled)
+  await storage.set(STORAGE_KEYS.GITHUB_AUTO_SYNC, boolVal)
+  if (typeof chrome !== "undefined" && chrome.storage) {
+    if (chrome.storage.local) {
+      await chrome.storage.local.set({
+        [STORAGE_KEYS.GITHUB_AUTO_SYNC]: boolVal,
+        "algovault.github.autoSync": boolVal,
+        "githubAutoSync": boolVal
+      })
+    }
+    if (chrome.storage.sync) {
+      await chrome.storage.sync.set({
+        "githubAutoSync": boolVal,
+        "algovault.github.autoSync": boolVal
+      })
+    }
+  }
 }
 
 export async function clearGithubAuth(): Promise<void> {

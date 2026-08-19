@@ -121,7 +121,10 @@ export const fetchPrediction = async (titleSlug: string): Promise<PredictionResu
 }
 
 export const fetchDashboard = async (): Promise<DashboardData> => backendFetch<DashboardData>("/api/dashboard")
-export const fetchHeatmap = async () => backendFetch("/api/heatmap")
+export const fetchHeatmap = async (limit?: number) => {
+  const query = limit && limit > 0 ? `?limit=${limit}` : ""
+  return backendFetch<any[]>(`/api/heatmap${query}`)
+}
 export const fetchMastery = async () => backendFetch("/api/mastery")
 export const recomputeMastery = async () => backendFetch("/api/mastery/recompute", { method: "POST" })
 export const fetchWeakness = async (refresh = false): Promise<WeaknessSnapshot> => backendFetch<WeaknessSnapshot>(refresh ? "/api/weakness?refresh=true" : "/api/weakness")

@@ -2,7 +2,7 @@ export interface StudyProblem {
   slug: string
   title: string
   topic: string
-  difficulty?: string
+  difficulty: "Easy" | "Medium" | "Hard"
 }
 
 export interface StudyList {
@@ -13,8 +13,100 @@ export interface StudyList {
   problems: StudyProblem[]
 }
 
+const EASY_SLUGS = new Set([
+  "contains-duplicate",
+  "valid-anagram",
+  "two-sum",
+  "valid-palindrome",
+  "best-time-to-buy-and-sell-stock",
+  "valid-parentheses",
+  "binary-search",
+  "reverse-linked-list",
+  "merge-two-sorted-lists",
+  "linked-list-cycle",
+  "invert-binary-tree",
+  "maximum-depth-of-binary-tree",
+  "diameter-of-binary-tree",
+  "balanced-binary-tree",
+  "same-tree",
+  "subtree-of-another-tree",
+  "lowest-common-ancestor-of-a-binary-search-tree",
+  "kth-largest-element-in-a-stream",
+  "last-stone-weight",
+  "climbing-stairs",
+  "min-cost-climbing-stairs",
+  "single-number",
+  "number-of-1-bits",
+  "counting-bits",
+  "reverse-bits",
+  "missing-number",
+  "happy-number",
+  "plus-one",
+  "meeting-rooms",
+  "pascals-triangle",
+  "middle-of-the-linked-list",
+  "delete-node-in-a-linked-list",
+  "intersection-of-two-linked-lists",
+  "palindrome-linked-list",
+  "assign-cookies",
+  "next-greater-element-i",
+  "symmetric-tree",
+  "roman-to-integer",
+  "longest-common-prefix",
+  "majority-element",
+  "binary-tree-inorder-traversal",
+  "binary-tree-preorder-traversal",
+  "binary-tree-postorder-traversal",
+  "two-sum-iv-input-is-a-bst",
+  "search-in-a-binary-search-tree"
+])
+
+const HARD_SLUGS = new Set([
+  "trapping-rain-water",
+  "minimum-window-substring",
+  "sliding-window-maximum",
+  "largest-rectangle-in-histogram",
+  "median-of-two-sorted-arrays",
+  "merge-k-sorted-lists",
+  "reverse-nodes-in-k-group",
+  "serialize-and-deserialize-binary-tree",
+  "binary-tree-maximum-path-sum",
+  "word-search-ii",
+  "find-median-from-data-stream",
+  "n-queens",
+  "word-ladder",
+  "reconstruct-itinerary",
+  "swim-in-rising-water",
+  "alien-dictionary",
+  "distinct-subsequences",
+  "edit-distance",
+  "burst-balloons",
+  "regular-expression-matching",
+  "minimum-interval-to-include-each-query",
+  "reverse-pairs",
+  "sudoku-solver",
+  "permutation-sequence",
+  "reverse-nodes-in-k-group",
+  "merge-k-sorted-lists",
+  "cheapest-flights-within-k-stops"
+])
+
 const titleFromSlug = (slug: string) => slug.replace(/-/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())
-const group = (topic: string, slugs: string[]): StudyProblem[] => slugs.map((slug) => ({ slug, title: titleFromSlug(slug), topic }))
+
+const getDifficulty = (slug: string): "Easy" | "Medium" | "Hard" => {
+  const clean = slug.toLowerCase().trim()
+  if (EASY_SLUGS.has(clean)) return "Easy"
+  if (HARD_SLUGS.has(clean)) return "Hard"
+  return "Medium"
+}
+
+const group = (topic: string, slugs: string[]): StudyProblem[] =>
+  slugs.map((slug) => ({
+    slug,
+    title: titleFromSlug(slug),
+    topic,
+    difficulty: getDifficulty(slug)
+  }))
 
 const neetcode150 = [
   ...group("Arrays & Hashing", ["contains-duplicate", "valid-anagram", "two-sum", "group-anagrams", "top-k-frequent-elements", "product-of-array-except-self", "valid-sudoku", "encode-and-decode-strings", "longest-consecutive-sequence"]),

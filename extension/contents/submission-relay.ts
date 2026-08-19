@@ -95,18 +95,18 @@ function showPostSolveDialog(titleSlug: string) {
     "right:24px",
     "bottom:92px",
     "z-index:2147483647",
-    "background:rgba(17, 24, 39, 0.95)",
-    "backdrop-filter:blur(16px)",
+    "background:#111827",
     "color:#f9fafb",
-    "border:1px solid rgba(255, 255, 255, 0.08)",
-    "box-shadow:0 25px 50px -12px rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255,255,255,0.05)",
+    "border:1px solid rgba(255, 255, 255, 0.12)",
+    "box-shadow:0 20px 40px rgba(0, 0, 0, 0.6), inset 0 1px 1px rgba(255,255,255,0.1)",
     "border-radius:14px",
     "padding:16px",
     "font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif",
     "width:270px",
-    "transition:all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+    "transition:all 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
     "opacity:0",
-    "transform:scale(0.95)"
+    "transform:scale(0.95) translateZ(0)",
+    "will-change:opacity, transform"
   ].join(";")
 
   wrapper.innerHTML = `
@@ -236,7 +236,7 @@ window.addEventListener("message", ((event: MessageEvent) => {
   chrome.runtime.sendMessage({ action: "submission_result", payload })
   if (payload.statusDisplay === "Accepted") {
     chrome.runtime.sendMessage({ action: "session_finish_v2", language: payload.language })
-    window.postMessage({ type: "AV_SUBMISSION_RESULT_CONFIRMED", nonce: expectedNonce, detail: payload }, "*")
+    window.postMessage({ type: "AV_SUBMISSION_RESULT_CONFIRMED", nonce: expectedNonce, detail: payload }, window.location.origin || "*")
     chrome.storage.local.get("algovault.solvedSlugs", (result) => {
       const cached = result["algovault.solvedSlugs"] || {}
       const slugs = new Set<string>(Array.isArray(cached?.slugs) ? cached.slugs : [])

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react"
+import { Star, Bug } from "lucide-react"
 import { Card } from "../ui/Card"
 import {
   getUsername,
@@ -11,6 +12,8 @@ import {
   setGithubUser as persistGithubUser,
   getGithubBranch,
   setGithubBranch as persistGithubBranch,
+  getGithubAutoSync,
+  setGithubAutoSync as persistGithubAutoSync,
   clearGithubAuth,
   setJwtToken,
   getLastSync
@@ -24,6 +27,7 @@ import {
   type GithubUser,
   type GithubRepoItem
 } from "../../lib/api/github"
+import { COMMUNITY_CONFIG } from "../../lib/community"
 
 interface SyncStatus {
   message?: string;
@@ -60,6 +64,7 @@ export const Settings = () => {
   const [manualPatMode, setManualPatMode] = useState<boolean>(false);
   const [githubSaved, setGithubSaved] = useState<boolean>(false);
   const [gitSyncStatus, setGitSyncStatus] = useState<SyncStatus | null>(null);
+  const [githubAutoSync, setGithubAutoSyncState] = useState<boolean>(true);
 
   const [syncHasMore, setSyncHasMore] = useState<boolean | null>(null);
   const [lastSync, setLastSync] = useState<number | null>(null);
@@ -106,24 +111,59 @@ export const Settings = () => {
     getGithubRepo().then((value) => setGithubRepo(value || ""));
     getGithubBranch().then((value) => setGithubBranch(value || "main"));
     getGithubUser().then((val) => setGithubUser(val || null));
+    getGithubAutoSync().then((val) => setGithubAutoSyncState(val));
+    try {
+      chrome.runtime.sendMessage({ action: "get_github_auto_sync" }, (res) => {
+        if (res && res.enabled !== undefined) {
+          setGithubAutoSyncState(res.enabled);
+        }
+      });
+    } catch {}
     getLastSync().then(setLastSync).catch(() => setLastSync(null));
 
     // Load token and fetch repos/profile if present
     getGithubPat().then((token) => {
       if (token) {
         setGithubPat(token);
-        // Refresh GitHub profile & repos
-        fetchUserGithubProfile(token).then((profile) => {
-          if (profile) {
-            setGithubUser(profile);
-            persistGithubUser(profile);
+        // Refresh GitHub profile & repos, validate token validity
+        fetchUserGithubProfile(token).then(async (res) => {
+          if (res.revoked) {
+            await clearGithubAuth();
+            await clearJwtToken();
+            setGithubPat('');
+            setGithubUser(null);
+            setGithubRepo('');
+            setGithubRepos([]);
+            setGitSyncStatus(null);
+            setAuthError("GitHub token was revoked or expired. Please connect your account again.");
+            return;
+          }
+          if (res.ok && res.user) {
+            setGithubUser(res.user);
+            persistGithubUser(res.user);
           }
         });
         setLoadingRepos(true);
-        fetchUserGithubRepos(token).then((repos) => {
-          setGithubRepos(repos);
+        fetchUserGithubRepos(token).then(async (res) => {
+          if (res.revoked) {
+            await clearGithubAuth();
+            await clearJwtToken();
+            setGithubPat('');
+            setGithubUser(null);
+            setGithubRepo('');
+            setGithubRepos([]);
+            setGitSyncStatus(null);
+            setAuthError("GitHub token was revoked or expired. Please connect your account again.");
+            setLoadingRepos(false);
+            return;
+          }
+          if (res.ok) {
+            setGithubRepos(res.repos);
+          }
           setLoadingRepos(false);
         });
+      } else {
+        setGithubUser(null);
       }
     });
     
@@ -145,6 +185,20 @@ export const Settings = () => {
     const gitListener = (changes: any) => {
       if (changes["algovault.gitSyncStatus"]?.newValue) {
         setGitSyncStatus(parseGitSyncStatus(changes["algovault.gitSyncStatus"].newValue));
+      }
+      if (changes["algovault.github.pat"]) {
+        const newPat = changes["algovault.github.pat"].newValue;
+        if (!newPat) {
+          setGithubPat('');
+          setGithubUser(null);
+          setGithubRepo('');
+          setGithubRepos([]);
+        } else {
+          setGithubPat(newPat);
+        }
+      }
+      if (changes["algovault.github.user"]) {
+        setGithubUser(changes["algovault.github.user"].newValue || null);
       }
     };
     chrome.storage.onChanged.addListener(gitListener);
@@ -258,22 +312,24 @@ export const Settings = () => {
         await persistGithubPat(res.token);
         
         // Fetch profile & repos
-        const profile = await fetchUserGithubProfile(res.token);
-        if (profile) {
-          setGithubUser(profile);
-          await persistGithubUser(profile);
+        const profileRes = await fetchUserGithubProfile(res.token);
+        if (profileRes.ok && profileRes.user) {
+          setGithubUser(profileRes.user);
+          await persistGithubUser(profileRes.user);
         }
         setLoadingRepos(true);
-        const repos = await fetchUserGithubRepos(res.token);
-        setGithubRepos(repos);
+        const reposRes = await fetchUserGithubRepos(res.token);
+        if (reposRes.ok) {
+          setGithubRepos(reposRes.repos);
+        }
         setLoadingRepos(false);
 
         // Auto-select first repo if none selected yet
-        if (!githubRepo && repos.length > 0) {
-          setGithubRepo(repos[0].full_name);
-          await persistGithubRepo(repos[0].full_name);
-          setGithubBranch(repos[0].default_branch || "main");
-          await persistGithubBranch(repos[0].default_branch || "main");
+        if (!githubRepo && reposRes.ok && reposRes.repos.length > 0) {
+          setGithubRepo(reposRes.repos[0].full_name);
+          await persistGithubRepo(reposRes.repos[0].full_name);
+          setGithubBranch(reposRes.repos[0].default_branch || "main");
+          await persistGithubBranch(reposRes.repos[0].default_branch || "main");
         }
 
       } else {
@@ -329,13 +385,18 @@ export const Settings = () => {
     persistGithubBranch(githubBranch.trim());
     
     if (manualToken) {
-      const profile = await fetchUserGithubProfile(manualToken);
-      if (profile) {
-        setGithubUser(profile);
-        await persistGithubUser(profile);
+      const profileRes = await fetchUserGithubProfile(manualToken);
+      if (profileRes.ok && profileRes.user) {
+        setGithubUser(profileRes.user);
+        await persistGithubUser(profileRes.user);
+      } else if (profileRes.revoked) {
+        setAuthError("Personal Access Token is invalid, revoked, or expired.");
+        return;
       }
-      const repos = await fetchUserGithubRepos(manualToken);
-      setGithubRepos(repos);
+      const reposRes = await fetchUserGithubRepos(manualToken);
+      if (reposRes.ok) {
+        setGithubRepos(reposRes.repos);
+      }
     }
 
     setGithubSaved(true);
@@ -376,6 +437,15 @@ export const Settings = () => {
     } finally {
       setExporting(false);
     }
+  };
+
+  const toggleGithubAutoSync = async () => {
+    const next = !githubAutoSync;
+    setGithubAutoSyncState(next);
+    await persistGithubAutoSync(next);
+    try {
+      chrome.runtime.sendMessage({ action: "set_github_auto_sync", enabled: next });
+    } catch {}
   };
 
   const isConnected = Boolean(githubPat);
@@ -679,6 +749,28 @@ export const Settings = () => {
                 className="w-full bg-zinc-900/30 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-[#dfa054] transition-all font-mono"
               />
             </div>
+
+            {/* Auto-Sync Toggle */}
+            <div className="flex justify-between items-center p-2.5 rounded-lg border border-zinc-800 bg-zinc-900/40 mt-1">
+              <div>
+                <div className="text-xs font-medium text-zinc-200 flex items-center gap-1.5">
+                  <span>Auto-Sync Solutions</span>
+                  <span className={`text-[8px] font-mono font-semibold px-1.5 py-0.2 rounded ${githubAutoSync ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-800/40' : 'bg-zinc-800 text-zinc-400'}`}>
+                    {githubAutoSync ? 'ENABLED' : 'PAUSED'}
+                  </span>
+                </div>
+                <div className="text-[10px] text-zinc-500 font-mono mt-0.5 leading-relaxed">
+                  Automatically push accepted solutions & complexity stats to GitHub
+                </div>
+              </div>
+              <button
+                onClick={toggleGithubAutoSync}
+                className={`w-9 h-5 rounded-full relative transition-colors shrink-0 ${githubAutoSync ? 'bg-[#dfa054]' : 'bg-zinc-800'}`}
+                title={githubAutoSync ? "Pause Auto-Sync" : "Enable Auto-Sync"}
+              >
+                <div className={`w-3.5 h-3.5 rounded-full bg-zinc-950 absolute top-0.5 transition-all ${githubAutoSync ? 'right-0.5' : 'left-0.5'}`} />
+              </button>
+            </div>
           </div>
         )}
 
@@ -780,6 +872,48 @@ export const Settings = () => {
             )}
           </div>
         )}
+      </Card>
+
+      {/* ─── ABOUT & OPEN SOURCE ─────────────────────────── */}
+      <Card className="p-3.5 rounded-xl border border-zinc-800/80 bg-zinc-950/40">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-zinc-200">AlgoVault</span>
+            <span className="text-[9px] font-mono text-zinc-500">{COMMUNITY_CONFIG.VERSION}</span>
+          </div>
+          <span className="text-[10px] font-mono text-zinc-500">
+            Made with joy by{" "}
+            <a
+              href={COMMUNITY_CONFIG.AUTHOR_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="text-zinc-400 hover:text-zinc-200 transition-colors"
+            >
+              {COMMUNITY_CONFIG.AUTHOR_HANDLE}
+            </a>
+          </span>
+        </div>
+        <p className="text-[11px] text-zinc-500 leading-relaxed mb-3 font-sans">
+          If AlgoVault helps your problem solving, consider supporting the project with a star on GitHub.
+        </p>
+        <div className="flex items-center gap-2">
+          <a
+            href={COMMUNITY_CONFIG.STAR_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-amber-400 text-[11px] font-medium transition-all font-mono"
+          >
+            <Star size={11} className="text-amber-500" /> Star on GitHub
+          </a>
+          <a
+            href={COMMUNITY_CONFIG.ISSUES_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-zinc-200 text-[11px] font-medium transition-all font-mono"
+          >
+            <Bug size={11} /> Report Issue
+          </a>
+        </div>
       </Card>
     </div>
   );

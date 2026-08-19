@@ -1,6 +1,6 @@
 import type { PlasmoCSConfig, PlasmoGetInlineAnchor } from "plasmo"
 import cssText from "data-text:~style.css"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 
 export const config: PlasmoCSConfig = {
   matches: ["https://leetcode.com/problems/*", "https://leetcode.com/contest/*/problems/*"]
@@ -73,14 +73,14 @@ const THEMES: Record<string, ThemeAssets> = {
       defeat: "YOU DIED"
     },
     titleColor: {
-      victory: "text-[#dfa054] drop-shadow-[0_4px_16px_rgba(223,160,84,0.45)]",
-      defeat: "text-red-600 drop-shadow-[0_4px_16px_rgba(220,38,38,0.45)]"
+      victory: "text-[#dfa054] drop-shadow-[0_2px_10px_rgba(223,160,84,0.4)]",
+      defeat: "text-red-500 drop-shadow-[0_2px_10px_rgba(220,38,38,0.4)]"
     },
     subColor: {
       victory: "text-zinc-100",
       defeat: "text-zinc-300"
     },
-    titleClass: "font-serif tracking-[0.22em] font-extrabold uppercase",
+    titleClass: "font-serif tracking-[0.2em] font-extrabold uppercase",
     subClass: "font-mono tracking-widest uppercase font-semibold"
   },
   minecraft: {
@@ -102,8 +102,8 @@ const THEMES: Record<string, ThemeAssets> = {
       defeat: "Score: &e0"
     },
     titleColor: {
-      victory: "text-green-500 drop-shadow-[0_4px_16px_rgba(34,197,94,0.45)]",
-      defeat: "text-red-500 drop-shadow-[0_4px_16px_rgba(239,68,68,0.45)]"
+      victory: "text-green-400 drop-shadow-[0_2px_10px_rgba(34,197,94,0.4)]",
+      defeat: "text-red-500 drop-shadow-[0_2px_10px_rgba(239,68,68,0.4)]"
     },
     subColor: {
       victory: "text-yellow-400",
@@ -118,10 +118,8 @@ const playSound = (soundUrl: string) => {
   try {
     const audio = new Audio(soundUrl)
     audio.volume = 0.5
-    audio.play().catch(e => console.error("AlgoVault failed to play celebration sound", e))
-  } catch (err) {
-    console.error("AlgoVault audio player error", err)
-  }
+    audio.play().catch(() => {})
+  } catch {}
 }
 
 export default function SolveCelebration() {
@@ -133,74 +131,110 @@ export default function SolveCelebration() {
   const [zenithInsightPrompt, setZenithInsightPrompt] = useState(false)
   const [insightText, setInsightText] = useState("")
 
+  const prefsRef = useRef({
+    overlay: true,
+    sound: true,
+    theme: "gta"
+  })
+  const isShowingRef = useRef(false)
+  const handledSubmissionsRef = useRef<Set<string>>(new Set())
+  const closeTimeoutRef = useRef<any>(null)
+
   const currentTheme = THEMES[themeName] || THEMES.gta
 
   useEffect(() => {
-    const handledSubmissionIds = new Set<string>()
-
-    chrome.storage.sync.get(["celebrationTheme"], (res) => {
-      if (res.celebrationTheme !== undefined) setThemeName(res.celebrationTheme)
+    // 1. Preload settings on mount so submission path has ZERO storage latency
+    chrome.storage.sync.get(["celebrationOverlay", "celebrationSound", "celebrationTheme"], (res) => {
+      if (res.celebrationOverlay !== undefined) prefsRef.current.overlay = res.celebrationOverlay
+      if (res.celebrationSound !== undefined) prefsRef.current.sound = res.celebrationSound
+      if (res.celebrationTheme) {
+        prefsRef.current.theme = res.celebrationTheme
+        setThemeName(res.celebrationTheme)
+      }
     })
 
+    // Listen for live preferences changes
+    const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
+      if (areaName === "sync" || areaName === "local") {
+        if (changes.celebrationOverlay) prefsRef.current.overlay = changes.celebrationOverlay.newValue
+        if (changes.celebrationSound) prefsRef.current.sound = changes.celebrationSound.newValue
+        if (changes.celebrationTheme) {
+          prefsRef.current.theme = changes.celebrationTheme.newValue
+          setThemeName(changes.celebrationTheme.newValue)
+        }
+      }
+    }
+    chrome.storage.onChanged.addListener(handleStorageChange)
+
     const handleSubmission = (event: MessageEvent) => {
-      if (!["AV_SUBMISSION_RESULT", "AV_SUBMISSION_RESULT_CONFIRMED"].includes(event.data?.type)) return
+      // Handle each submission strictly once
+      if (event.data?.type !== "AV_SUBMISSION_RESULT" && event.data?.type !== "AV_SUBMISSION_RESULT_CONFIRMED") return
       
       const expectedNonce = (window as any).__ALGOVAULT_ISOLATED_NONCE__
       if (!event.data?.nonce || event.data.nonce !== expectedNonce) {
         return
       }
+
       const detail = event.data.detail || {}
-      if (detail.submissionId) {
-        const submissionId = String(detail.submissionId)
-        if (handledSubmissionIds.has(submissionId)) return
-        handledSubmissionIds.add(submissionId)
+      const submissionKey = detail.submissionId ? String(detail.submissionId) : `${detail.titleSlug || 'unknown'}-${detail.statusCode}-${detail.runtime || ''}`
+      if (handledSubmissionsRef.current.has(submissionKey)) {
+        return
       }
+      handledSubmissionsRef.current.add(submissionKey)
+      if (handledSubmissionsRef.current.size > 50) {
+        const first = handledSubmissionsRef.current.values().next().value
+        if (first) handledSubmissionsRef.current.delete(first)
+      }
+
       const status = detail.statusCode != null ? Number(detail.statusCode) : null
+      const verdict = String(detail.statusDisplay || "").toLowerCase()
 
       let newType: "VICTORY" | "DEFEAT" | null = null
-      const verdict = String(detail.statusDisplay || "").toLowerCase()
       if (status === 10 || verdict === "accepted") newType = "VICTORY"
       else if (status !== null || verdict) newType = "DEFEAT"
 
-      if (newType) {
-        const heading = document.querySelector("a[href*='/problems/']")?.textContent
-        const title = heading?.replace(/^\d+\.\s*/, "").trim() || "Problem"
-        setProblemTitle(title)
-        setType(newType)
+      if (!newType) return
 
-        chrome.storage.local.get(["algovault.isZenith"], (localRes) => {
-          const isZenith = !!localRes["algovault.isZenith"];
-          if (newType === "VICTORY" && isZenith) {
-            setZenithInsightPrompt(true);
-          }
+      const heading = document.querySelector("a[href*='/problems/']")?.textContent
+      const title = heading?.replace(/^\d+\.\s*/, "").trim() || "Problem"
+      setProblemTitle(title)
+      setType(newType)
 
-          chrome.storage.sync.get(["celebrationOverlay", "celebrationSound", "celebrationTheme"], (res) => {
-            const isOverlay = res.celebrationOverlay !== undefined ? res.celebrationOverlay : true
-            const isSound = res.celebrationSound !== undefined ? res.celebrationSound : true
-            const theme = res.celebrationTheme || "gta"
+      const activeTheme = THEMES[prefsRef.current.theme] || THEMES.gta
 
-            setThemeName(theme)
-            const activeTheme = THEMES[theme] || THEMES.gta
-
-            if (isOverlay || (newType === "VICTORY" && isZenith)) {
-              setMounted(true)
-              setTimeout(() => setVisible(true), 50)
-            }
-
-            if (isSound) {
-              playSound(newType === "VICTORY" ? activeTheme.audio.victory : activeTheme.audio.defeat)
-            }
-
-            // Auto-close overlay after 5 seconds only if not Zenith victory
-            if (!(newType === "VICTORY" && isZenith)) {
-              setTimeout(() => {
-                setVisible(false)
-                setTimeout(() => setMounted(false), 500)
-              }, 4500)
-            }
-          })
-        })
+      // Fast-path synchronous audio trigger
+      if (prefsRef.current.sound) {
+        playSound(newType === "VICTORY" ? activeTheme.audio.victory : activeTheme.audio.defeat)
       }
+
+      // Check zenith async without blocking UI
+      chrome.storage.local.get(["algovault.isZenith"], (localRes) => {
+        const isZenith = !!localRes["algovault.isZenith"]
+        if (newType === "VICTORY" && isZenith) {
+          setZenithInsightPrompt(true)
+        }
+
+        if (prefsRef.current.overlay || (newType === "VICTORY" && isZenith)) {
+          if (isShowingRef.current) return
+          isShowingRef.current = true
+          setMounted(true)
+          
+          requestAnimationFrame(() => {
+            setVisible(true)
+          })
+
+          if (!(newType === "VICTORY" && isZenith)) {
+            if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current)
+            closeTimeoutRef.current = setTimeout(() => {
+              setVisible(false)
+              setTimeout(() => {
+                setMounted(false)
+                isShowingRef.current = false
+              }, 300)
+            }, 3800)
+          }
+        }
+      })
     }
 
     window.addEventListener("message", handleSubmission)
@@ -208,14 +242,20 @@ export default function SolveCelebration() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setVisible(false)
-        setTimeout(() => setMounted(false), 500)
+        if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current)
+        setTimeout(() => {
+          setMounted(false)
+          isShowingRef.current = false
+        }, 300)
       }
     }
     window.addEventListener("keydown", handleKeyDown)
 
     return () => {
+      chrome.storage.onChanged.removeListener(handleStorageChange)
       window.removeEventListener("message", handleSubmission)
       window.removeEventListener("keydown", handleKeyDown)
+      if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current)
     }
   }, [])
 
@@ -225,17 +265,20 @@ export default function SolveCelebration() {
 
   return (
     <div
-      className={`fixed inset-0 bg-zinc-950/85 backdrop-blur-md z-[999999] flex flex-col items-center justify-center font-sans select-none pointer-events-auto transition-opacity duration-500 ease-in-out ${
+      className={`fixed inset-0 bg-zinc-950/90 z-[999999] flex flex-col items-center justify-center font-sans select-none pointer-events-auto transform-gpu will-change-[opacity,transform] transition-opacity duration-300 ease-out ${
         visible ? "opacity-100" : "opacity-0"
       }`}
       onClick={() => {
         setVisible(false)
-        setTimeout(() => setMounted(false), 500)
+        setTimeout(() => {
+          setMounted(false)
+          isShowingRef.current = false
+        }, 300)
       }}
     >
       <div
-        className={`flex flex-col items-center text-center p-6 max-w-lg transition-transform duration-500 ${
-          visible ? "scale-100" : "scale-90"
+        className={`flex flex-col items-center text-center p-6 max-w-lg transform-gpu will-change-transform transition-transform duration-300 ${
+          visible ? "scale-100" : "scale-95"
         }`}
         onClick={(e) => e.stopPropagation()}
       >
@@ -245,28 +288,33 @@ export default function SolveCelebration() {
               {currentTheme.title[key]}
             </h1>
 
-            <h2 className={`text-xl md:text-2xl mb-5 drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)] ${currentTheme.subClass} ${currentTheme.subColor[key]}`}>
+            <h2 className={`text-xl md:text-2xl mb-4 drop-shadow-[0_2px_4px_rgba(0,0,0,0.6)] ${currentTheme.subClass} ${currentTheme.subColor[key]}`}>
               {currentTheme.subtitle[key]}
             </h2>
 
-            {/* Themed Banner Image */}
-            <div className="my-3.5 border-4 border-white/10 rounded-2xl overflow-hidden bg-zinc-900/50 shadow-2xl max-w-[480px] w-full">
+            {/* Themed Banner Image - GPU Accelerated */}
+            <div className="my-3 border-2 border-white/10 rounded-2xl overflow-hidden bg-zinc-900 shadow-2xl max-w-[440px] w-full">
               <img 
                 src={type === "VICTORY" ? currentTheme.images.victory : currentTheme.images.defeat} 
-                className="w-full h-auto object-cover" 
+                className="w-full h-auto object-cover block" 
+                loading="eager"
+                decoding="async"
                 alt={type}
               /> 
             </div>
 
             {/* Problem metadata details banner */}
-            <div className="bg-zinc-900/70 border border-zinc-800/80 px-4.5 py-2 rounded-full text-[10px] text-zinc-400 font-mono tracking-wide mb-6 mt-4 select-text">
+            <div className="bg-zinc-900/90 border border-zinc-800 px-4 py-1.5 rounded-full text-[10px] text-zinc-400 font-mono tracking-wide mb-5 mt-3 select-text shadow-md">
               {type === "VICTORY" ? "🏆 ACCEPTED" : "❌ ATTEMPT FAILED"}: <span className="text-zinc-200 font-semibold">{problemTitle}</span>
             </div>
 
             <button
               onClick={() => {
                 setVisible(false)
-                setTimeout(() => setMounted(false), 500)
+                setTimeout(() => {
+                  setMounted(false)
+                  isShowingRef.current = false
+                }, 300)
               }}
               className="text-[9px] text-zinc-500 font-mono hover:text-[#dfa054] transition-colors uppercase tracking-widest outline-none cursor-pointer"
             >
@@ -274,14 +322,14 @@ export default function SolveCelebration() {
             </button>
           </>
         ) : (
-          <div className="bg-zinc-950/95 border border-[#dfa054]/50 shadow-[0_0_40px_rgba(223,160,84,0.25)] p-8 rounded-xl w-[450px] backdrop-blur-xl">
-            <h1 className="text-2xl text-[#dfa054] font-serif font-bold mb-4 tracking-widest uppercase">Zenith Quest Complete</h1>
-            <p className="text-zinc-300 text-sm mb-6 font-mono leading-relaxed">What was the key insight that unlocked this problem? Formulate it clearly to encode it into your long-term memory.</p>
+          <div className="bg-zinc-950 border border-[#dfa054]/50 shadow-[0_0_40px_rgba(223,160,84,0.2)] p-7 rounded-xl w-[440px]">
+            <h1 className="text-2xl text-[#dfa054] font-serif font-bold mb-3 tracking-widest uppercase">Zenith Quest Complete</h1>
+            <p className="text-zinc-300 text-xs mb-5 font-mono leading-relaxed">What was the key insight that unlocked this problem? Formulate it clearly to encode it into your long-term memory.</p>
             <textarea 
               autoFocus
               value={insightText}
               onChange={(e) => setInsightText(e.target.value)}
-              className="w-full h-28 bg-zinc-900 border border-zinc-700 rounded-lg p-3 text-zinc-200 focus:outline-none focus:border-[#dfa054] focus:ring-1 focus:ring-[#dfa054] transition-all mb-5 text-sm font-mono resize-none"
+              className="w-full h-24 bg-zinc-900 border border-zinc-700 rounded-lg p-3 text-zinc-200 focus:outline-none focus:border-[#dfa054] transition-all mb-4 text-xs font-mono resize-none"
               placeholder="The key trick was realizing that..."
             />
             <button 
@@ -296,11 +344,12 @@ export default function SolveCelebration() {
                   setVisible(false);
                   setTimeout(() => {
                     setMounted(false);
+                    isShowingRef.current = false;
                     location.reload();
-                  }, 500);
+                  }, 300);
                 });
               }}
-              className="w-full bg-[#dfa054]/10 hover:bg-[#dfa054]/20 text-[#dfa054] border border-[#dfa054]/30 py-3 rounded-lg font-bold tracking-widest text-xs uppercase transition-all shadow-[0_0_15px_rgba(223,160,84,0.1)] hover:shadow-[0_0_25px_rgba(223,160,84,0.25)] cursor-pointer"
+              className="w-full bg-[#dfa054]/15 hover:bg-[#dfa054]/25 text-[#dfa054] border border-[#dfa054]/40 py-2.5 rounded-lg font-bold tracking-widest text-xs uppercase transition-all shadow-md cursor-pointer"
             >
               Commit Insight & Exit Zenith
             </button>
@@ -310,3 +359,4 @@ export default function SolveCelebration() {
     </div>
   )
 }
+

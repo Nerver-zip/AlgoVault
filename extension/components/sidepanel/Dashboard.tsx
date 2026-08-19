@@ -43,7 +43,8 @@ import {
   setTodayRecommendationSelection,
   setTodaySnapshot
 } from "../../lib/storage"
-import { normalizeZerotracPayload } from "../../lib/zerotrac"
+import { normalizeZerotracPayload, buildZerotracRatingMap } from "../../lib/zerotrac"
+import { WeeklyReportModal } from "./WeeklyReportModal"
 import { STUDY_LISTS } from "../../lib/study-lists"
 import type {
   ActiveSession,
@@ -298,6 +299,7 @@ export const Dashboard = () => {
   const [sessionActionPending, setSessionActionPending] = useState(false)
   const [recommendationSelection, setRecommendationSelection] = useState<{ practiceSlug?: string; stretchSlug?: string }>({})
   const [hoveredActivityKey, setHoveredActivityKey] = useState<string | null>(null)
+  const [isWeeklyReportOpen, setIsWeeklyReportOpen] = useState(false)
 
   const loadLocalLogs = useCallback(() => {
     const now = new Date()
@@ -555,6 +557,8 @@ export const Dashboard = () => {
       badges: [{ label: "No personalised data yet", tone: "zinc" }]
     }
   }, [activeReview, selectedRecommendation, selectedWeakTag?.evidenceLevel, studyContinuation])
+
+  const zerotracMap = useMemo(() => buildZerotracRatingMap(zerotrac), [zerotrac])
 
   const stretchProblem = useMemo(() => {
     const baseRating = ranking?.rating ?? data?.virtualRating ?? null
@@ -940,6 +944,53 @@ export const Dashboard = () => {
           </div>
         </div>
       </section>
+
+      {/* ─── WEEKLY PERFORMANCE REPORT BUTTON ────────────── */}
+      <section className="pt-0.5">
+        <button
+          type="button"
+          onClick={() => setIsWeeklyReportOpen(true)}
+          className="w-full group flex items-center justify-between p-3.5 rounded-2xl border border-zinc-800/80 bg-[#0d0d0f] hover:border-[#dfa054]/40 hover:bg-zinc-900/50 transition-all duration-200 shadow-sm cursor-pointer"
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-[#dfa054]/10 text-[#dfa054] border border-[#dfa054]/20 group-hover:bg-[#dfa054]/20 transition-colors">
+              <TrendingUp size={15} />
+            </div>
+            <div className="text-left">
+              <div className="text-xs font-bold text-zinc-200 group-hover:text-zinc-100 flex items-center gap-2 font-sans">
+                Weekly Performance Report
+                <span className="text-[8.5px] font-mono text-[#dfa054] bg-[#dfa054]/10 border border-[#dfa054]/20 px-1.5 py-0.5 rounded">
+                  7 Days
+                </span>
+              </div>
+              <div className="text-[9.5px] font-mono text-zinc-400 mt-0.5">
+                {formatDuration(activity.weekFocusSeconds)} practice · {activity.weekSolves} solved · {activity.weekSessions} sessions
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-1 text-[10px] font-mono text-zinc-400 group-hover:text-[#dfa054] transition-colors">
+            <span>View Debrief</span>
+            <ChevronRight size={13} className="group-hover:translate-x-0.5 transition-transform" />
+          </div>
+        </button>
+      </section>
+
+      {/* ─── WEEKLY REPORT MODAL ───────────────────────── */}
+      <WeeklyReportModal
+        isOpen={isWeeklyReportOpen}
+        onClose={() => setIsWeeklyReportOpen(false)}
+        days={activity.days}
+        weekFocusSeconds={activity.weekFocusSeconds}
+        weekSolves={activity.weekSolves}
+        weekSessions={activity.weekSessions}
+        strongestDay={activity.strongestDay}
+        recentSolves={data?.recentSolves}
+        localLogs={localLogs}
+        zerotracMap={zerotracMap}
+        zerotrac={zerotrac}
+        weakness={weakness}
+        username={data?.username || "Som_07"}
+      />
 
       {error && <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-900/40 bg-rose-950/20 px-3 py-2 text-[10px] text-rose-300"><span>{error}</span><button type="button" onClick={() => void refresh()} className="shrink-0 font-semibold underline underline-offset-2">Retry</button></div>}
     </main>

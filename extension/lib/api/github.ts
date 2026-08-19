@@ -1,4 +1,5 @@
 import { exchangeGithubCode, getGithubOAuthState } from "./backend";
+import { getGithubAutoSync } from "../storage";
 
 // Client IDs identify an OAuth app and are public by design. The client
 // secret is deliberately backend-only and must never be bundled here.
@@ -34,10 +35,25 @@ const createPkcePair = async (): Promise<{ verifier: string; challenge: string }
   return { verifier, challenge: base64Url(new Uint8Array(digest)) };
 };
 
+export interface GithubProfileResult {
+  ok: boolean;
+  user?: GithubUser;
+  revoked?: boolean;
+  error?: string;
+}
+
+export interface GithubReposResult {
+  ok: boolean;
+  repos: GithubRepoItem[];
+  revoked?: boolean;
+  error?: string;
+}
+
 /**
  * Fetches authenticated user's profile from GitHub API.
+ * Detects 401/403 indicating a revoked or expired token.
  */
-export async function fetchUserGithubProfile(token: string): Promise<GithubUser | null> {
+export async function fetchUserGithubProfile(token: string): Promise<GithubProfileResult> {
   try {
     const res = await fetch("https://api.github.com/user", {
       headers: {
@@ -45,18 +61,25 @@ export async function fetchUserGithubProfile(token: string): Promise<GithubUser 
         Accept: "application/vnd.github.v3+json"
       }
     });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch (e) {
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, revoked: true, error: "GitHub token was revoked or expired" };
+    }
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      return { ok: false, error: `GitHub error ${res.status}: ${errText}` };
+    }
+    const user = await res.json();
+    return { ok: true, user };
+  } catch (e: any) {
     console.error("Failed to fetch GitHub profile:", e);
-    return null;
+    return { ok: false, error: e.message || "Network error fetching GitHub profile" };
   }
 }
 
 /**
  * Fetches accessible repositories for the authenticated GitHub user.
  */
-export async function fetchUserGithubRepos(token: string): Promise<GithubRepoItem[]> {
+export async function fetchUserGithubRepos(token: string): Promise<GithubReposResult> {
   try {
     const res = await fetch("https://api.github.com/user/repos?per_page=100&sort=updated&type=all", {
       headers: {
@@ -64,10 +87,15 @@ export async function fetchUserGithubRepos(token: string): Promise<GithubRepoIte
         Accept: "application/vnd.github.v3+json"
       }
     });
-    if (!res.ok) return [];
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, repos: [], revoked: true, error: "GitHub token was revoked or expired" };
+    }
+    if (!res.ok) {
+      return { ok: false, repos: [], error: `GitHub error ${res.status}` };
+    }
     const repos = await res.json();
-    if (!Array.isArray(repos)) return [];
-    return repos.map((r: any) => ({
+    if (!Array.isArray(repos)) return { ok: true, repos: [] };
+    const mapped = repos.map((r: any) => ({
       full_name: r.full_name,
       name: r.name,
       owner: { login: r.owner?.login || "" },
@@ -75,9 +103,10 @@ export async function fetchUserGithubRepos(token: string): Promise<GithubRepoIte
       private: !!r.private,
       html_url: r.html_url
     }));
-  } catch (e) {
+    return { ok: true, repos: mapped };
+  } catch (e: any) {
     console.error("Failed to fetch GitHub repositories:", e);
-    return [];
+    return { ok: false, repos: [], error: e.message || "Network error" };
   }
 }
 
@@ -92,8 +121,14 @@ export async function commitToGithub(
   commitMessage: string,
   fileContent: string,
   branch?: string
-): Promise<{ ok: boolean; message?: string; alreadySynced?: boolean }> {
+): Promise<{ ok: boolean; message?: string; alreadySynced?: boolean; revoked?: boolean }> {
   try {
+    const isAutoSync = await getGithubAutoSync();
+    if (!isAutoSync) {
+      console.log("[AlgoVault] commitToGithub aborted: Auto-sync is disabled.");
+      return { ok: true, alreadySynced: true, message: "Auto-sync disabled by user" };
+    }
+
     const cleanRepo = repoPath.trim()
       .replace(/^https:\/\/github\.com\//, "")
       .replace(/\.git$/, "");
@@ -115,7 +150,15 @@ export async function commitToGithub(
     let sha: string | undefined = undefined;
     let existingContent: string | undefined = undefined;
     try {
-      const getRes = await fetch(apiUrl, { headers });
+      const getRes = await fetch(apiUrl, {
+        headers: {
+          ...headers,
+          "Cache-Control": "no-cache"
+        }
+      });
+      if (getRes.status === 401 || getRes.status === 403) {
+        return { ok: false, revoked: true, message: "GitHub token was revoked or expired. Please reconnect in Settings." };
+      }
       if (getRes.ok) {
         const getJson = await getRes.json();
         sha = getJson.sha;
@@ -152,15 +195,48 @@ export async function commitToGithub(
       body.branch = branch;
     }
 
-    const putRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`, {
+    let putRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`, {
       method: "PUT",
       headers,
       body: JSON.stringify(body)
     });
 
+    // If failed due to missing or mismatched SHA (409 Conflict or 422 Unprocessable Entity), re-fetch latest SHA with no-cache and retry once
+    if (!putRes.ok && (putRes.status === 409 || putRes.status === 422)) {
+      try {
+        const retryGetRes = await fetch(apiUrl, {
+          headers: {
+            ...headers,
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache"
+          }
+        });
+        if (retryGetRes.ok) {
+          const retryJson = await retryGetRes.json();
+          if (retryJson.sha) {
+            body.sha = retryJson.sha;
+            putRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`, {
+              method: "PUT",
+              headers,
+              body: JSON.stringify(body)
+            });
+          }
+        }
+      } catch (retryErr) {
+        console.warn("Retry SHA fetch failed:", retryErr);
+      }
+    }
+
     if (!putRes.ok) {
       const errorMsg = await putRes.text();
-      return { ok: false, message: `GitHub API error (${putRes.status}): ${errorMsg}` };
+      const isRevoked = putRes.status === 401 || putRes.status === 403;
+      return {
+        ok: false,
+        revoked: isRevoked,
+        message: isRevoked
+          ? "GitHub token was revoked or expired. Please reconnect in Settings."
+          : `GitHub API error (${putRes.status}): ${errorMsg}`
+      };
     }
 
     return { ok: true };

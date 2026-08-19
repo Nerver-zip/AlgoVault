@@ -1,5 +1,5 @@
 import { fetchUserProfile, fetchSolvedProblems, fetchAllSubmissions, fetchContestHistory, fetchProblemMetadata, fetchUserStatus, fetchContestQuestions, fetchReplayEvents, fetchUpcomingContests, fetchPastContests } from "../lib/api/leetcode"
-import { getUserSettings, getUsername, setLastSync, setUsername, storage, getGithubPat, getGithubRepo, getZerotracData, getZerotracLastFetched, setZerotracData } from "../lib/storage"
+import { getUserSettings, getUsername, setLastSync, setUsername, storage, getGithubPat, getGithubRepo, getGithubAutoSync, setGithubAutoSync, getZerotracData, getZerotracLastFetched, setZerotracData, clearGithubAuth, clearJwtToken } from "../lib/storage"
 import { commitToGithub, getExtensionForLanguage } from "../lib/api/github"
 import { type LeetCodeRegion } from "../lib/api/entranthub"
 import {
@@ -479,6 +479,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true
   }
 
+  if (message.action === "get_problem_metadata_batch") {
+    const slugs = Array.isArray(message.slugs) ? message.slugs : []
+    fetchProblemMetadata(slugs)
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }))
+    return true
+  }
+
   if (message.action === "submission_result") {
     const payload = message.payload;
     
@@ -519,8 +527,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
         })
 
-        syncAcceptedSubmissionToGithub(payload, helpType).catch((gitErr) => {
-          console.error("Error during GitHub sync operation:", gitErr)
+        getGithubAutoSync().then((isAutoSync) => {
+          if (isAutoSync) {
+            syncAcceptedSubmissionToGithub(payload, helpType).catch((gitErr) => {
+              console.error("Error during GitHub sync operation:", gitErr)
+            })
+          } else {
+            console.log("[AlgoVault] GitHub Auto-Sync is disabled; skipping automatic solution commit.")
+          }
         })
       }
 
@@ -559,6 +573,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     addToVault(message.payload)
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }))
+    return true
+  }
+
+  if (message.action === "set_github_auto_sync") {
+    setGithubAutoSync(message.enabled).then(() => {
+      sendResponse({ ok: true, enabled: message.enabled })
+    })
+    return true
+  }
+
+  if (message.action === "get_github_auto_sync") {
+    getGithubAutoSync().then((val) => {
+      sendResponse({ ok: true, enabled: val })
+    })
     return true
   }
 })
@@ -670,6 +698,9 @@ async function buildGithubArtifact(payload: any, helpType: string, sessionData?:
 
 async function syncAcceptedSubmissionToGithub(payload: any, helpType = "PENDING_SELF_REPORT", sessionData?: any) {
   if (!payload?.titleSlug) return
+  const isAutoSyncEnabled = await getGithubAutoSync()
+  if (!isAutoSyncEnabled) return
+
   const artifact = await buildGithubArtifact(payload, helpType, sessionData)
   await storage.set(`algovault.gitSolve.${payload.titleSlug}`, artifact)
 
@@ -713,6 +744,10 @@ async function syncAcceptedSubmissionToGithub(payload: any, helpType = "PENDING_
   for (const write of writes) {
     const result = await commitToGithub(pat, repo, write.path, write.message, write.content)
     if (!result.ok) {
+      if (result.revoked) {
+        await clearGithubAuth()
+        await clearJwtToken()
+      }
       await storage.set("algovault.gitSyncStatus", {
         success: false,
         message: result.message,
@@ -735,6 +770,11 @@ async function syncAcceptedSubmissionToGithub(payload: any, helpType = "PENDING_
 
 async function updateGithubHelpReport(report: any) {
   if (!report?.titleSlug || !report.helpType) return
+  const isAutoSyncEnabled = await getGithubAutoSync()
+  if (!isAutoSyncEnabled) {
+    console.log("[AlgoVault] GitHub Auto-Sync is disabled; skipping updateGithubHelpReport.")
+    return
+  }
   const artifact = await storage.get<any>(`algovault.gitSolve.${report.titleSlug}`)
   if (!artifact?.payload) return
   await syncAcceptedSubmissionToGithub(artifact.payload, report.helpType, {
@@ -1017,36 +1057,55 @@ async function getCachedZerotracRatings() {
     }
   }
 
-  const mapData = await fetchZerotracRatingsBackend()
-  if (!mapData || typeof mapData !== "object" || Array.isArray(mapData)) throw new Error("ZeroTrac returned an invalid payload")
-  
-  const data = Object.entries(mapData).map(([slug, details]: [string, any]) => {
-    // Handle both legacy (details is just a number rating) and new (details is ZerotracInfo object)
-    const isObject = details && typeof details === "object";
-    const rating = isObject ? (details.rating ?? 1500) : (typeof details === "number" ? details : 1500);
-    const title = isObject ? (details.title ?? slug) : slug;
-    const contestId = isObject ? (details.contestId ?? "") : "";
-    
-    return {
-      TitleSlug: slug,
-      Rating: rating,
-      Title: title,
-      ContestID_en: contestId,
-      ContestSlug: contestId ? contestId.toLowerCase().replace(/\s+/g, '-') : "",
-      ProblemIndex: isObject ? (details.problemIndex ?? "?") : "?"
-    };
-  })
-  
-  await setZerotracData(data)
-  
-  // Re-build memory cache map on fetch
-  const tempMap = new Map()
-  for (const item of data) {
-    if (item && item.TitleSlug) {
-      tempMap.set(item.TitleSlug.toLowerCase(), item)
+  let data: any[] = []
+
+  try {
+    const mapData = await fetchZerotracRatingsBackend()
+    if (mapData && typeof mapData === "object" && !Array.isArray(mapData)) {
+      data = Object.entries(mapData).map(([slug, details]: [string, any]) => {
+        const isObject = details && typeof details === "object";
+        const rating = isObject ? (details.rating ?? 1500) : (typeof details === "number" ? details : 1500);
+        const title = isObject ? (details.title ?? slug) : slug;
+        const contestId = isObject ? (details.contestId ?? "") : "";
+        
+        return {
+          TitleSlug: slug,
+          Rating: rating,
+          Title: title,
+          ContestID_en: contestId,
+          ContestSlug: contestId ? contestId.toLowerCase().replace(/\s+/g, '-') : "",
+          ProblemIndex: isObject ? (details.problemIndex ?? "?") : "?"
+        };
+      })
+    }
+  } catch (err) {
+    console.warn("Backend zerotrac fetch failed, falling back to GitHub raw data.json", err)
+  }
+
+  if (data.length === 0) {
+    try {
+      const res = await fetch("https://raw.githubusercontent.com/zerotrac/leetcode_problem_rating/main/data.json")
+      if (res.ok) {
+        const rawJson = await res.json()
+        data = normalizeZerotracPayload(rawJson)
+      }
+    } catch (ghErr) {
+      console.error("Direct GitHub ZeroTrac fetch also failed:", ghErr)
     }
   }
-  zerotracInMemoryMap = tempMap
+
+  if (data.length > 0) {
+    await setZerotracData(data)
+    
+    // Re-build memory cache map on fetch
+    const tempMap = new Map()
+    for (const item of data) {
+      if (item && item.TitleSlug) {
+        tempMap.set(item.TitleSlug.toLowerCase(), item)
+      }
+    }
+    zerotracInMemoryMap = tempMap
+  }
 
   return data
 }

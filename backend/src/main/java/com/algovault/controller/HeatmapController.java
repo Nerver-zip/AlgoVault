@@ -19,8 +19,11 @@ public class HeatmapController {
     private final UserContextService userContextService;
 
     @GetMapping
-    public ResponseEntity<List<UserRatingBucket>> getHeatmap(HttpServletRequest request) {
+    public ResponseEntity<List<UserRatingBucket>> getHeatmap(
+            @RequestParam(required = false) Integer limit,
+            HttpServletRequest request
+    ) {
         User user = userContextService.resolveUser(request);
-        return ResponseEntity.ok(service.getHeatmap(user.getId()));
+        return ResponseEntity.ok(service.getHeatmap(user.getId(), limit));
     }
 }

@@ -89,6 +89,7 @@ function VaultTrophy({ achievement, onHover }: { achievement: Achievement; onHov
   const glareY = useTransform(y, [-50, 50], [0, 100])
   const springGlareX = useSpring(glareX, springConfig)
   const springGlareY = useSpring(glareY, springConfig)
+  const glareBackground = useMotionTemplate`radial-gradient(circle at ${springGlareX}% ${springGlareY}%, rgba(255,255,255,0.18) 0%, transparent 60%)`
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!isEarned) return
@@ -200,7 +201,7 @@ function VaultTrophy({ achievement, onHover }: { achievement: Achievement; onHov
           {/* Glare Reflection */}
           <motion.div
             style={{
-              background: useMotionTemplate`radial-gradient(circle at ${springGlareX}% ${springGlareY}%, rgba(255,255,255,0.18) 0%, transparent 60%)`,
+              background: glareBackground,
               transform: "translateZ(1px)"
             }}
             className="absolute inset-0 pointer-events-none z-10 mix-blend-overlay"

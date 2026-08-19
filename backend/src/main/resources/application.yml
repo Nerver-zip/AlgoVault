@@ -1,5 +1,6 @@
 server:
   port: ${PORT:8080}
+  forward-headers-strategy: framework
   tomcat:
     max-http-form-post-size: 2MB
     max-swallow-size: 2MB

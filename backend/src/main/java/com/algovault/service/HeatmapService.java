@@ -24,11 +24,117 @@ public class HeatmapService {
     private final UserRepository userRepository;
 
     @Transactional(readOnly = true)
-    @Cacheable(value = "heatmap", key = "#userId")
+    @Cacheable(value = "heatmap", key = "#userId", condition = "#limit == null || #limit <= 0")
+    public List<UserRatingBucket> getHeatmap(Long userId, Integer limit) {
+        if (limit == null || limit <= 0) {
+            List<UserRatingBucket> buckets = userRatingBucketRepository.findByUserId(userId);
+            buckets.sort(Comparator.comparing(UserRatingBucket::getBucketRating));
+            return buckets;
+        }
+
+        List<Submission> allSubs = submissionRepository.findByUserIdOrderBySubmittedAtDesc(userId);
+        if (allSubs.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        // Find the last N distinct problems attempted
+        Set<Long> recentProblemIds = new LinkedHashSet<>();
+        for (Submission sub : allSubs) {
+            if (sub.getProblem() != null && sub.getProblem().getActualRating() != null) {
+                recentProblemIds.add(sub.getProblem().getId());
+                if (recentProblemIds.size() >= limit) {
+                    break;
+                }
+            }
+        }
+
+        if (recentProblemIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        // Group submissions for these recent problems
+        Map<Long, List<Submission>> problemAttempts = new HashMap<>();
+        for (Submission sub : allSubs) {
+            if (sub.getProblem() != null && recentProblemIds.contains(sub.getProblem().getId())) {
+                problemAttempts.computeIfAbsent(sub.getProblem().getId(), k -> new ArrayList<>()).add(sub);
+            }
+        }
+
+        Map<Integer, UserRatingBucket> buckets = new HashMap<>();
+        Map<Integer, Integer> bucketTimedSolves = new HashMap<>();
+
+        for (Map.Entry<Long, List<Submission>> entry : problemAttempts.entrySet()) {
+            List<Submission> subs = entry.getValue();
+            if (subs.isEmpty() || subs.get(0).getProblem().getActualRating() == null) continue;
+            subs.sort(Comparator.comparing(Submission::getSubmittedAt));
+
+            int rating = (int) Math.round(subs.get(0).getProblem().getActualRating());
+            int bucketRating = (rating / 100) * 100;
+
+            UserRatingBucket bucket = buckets.computeIfAbsent(bucketRating, k ->
+                UserRatingBucket.builder()
+                    .bucketRating(k)
+                    .attempted(0)
+                    .solved(0)
+                    .firstAcCount(0)
+                    .avgAttempts(0.0)
+                    .avgSolveTime(0.0)
+                    .build()
+            );
+
+            bucket.setAttempted((bucket.getAttempted() != null ? bucket.getAttempted() : 0) + 1);
+
+            boolean isFirstTryAc = "Accepted".equals(subs.get(0).getVerdict());
+            boolean isEventualAc = subs.stream().anyMatch(s -> "Accepted".equals(s.getVerdict()));
+
+            if (isEventualAc) {
+                bucket.setSolved((bucket.getSolved() != null ? bucket.getSolved() : 0) + 1);
+            }
+            if (isFirstTryAc) {
+                bucket.setFirstAcCount((bucket.getFirstAcCount() != null ? bucket.getFirstAcCount() : 0) + 1);
+            }
+
+            int attemptsUntilAc = 0;
+            for (Submission sub : subs) {
+                attemptsUntilAc++;
+                if ("Accepted".equals(sub.getVerdict())) {
+                    break;
+                }
+            }
+            bucket.setAvgAttempts((bucket.getAvgAttempts() != null ? bucket.getAvgAttempts() : 0.0) + attemptsUntilAc);
+
+            if (isEventualAc) {
+                long minutes = 0;
+                if (attemptsUntilAc > 1) {
+                    minutes = java.time.Duration.between(subs.get(0).getSubmittedAt(), subs.get(attemptsUntilAc - 1).getSubmittedAt()).toMinutes();
+                }
+                if (minutes <= 120) {
+                    bucket.setAvgSolveTime((bucket.getAvgSolveTime() != null ? bucket.getAvgSolveTime() : 0.0) + Math.max(0, minutes));
+                    bucketTimedSolves.put(bucketRating, bucketTimedSolves.getOrDefault(bucketRating, 0) + 1);
+                }
+            }
+        }
+
+        List<UserRatingBucket> result = new ArrayList<>(buckets.values());
+        for (UserRatingBucket bucket : result) {
+            if (bucket.getAttempted() != null && bucket.getAttempted() > 0) {
+                bucket.setAvgAttempts(bucket.getAvgAttempts() / bucket.getAttempted());
+            }
+            int timedCount = bucketTimedSolves.getOrDefault(bucket.getBucketRating(), 0);
+            if (timedCount > 0) {
+                bucket.setAvgSolveTime(bucket.getAvgSolveTime() / timedCount);
+            } else {
+                bucket.setAvgSolveTime(0.0);
+            }
+        }
+
+        result.sort(Comparator.comparing(UserRatingBucket::getBucketRating));
+        return result;
+    }
+
+    @Transactional(readOnly = true)
     public List<UserRatingBucket> getHeatmap(Long userId) {
-        List<UserRatingBucket> buckets = userRatingBucketRepository.findByUserId(userId);
-        buckets.sort(Comparator.comparing(UserRatingBucket::getBucketRating));
-        return buckets;
+        return getHeatmap(userId, null);
     }
 
     @Transactional

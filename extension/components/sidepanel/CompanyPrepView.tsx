@@ -23,10 +23,10 @@ import { Card } from "../ui/Card"
 import { ProgressBar } from "../ui/ProgressBar"
 import {
   COMPANIES_DATA,
-  CompanySummary,
-  CompanyProblemEvidence,
-  CompanyCategory,
-  TimeWindow,
+  type CompanySummary,
+  type CompanyProblemEvidence,
+  type CompanyCategory,
+  type TimeWindow,
   calculateWindowDifficultyStats
 } from "../../lib/company-data"
 
