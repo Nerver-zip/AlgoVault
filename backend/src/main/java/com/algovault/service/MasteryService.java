@@ -31,6 +31,7 @@ public class MasteryService {
     private final ProblemOpenEventRepository problemOpenEventRepository;
     private final Glicko2MasteryEngine glickoEngine;
 
+    @Transactional(readOnly = true)
     @Cacheable(value = "mastery", key = "#userId")
     public List<TagMastery> getMastery(Long userId) {
         return tagMasteryRepository.findByUserIdOrderByMasteryScoreDesc(userId);
@@ -43,6 +44,7 @@ public class MasteryService {
         return tagMasteryRepository.findByUserIdOrderByMasteryScoreDesc(userId);
     }
 
+    @CacheEvict(value = "mastery", key = "#userId")
     @Transactional
     public void computeMastery(Long userId) {
         log.info("Computing Tag Mastery for user {}", userId);
@@ -88,20 +90,26 @@ public class MasteryService {
         tagMasteryRepository.saveAll(updatedMasteries);
     }
 
+    @CacheEvict(value = "mastery", key = "#userId")
     @Transactional
     public void updateIncremental(Long userId, Submission submission) {
         if (submission.getProblem() == null || submission.getProblem().getTags() == null) return;
+        List<String> tags = submission.getProblem().getTags();
+        if (tags.isEmpty()) return;
         User user = userRepository.findById(userId).orElseThrow();
-        for (String tag : submission.getProblem().getTags()) {
+        for (String tag : tags) {
             recomputeMasteryForTag(user, tag);
         }
     }
 
+    @CacheEvict(value = "mastery", key = "#userId")
     @Transactional
     public void updateIncremental(Long userId, ProblemOpenEvent event) {
         if (event.getProblem() == null || event.getProblem().getTags() == null) return;
+        List<String> tags = event.getProblem().getTags();
+        if (tags.isEmpty()) return;
         User user = userRepository.findById(userId).orElseThrow();
-        for (String tag : event.getProblem().getTags()) {
+        for (String tag : tags) {
             recomputeMasteryForTag(user, tag);
         }
     }
