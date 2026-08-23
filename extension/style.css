@@ -3,6 +3,13 @@
 @tailwind utilities;
 
 @layer base {
+  html, body {
+    max-width: 100%;
+    overflow-x: hidden;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
   body {
     @apply bg-av-bg-primary text-av-text-primary antialiased;
     letter-spacing: 0;

@@ -55,6 +55,16 @@ public class SessionRequests {
         private Integer totalTestcases;
         private LocalDateTime submittedAt;
         
+        // APSE Practice Telemetry
+        @Min(0)
+        private Integer focusSeconds;
+        @Min(0)
+        private Integer tabSwitches;
+        @Min(0)
+        private Integer pasteCount;
+        private LocalDateTime startedAt;
+        private LocalDateTime openedAt;
+        
         // Zenith Mode Telemetry
         private Boolean isZenith;
         @Pattern(regexp = "^(S_PLUS|S|A|B|C|D|F)$")

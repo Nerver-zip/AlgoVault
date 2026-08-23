@@ -279,25 +279,34 @@ export const Contest = () => {
   const [showBadgeInfo, setShowBadgeInfo] = useState(false)
 
   const refresh = async (_forcePredictRefresh = false) => {
-    setLoading(true)
+    // Only show full loading skeleton on fresh load with no existing data
+    if (!data || data.length === 0) {
+      setLoading(true)
+    }
     setError("")
     try {
       const uname = await getUsername()
       if (!uname) throw new Error("Set your LeetCode username in Settings")
       setUsernameState(uname)
 
-      const [lifecycle, profileRes, rankingRes, localAnalytics] = await Promise.all([
-        loadContestLifecycle(uname),
-        new Promise<any>((resolve) => chrome.runtime.sendMessage({ action: "get_user_profile", payload: { username: uname } }, (res) => {
-          if (chrome.runtime.lastError) console.error(chrome.runtime.lastError)
-          resolve(res)
-        })),
-        new Promise<any>((resolve) => chrome.runtime.sendMessage({ action: "get_user_contest_history", payload: { username: uname } }, (res) => {
-          if (chrome.runtime.lastError) console.error(chrome.runtime.lastError)
-          resolve(res)
-        })),
-        fetchContests().catch(() => [])
+      const profilePromise = new Promise<any>((resolve) =>
+        chrome.runtime.sendMessage({ action: "get_user_profile", payload: { username: uname } }, (res) => resolve(res))
+      )
+      const rankingPromise = new Promise<any>((resolve) =>
+        chrome.runtime.sendMessage({ action: "get_user_contest_history", payload: { username: uname } }, (res) => resolve(res))
+      )
+      const localAnalyticsPromise = Promise.race([
+        fetchContests().catch(() => []),
+        new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 600))
       ])
+
+      const [profileRes, rankingRes, localAnalytics] = await Promise.all([
+        profilePromise,
+        rankingPromise,
+        localAnalyticsPromise
+      ])
+
+      const lifecycle = await loadContestLifecycle(uname, rankingRes)
 
       setData(lifecycle)
       let resolvedProfile = null

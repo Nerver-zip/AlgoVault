@@ -1,6 +1,6 @@
 import { fetchUserProfile, fetchSolvedProblems, fetchAllSubmissions, fetchContestHistory, fetchProblemMetadata, fetchUserStatus, fetchContestQuestions, fetchReplayEvents, fetchUpcomingContests, fetchPastContests } from "../lib/api/leetcode"
-import { getUserSettings, getUsername, setLastSync, setUsername, storage, getGithubPat, getGithubRepo, getGithubAutoSync, setGithubAutoSync, getZerotracData, getZerotracLastFetched, setZerotracData, clearGithubAuth, clearJwtToken } from "../lib/storage"
-import { commitToGithub, getExtensionForLanguage } from "../lib/api/github"
+import { getUserSettings, getUsername, setLastSync, setUsername, storage, getGithubPat, getGithubRepo, getGithubBranch, getGithubAutoSync, setGithubAutoSync, getZerotracData, getZerotracLastFetched, setZerotracData, clearGithubAuth, clearJwtToken } from "../lib/storage"
+import { commitToGithub, batchCommitToGithub, getExtensionForLanguage } from "../lib/api/github"
 import { type LeetCodeRegion } from "../lib/api/entranthub"
 import {
   fetchPrediction,
@@ -13,8 +13,8 @@ import {
   addToVault
 } from "../lib/api/backend"
 import { createSession, transitionSession } from "../lib/session-engine/EngineKernel"
-
-export {}
+import { normalizeZerotracPayload } from "../lib/zerotrac"
+import { PROBLEM_SLUG_TO_COMPANIES } from "../lib/company-data"
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => console.error(error))
 
@@ -151,6 +151,24 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "open_side_panel" && sender.tab) {
     chrome.sidePanel.open({ windowId: sender.tab.windowId })
+  }
+
+  // The company dataset is intentionally held by the service worker rather
+  // than injected into every LeetCode problem page.
+  if (message.action === "get_companies_for_problem") {
+    const slug = typeof message.slug === "string" ? message.slug.trim().toLowerCase() : ""
+    if (!slug || slug.length > 200 || !/^[a-z0-9-]+$/.test(slug)) {
+      sendResponse({ evidences: [] })
+      return false
+    }
+
+    const evidences = (PROBLEM_SLUG_TO_COMPANIES.get(slug) || []).map((entry) => ({
+      companyName: entry.companyName,
+      frequencyScore: entry.frequencyScore,
+      timeframeLabel: entry.timeframeLabel
+    }))
+    sendResponse({ evidences })
+    return false
   }
 
   // APSE v2 State Machine Message Interceptors
@@ -311,18 +329,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: false })
         return
       }
+      // If submission_result already transitioned this to SOLVED, skip duplicate work
+      if (session.st === "SOLVED") {
+        sendResponse({ ok: true, session })
+        return
+      }
       const updated = transitionSession(session, "SOLVED", null, Date.now())
       await archivePracticeLog(updated, true, message.language)
-      
-      const result = (await storage.get<any>("algovault.solvedSlugs")) || {}
-      const slugs = new Set<string>(Array.isArray(result?.slugs) ? result.slugs : [])
-      slugs.add(session.slug)
-      await storage.set("algovault.solvedSlugs", { ...result, fetchedAt: Date.now(), slugs: Array.from(slugs) })
-      
       await storage.set(ACTIVE_SESSION_KEY, updated)
       
       chrome.runtime.sendMessage({ action: "session_updated_v2", session: updated })
-      chrome.runtime.sendMessage({ action: "dashboard_refresh" })
       sendResponse({ ok: true, session: updated })
     })
     return true
@@ -488,18 +504,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "submission_result") {
-    const payload = message.payload;
+    const payload = message.payload || {};
     
     chrome.storage.local.get([
       "algovault.isZenith",
       "algovault.zenithGrade",
       "algovault.zenithReason",
       "algovault.zenithFocusScore",
-      "algovault.problemStartTime"
-    ], (res) => {
+      "algovault.problemStartTime",
+      ACTIVE_SESSION_KEY
+    ], async (res) => {
       const isZenith = !!res["algovault.isZenith"];
       let helpType: "NONE" | "PENDING_SELF_REPORT" = "PENDING_SELF_REPORT";
 
+      // 1. Extract APSE v2 Practice Telemetry
+      const activeSession = res[ACTIVE_SESSION_KEY];
+      if (activeSession && activeSession.slug === payload.titleSlug) {
+        const now = Date.now();
+        const accActiveMs = typeof activeSession.accActiveMs === "number" ? activeSession.accActiveMs : 0;
+        const currentSegmentMs = activeSession.st === "RUNNING" && activeSession.tActiveStart 
+          ? Math.max(0, now - activeSession.tActiveStart) 
+          : 0;
+        const totalActiveSecs = Math.max(1, Math.floor((accActiveMs + currentSegmentMs) / 1000));
+        
+        payload.focusSeconds = totalActiveSecs;
+        payload.tabSwitches = activeSession.tabs || 0;
+        payload.pasteCount = activeSession.pastes || 0;
+        
+        const tElapsedStart = typeof activeSession.tElapsedStart === "number" ? activeSession.tElapsedStart : now;
+        const totalElapsedSecs = Math.max(1, Math.floor((now - tElapsedStart) / 1000));
+        payload.focusScore = Math.min(100, Math.round((totalActiveSecs / totalElapsedSecs) * 100));
+        payload.startedAt = new Date(tElapsedStart).toISOString();
+      }
+
+      // 2. Extract Zenith Focus Mode Telemetry if active
       if (isZenith) {
         payload.isZenith = true;
         payload.grade = res["algovault.zenithGrade"] || "S_PLUS";
@@ -509,7 +547,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const startTime = res["algovault.problemStartTime"];
         payload.timeSpentSeconds = startTime 
           ? Math.max(0, Math.floor((Date.now() - new Date(startTime).getTime()) / 1000))
-          : 0;
+          : (payload.focusSeconds || 0);
         payload.codeSubmitted = payload.code || "";
 
         // Reset Zenith state since solve is done
@@ -517,39 +555,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         helpType = "NONE";
       }
 
-      // Trigger GitHub sync independently in the background so backend failures don't block it
+      // 3. Trigger GitHub sync and archive practice log if Accepted
       if (payload.statusDisplay === "Accepted") {
-        storage.get<any>(ACTIVE_SESSION_KEY).then(async (activeSession) => {
-          if (activeSession && activeSession.slug === payload.titleSlug) {
-            const updated = transitionSession(activeSession, "SOLVED", null, Date.now())
-            await archivePracticeLog(updated, true, payload.codeLang || payload.language)
-            await storage.set(ACTIVE_SESSION_KEY, updated)
-          }
-        })
+        if (activeSession && activeSession.slug === payload.titleSlug) {
+          const updated = transitionSession(activeSession, "SOLVED", null, Date.now());
+          await archivePracticeLog(updated, true, payload.codeLang || payload.language);
+          await storage.set(ACTIVE_SESSION_KEY, updated);
+        }
 
         getGithubAutoSync().then((isAutoSync) => {
           if (isAutoSync) {
             syncAcceptedSubmissionToGithub(payload, helpType).catch((gitErr) => {
-              console.error("Error during GitHub sync operation:", gitErr)
-            })
+              console.error("Error during GitHub sync operation:", gitErr);
+            });
           } else {
-            console.log("[AlgoVault] GitHub Auto-Sync is disabled; skipping automatic solution commit.")
+            console.log("[AlgoVault] GitHub Auto-Sync is disabled; skipping automatic solution commit.");
           }
-        })
+        });
       }
 
+      // 4. Send enriched payload to backend
       sendSubmissionResult(payload)
         .then(async (data) => {
-          sendResponse({ ok: true, data })
-          // Broadcast to any open sidepanel dashboard to refresh fresh data
-          chrome.runtime.sendMessage({ action: "dashboard_refresh" })
+          sendResponse({ ok: true, data });
+          // Defer dashboard refresh to avoid competing with celebration overlay
+          // rendering and GitHub sync during the critical post-AC moment
+          setTimeout(() => {
+            chrome.runtime.sendMessage({ action: "dashboard_refresh" });
+          }, 2000);
         })
         .catch((err) => {
-          console.error("Backend submission report failed:", err)
-          sendResponse({ ok: false, error: err.message })
-        })
+          console.error("Backend submission report failed:", err);
+          sendResponse({ ok: false, error: err.message });
+        });
     });
-    return true
+    return true;
   }
 
   if (message.action === "post_solve_report") {
@@ -719,6 +759,7 @@ async function syncAcceptedSubmissionToGithub(payload: any, helpType = "PENDING_
   pat = stripWrappingQuotes(pat)
   repo = stripWrappingQuotes(repo)
 
+  const branch = await getGithubBranch() || undefined
   const commitPrefix = `${artifact.metadata.frontendQuestionId ? `${artifact.metadata.frontendQuestionId}. ` : ""}${artifact.metadata.title}`
   const timeStr = payload.runtimeMs != null ? `${payload.runtimeMs} ms` : "N/A"
   const spaceStr = payload.memoryKb != null ? `${Math.round(payload.memoryKb / 10.24) / 100} MB` : "N/A"
@@ -726,7 +767,7 @@ async function syncAcceptedSubmissionToGithub(payload: any, helpType = "PENDING_
   const writes = [
     {
       path: artifact.codePath,
-      message: `Time: ${timeStr}, Space: ${spaceStr} - AlgoVault`,
+      message: `${commitPrefix}: Time: ${timeStr}, Space: ${spaceStr} - AlgoVault`,
       content: artifact.codeContent
     },
     {
@@ -741,22 +782,21 @@ async function syncAcceptedSubmissionToGithub(payload: any, helpType = "PENDING_
     }
   ]
 
-  for (const write of writes) {
-    const result = await commitToGithub(pat, repo, write.path, write.message, write.content)
-    if (!result.ok) {
-      if (result.revoked) {
-        await clearGithubAuth()
-        await clearJwtToken()
-      }
-      await storage.set("algovault.gitSyncStatus", {
-        success: false,
-        message: result.message,
-        timestamp: Date.now(),
-        problem: payload.title || payload.titleSlug,
-        path: write.path
-      })
-      return
+  // Single atomic commit for all 3 files (code + README + metadata)
+  const result = await batchCommitToGithub(pat, repo, writes, branch)
+  if (!result.ok) {
+    if (result.revoked) {
+      await clearGithubAuth()
+      await clearJwtToken()
     }
+    await storage.set("algovault.gitSyncStatus", {
+      success: false,
+      message: result.message,
+      timestamp: Date.now(),
+      problem: payload.title || payload.titleSlug,
+      path: artifact.folder
+    })
+    return
   }
 
   await storage.set("algovault.gitSyncStatus", {

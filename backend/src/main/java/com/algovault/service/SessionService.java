@@ -204,8 +204,26 @@ public class SessionService {
             }
         }
 
-        ProblemOpenEvent event = openEvent(user, problem, null);
+        LocalDateTime eventOpenedAt = request.getStartedAt() != null ? request.getStartedAt() 
+            : (request.getOpenedAt() != null ? request.getOpenedAt() : null);
+        ProblemOpenEvent event = openEvent(user, problem, eventOpenedAt);
         event.setAttemptsDuringSession(nonNull(event.getAttemptsDuringSession()) + (exists ? 0 : 1));
+
+        int focusSecs = request.getFocusSeconds() != null ? request.getFocusSeconds() 
+            : (request.getTimeSpentSeconds() != null ? request.getTimeSpentSeconds() : 0);
+        if (focusSecs > 0) {
+            event.setFocusSeconds(focusSecs);
+        }
+        if (request.getTabSwitches() != null) {
+            event.setTabSwitches(request.getTabSwitches());
+        }
+        if (request.getPasteCount() != null) {
+            event.setPasteCount(request.getPasteCount());
+        }
+        if (request.getFocusScore() != null) {
+            event.setFocusScore((int) Math.round(request.getFocusScore()));
+        }
+
         if ("Accepted".equals(verdict)) {
             event.setSolved(true);
             event.setClosedAt(submittedAt);
@@ -218,7 +236,7 @@ public class SessionService {
                 zs.setProblem(problem);
                 zs.setGrade(request.getGrade() != null ? request.getGrade() : "S_PLUS");
                 zs.setFocusScore(request.getFocusScore() != null ? request.getFocusScore() : 100.0);
-                zs.setTimeSpentSeconds(request.getTimeSpentSeconds() != null ? request.getTimeSpentSeconds() : 0);
+                zs.setTimeSpentSeconds(request.getTimeSpentSeconds() != null ? request.getTimeSpentSeconds() : focusSecs);
                 
                 // Browser telemetry is user-controlled. It may inform private
                 // coaching, but it must never be represented as verified.
@@ -328,8 +346,11 @@ public class SessionService {
                 .user(user)
                 .problem(problem)
                 .confidence(4)
+                .stability(3.1262)
+                .difficulty(5.0)
                 .intervalDays(1.0)
-                .easeFactor(2.5)
+                .easeFactor(3.1262)
+                .lastReviewed(solvedAt)
                 .nextReview(solvedAt.plusDays(1))
                 .reviewCount(1)
                 .build());

@@ -43,8 +43,8 @@ public class SpacedRepetitionEngine {
         2.0467,  // w11: failure stability factor
         0.0086,  // w12: failure difficulty penalty
         0.3481,  // w13: failure stability decay
-        1.3559,  // w14: hard penalty
-        0.2231,  // w15: easy bonus
+        0.2231,  // w14: hard penalty (< 1.0)
+        1.3559,  // w15: easy bonus (> 1.0)
         0.0280,  // w16: mean reversion strength
         2.9282,  // w17: DECAY exponent for interval calculation
         0.4403   // w18: short-term stability factor
@@ -53,11 +53,16 @@ public class SpacedRepetitionEngine {
     /** Target retention rate — 90% is the researched optimal for long-term learning. */
     private static final double DESIRED_RETENTION = 0.9;
 
-    /** FSRS DECAY constant used in the interval formula. */
+    /** FSRS DECAY constant: -w17. */
     private static final double DECAY = -W[17];
 
-    /** FSRS FACTOR constant: (9 × (1/R − 1))^(1/DECAY). */
-    private static final double FACTOR = Math.pow(9.0 * (1.0 / DESIRED_RETENTION - 1.0), 1.0 / DECAY);
+    /**
+     * FSRS FACTOR constant derived so that R(S, S) = DESIRED_RETENTION (0.90) exactly:
+     * R(t, S) = (1 + FACTOR * (t / S))^(-w17)
+     * Solving for R(S, S) = DESIRED_RETENTION:
+     * (1 + FACTOR)^(-w17) = DESIRED_RETENTION  =>  FACTOR = DESIRED_RETENTION^(-1.0 / w17) - 1.0
+     */
+    public static final double FACTOR = Math.pow(DESIRED_RETENTION, -1.0 / W[17]) - 1.0;
 
     /**
      * Updates a revision card after a review.
@@ -84,35 +89,46 @@ public class SpacedRepetitionEngine {
         }
 
         int reviewCount = card.getReviewCount() != null ? card.getReviewCount() : 0;
+        LocalDateTime now = LocalDateTime.now();
 
         double stability;
         double difficulty;
 
-        if (reviewCount == 0) {
+        if (reviewCount == 0 || card.getStability() == null) {
             // ─── First review: use initial stability from weights ─────────
             stability = W[grade - 1]; // w0..w3 for Again/Hard/Good/Easy
             difficulty = initDifficulty(grade);
         } else {
-            // ─── Subsequent reviews ──────────────────────────────────────
-            double prevStability = card.getEaseFactor() != null ? card.getEaseFactor() : W[2];
-            double prevDifficulty = card.getConfidence() != null
-                    ? mapConfidenceToDifficulty(card.getConfidence())
-                    : 5.0;
+            // ─── Subsequent reviews: use real elapsed time and dynamic R ───
+            double prevStability = card.getStability() != null ? card.getStability() : W[2];
+            double prevDifficulty = card.getDifficulty() != null ? card.getDifficulty() : 5.0;
 
-            // Update difficulty with mean reversion
+            // 1. Calculate actual elapsed time since previous review
+            double elapsedDays = 0.0;
+            if (card.getLastReviewed() != null) {
+                long minutes = Math.max(0, java.time.Duration.between(card.getLastReviewed(), now).toMinutes());
+                elapsedDays = minutes / 1440.0;
+            }
+
+            // 2. Dynamic retrievability via power-law forgetting curve: R(t, S)
+            double retrievability = (elapsedDays > 0 && prevStability > 0)
+                    ? Math.pow(1.0 + FACTOR * (elapsedDays / prevStability), DECAY)
+                    : DESIRED_RETENTION;
+            retrievability = Math.max(0.01, Math.min(1.0, retrievability));
+
+            // 3. Update difficulty with mean reversion
             difficulty = nextDifficulty(prevDifficulty, grade);
 
+            // 4. Update stability based on recall vs forgetting
             if (grade == 1) {
-                // Failed review: stability after forgetting
-                stability = nextForgetStability(prevStability, difficulty);
+                stability = nextForgetStability(prevStability, difficulty, retrievability);
             } else {
-                // Successful review: stability after recall
-                stability = nextRecallStability(prevStability, difficulty, grade);
+                stability = nextRecallStability(prevStability, difficulty, grade, retrievability);
             }
         }
 
-        // Compute interval from stability using FSRS formula
-        double interval = stability * FACTOR;
+        // Base interval for 90% retention is the stability itself
+        double interval = stability;
 
         // Apply weakness acceleration (topic-aware scheduling)
         weaknessMultiplier = Math.max(0.6, Math.min(1.0, weaknessMultiplier));
@@ -127,14 +143,13 @@ public class SpacedRepetitionEngine {
         int days = Math.max(1, (int) Math.round(interval));
 
         // ─── Persist state ───────────────────────────────────────────────
-        // We store stability in the easeFactor field for backward compatibility.
-        // The UI reads intervalDays and easeFactor — both remain populated.
+        card.setStability(stability);
+        card.setDifficulty(difficulty);
+        card.setEaseFactor(stability); // Synchronized for backward compatibility
         card.setIntervalDays((double) days);
-        card.setEaseFactor(stability);
-        card.setLastReviewed(LocalDateTime.now());
-        card.setNextReview(LocalDateTime.now().plusDays(days));
+        card.setLastReviewed(now);
+        card.setNextReview(now.plusDays(days));
         card.setReviewCount(reviewCount + 1);
-        // Map grade back to confidence (1-5) for UI display
         card.setConfidence(grade == 1 ? 1 : grade + 1);
 
         return card;
@@ -146,35 +161,31 @@ public class SpacedRepetitionEngine {
      * Initial difficulty for a card based on first review grade.
      * D₀(G) = w4 − exp(w5 × (G − 1)) + 1
      */
-    private double initDifficulty(int grade) {
+    public double initDifficulty(int grade) {
         double d = W[4] - Math.exp(W[5] * (grade - 1)) + 1.0;
         return clampDifficulty(d);
     }
 
     /**
      * Next difficulty after a review.
-     * Applies mean reversion toward w4 to prevent difficulty from drifting
-     * to extremes (the "ease hell" fix).
-     * D' = w16 × (D₀(3) − D) + D + w6 × (grade − 3)
+     * Applies mean reversion toward D₀(3) to prevent difficulty from drifting to extremes.
+     * D' = w16 × D₀(3) + (1 − w16) × (D − w6 × (grade − 3))
      */
-    private double nextDifficulty(double prevD, int grade) {
-        double d0Good = W[4] - Math.exp(W[5] * (3 - 1)) + 1.0;
+    public double nextDifficulty(double prevD, int grade) {
+        double d0Good = initDifficulty(3);
         double delta = -W[6] * (grade - 3);
-        double newD = prevD + delta;
-        // Mean reversion: pull toward the "Good" baseline
-        newD = W[16] * (d0Good - newD) + newD;
-        return clampDifficulty(newD);
+        double nextD = prevD + delta;
+        nextD = W[7] * d0Good + (1.0 - W[7]) * nextD;
+        return clampDifficulty(nextD);
     }
 
     /**
-     * Stability after successful recall.
+     * Stability after successful recall with dynamic retrievability R.
      * S'_r = S × (1 + exp(w8) × (11 − D) × S^(-w9) × (exp(w10 × (1 − R)) − 1) × hardPenalty × easyBonus)
      */
-    private double nextRecallStability(double prevS, double difficulty, int grade) {
-        double hardPenalty = (grade == 2) ? W[14] : 1.0;
-        double easyBonus = (grade == 4) ? W[15] : 1.0;
-        // Retrievability R at scheduled review date: R = DESIRED_RETENTION (0.90)
-        double retrievability = DESIRED_RETENTION;
+    public double nextRecallStability(double prevS, double difficulty, int grade, double retrievability) {
+        double hardPenalty = (grade == 2) ? W[14] : 1.0; // W[14] = hard penalty
+        double easyBonus = (grade == 4) ? W[15] : 1.0;   // W[15] = easy bonus
 
         double newS = prevS * (1.0 + Math.exp(W[8])
                 * (11.0 - difficulty)
@@ -187,34 +198,19 @@ public class SpacedRepetitionEngine {
     }
 
     /**
-     * Stability after forgetting (grade = Again).
-     * S'_f = w11 × D^(-w12) × ((S + 1)^w13 − 1) × exp(w14 × (1 − R))
-     *
-     * Note: Using w11, w12, w13 indices for the forgetting branch,
-     * and w14 is reused here as the retrievability scaling.
+     * Stability after forgetting (grade = Again) with dynamic retrievability R.
+     * S'_f = w11 × D^(-w12) × ((S + 1)^w13 − 1) × exp(w18 × (1 − R))
      */
-    private double nextForgetStability(double prevS, double difficulty) {
-        // Retrievability R at scheduled review date: R = DESIRED_RETENTION (0.90)
-        double retrievability = DESIRED_RETENTION;
-
+    public double nextForgetStability(double prevS, double difficulty, double retrievability) {
         double newS = W[11]
                 * Math.pow(difficulty, -W[12])
                 * (Math.pow(prevS + 1.0, W[13]) - 1.0)
-                * Math.exp(W[14] * (1.0 - retrievability));
+                * Math.exp(W[18] * (1.0 - retrievability));
 
         return Math.max(0.1, Math.min(newS, prevS)); // Can't exceed previous stability on failure
     }
 
-    private double clampDifficulty(double d) {
+    public double clampDifficulty(double d) {
         return Math.max(1.0, Math.min(10.0, d));
-    }
-
-    /**
-     * Maps the stored confidence (1-5) back to an approximate FSRS difficulty.
-     * Used for backward compatibility with cards that were created before the FSRS upgrade.
-     */
-    private double mapConfidenceToDifficulty(int confidence) {
-        // confidence 1 → hard (D≈8), confidence 5 → easy (D≈2)
-        return Math.max(1.0, Math.min(10.0, 10.0 - confidence * 1.6));
     }
 }

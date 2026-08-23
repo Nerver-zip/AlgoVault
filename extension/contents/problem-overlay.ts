@@ -2,7 +2,6 @@ import type { PlasmoCSConfig } from "plasmo"
 import { STUDY_LISTS } from "../lib/study-lists"
 import { getLeetCodeProblemSlug } from "../lib/leetcode-url"
 import { showZenithQuestModal } from "./ZenithSystemOverlay"
-import { PROBLEM_SLUG_TO_COMPANIES } from "../lib/company-data"
 
 export const config: PlasmoCSConfig = {
   matches: ["https://leetcode.com/problems/*", "https://leetcode.com/contest/*/problems/*"],
@@ -154,6 +153,33 @@ let acceptanceHidden = false;
 let predictionInjected = false;
 let predictionData: any = null;
 
+type CompanyEvidence = {
+  companyName: string
+  frequencyScore: number
+  timeframeLabel: string
+}
+
+// Keep the large company index in the background worker. A problem page only
+// receives the few records relevant to its current slug.
+const companyEvidencesBySlug = new Map<string, CompanyEvidence[]>()
+const companyEvidenceRequests = new Set<string>()
+
+function loadCompanyEvidences(slug: string) {
+  const key = slug.toLowerCase()
+  if (companyEvidencesBySlug.has(key) || companyEvidenceRequests.has(key)) return
+
+  companyEvidenceRequests.add(key)
+  chrome.runtime.sendMessage({ action: "get_companies_for_problem", slug: key }, (response) => {
+    companyEvidenceRequests.delete(key)
+    if (chrome.runtime.lastError) return
+
+    companyEvidencesBySlug.set(key, Array.isArray(response?.evidences) ? response.evidences : [])
+    if (getLeetCodeProblemSlug()?.toLowerCase() === key) {
+      injectAlgoVaultOverlay()
+    }
+  })
+}
+
 const fetchPrediction = async () => {
   const slug = getLeetCodeProblemSlug()
   if (!slug) return;
@@ -247,30 +273,88 @@ const injectAlgoVaultOverlay = () => {
 
   // 2. Inject Rating (Replacing Difficulty Tag)
   const findProblemHeaderElements = (): { diffTag: HTMLElement | null; metadataRow: HTMLElement | null } => {
-    const candidates = Array.from(document.querySelectorAll('div, span, button, a'))
-    
-    // Check difficulty tag first
-    for (const el of candidates) {
-      const text = el.textContent?.trim()
-      if (text === "Easy" || text === "Medium" || text === "Hard") {
-        if (el.children.length <= 1 && el.parentElement) {
-          const parent = el.parentElement as HTMLElement
+    // 1. Check if already tagged by AlgoVault and validate it is strictly the difficulty tag
+    const existingTagged = document.querySelector('[data-algovault-rating]') as HTMLElement | null
+    if (existingTagged && existingTagged.parentElement) {
+      const rawText = Array.from(existingTagged.childNodes)
+        .filter(node => node.nodeType === Node.TEXT_NODE || !(node as HTMLElement).classList?.contains("av-rating"))
+        .map(node => node.textContent || "")
+        .join("")
+        .trim()
+      if (rawText === "Easy" || rawText === "Medium" || rawText === "Hard") {
+        return { diffTag: existingTagged, metadataRow: existingTagged.parentElement }
+      } else {
+        // Clean up wrong assignment on row container
+        existingTagged.removeAttribute("data-algovault-rating")
+        existingTagged.querySelectorAll(".av-rating").forEach(el => el.remove())
+      }
+    }
+
+    // Clean up any stray av-rating badges attached to wrong containers
+    document.querySelectorAll(".av-rating").forEach(el => {
+      const parentText = el.parentElement?.textContent?.replace(/\s*\(\d+\)\s*$/, "").trim() || ""
+      if (parentText !== "Easy" && parentText !== "Medium" && parentText !== "Hard") {
+        el.remove()
+      }
+    })
+
+    // 2. Search for the exact innermost difficulty element (strictly "Easy", "Medium", or "Hard")
+    const allElements = Array.from(document.querySelectorAll('div, span'))
+    let bestDiffTag: HTMLElement | null = null
+
+    for (const el of allElements) {
+      // Exclude containers that have buttons, links, or other pills inside
+      if (el.querySelector('button, [role="button"], a, input, #av-company-trigger-btn, #av-start-zenith-btn')) continue
+
+      // Extract text excluding any existing av-rating badge
+      const cloneText = Array.from(el.childNodes)
+        .filter(node => node.nodeType === Node.TEXT_NODE || !(node as HTMLElement).classList?.contains("av-rating"))
+        .map(node => node.textContent || "")
+        .join("")
+        .trim()
+
+      if (cloneText === "Easy" || cloneText === "Medium" || cloneText === "Hard") {
+        const parent = el.parentElement
+        if (parent) {
           const parentText = parent.textContent || ""
-          if (parentText.includes("Topics") || parentText.includes("Companies") || parentText.includes("Hint") || parent.classList.toString().includes("flex") || parent.classList.toString().includes("items-center")) {
-            return { diffTag: el as HTMLElement, metadataRow: parent }
+          if (
+            parentText.includes("Topics") ||
+            parentText.includes("Companies") ||
+            parentText.includes("Hint") ||
+            parent.classList.toString().includes("flex") ||
+            parent.classList.toString().includes("items-center") ||
+            parent.parentElement?.classList.toString().includes("flex")
+          ) {
+            bestDiffTag = el as HTMLElement
+            break
           }
         }
       }
     }
 
-    // Fallback: search Topics or Companies button
-    for (const el of candidates) {
-      const text = el.textContent?.trim() || ""
-      if (text === "Topics" || text === "Companies" || text.startsWith("Topics") || text.startsWith("Companies")) {
-        if (el.parentElement) {
-          return { diffTag: null, metadataRow: el.parentElement as HTMLElement }
+    if (bestDiffTag && bestDiffTag.parentElement) {
+      return { diffTag: bestDiffTag, metadataRow: bestDiffTag.parentElement }
+    }
+
+    // 3. Fallback: find Topics or Companies button and locate the difficulty sibling
+    const topicsOrCompanies = Array.from(document.querySelectorAll('button, div[role="button"], a, div')).find(el => {
+      const t = el.textContent?.trim() || ""
+      return t === "Topics" || t === "Companies" || t.startsWith("Topics") || t.startsWith("Companies")
+    })
+
+    if (topicsOrCompanies && topicsOrCompanies.parentElement) {
+      const row = topicsOrCompanies.parentElement as HTMLElement
+      for (const child of Array.from(row.children)) {
+        const text = Array.from(child.childNodes)
+          .filter(node => node.nodeType === Node.TEXT_NODE || !(node as HTMLElement).classList?.contains("av-rating"))
+          .map(node => node.textContent || "")
+          .join("")
+          .trim()
+        if (text === "Easy" || text === "Medium" || text === "Hard") {
+          return { diffTag: child as HTMLElement, metadataRow: row }
         }
       }
+      return { diffTag: null, metadataRow: row }
     }
 
     return { diffTag: null, metadataRow: null }
@@ -317,13 +401,37 @@ const injectAlgoVaultOverlay = () => {
     if (!existingCompanyBtn || injectedForSlug !== currentSlug) {
       existingCompanyBtn?.remove()
 
-      const companyEvidences = PROBLEM_SLUG_TO_COMPANIES.get(currentSlug.toLowerCase()) || []
+      const companySlug = currentSlug.toLowerCase()
+      if (!companyEvidencesBySlug.has(companySlug)) {
+        loadCompanyEvidences(currentSlug)
+        return
+      }
+
+      const companyEvidences = companyEvidencesBySlug.get(companySlug) || []
       if (companyEvidences.length > 0) {
         // Look for LeetCode's native locked Companies button
-        const nativeLockedBtn = Array.from(targetRow.querySelectorAll('button, div, span, a')).find(el => {
+        const searchScope = targetRow.parentElement || targetRow
+        let nativeLockedBtn = Array.from(searchScope.querySelectorAll('button, div[role="button"], a')).find(el => {
+          if (el.id === "av-company-trigger-btn" || el.closest("#av-company-trigger-btn")) return false
           const t = el.textContent?.trim() || ""
-          return (t === "Companies" || t.startsWith("Companies")) && el.id !== "av-company-trigger-btn" && el.children.length <= 2
+          return t === "Companies" || t.startsWith("Companies") || t.endsWith("Companies")
         }) as HTMLElement | null
+
+        if (!nativeLockedBtn) {
+          nativeLockedBtn = Array.from(searchScope.querySelectorAll('div, span, button, a')).find(el => {
+            if (el.id === "av-company-trigger-btn" || el.closest("#av-company-trigger-btn")) return false
+            const t = el.textContent?.trim() || ""
+            return t === "Companies" || t.startsWith("Companies")
+          }) as HTMLElement | null
+        }
+
+        if (!nativeLockedBtn) {
+          nativeLockedBtn = Array.from(document.querySelectorAll('button, div[role="button"]')).find(el => {
+            if (el.id === "av-company-trigger-btn" || el.closest("#av-company-trigger-btn")) return false
+            const t = el.textContent?.trim() || ""
+            return t === "Companies" || t.startsWith("Companies")
+          }) as HTMLElement | null
+        }
 
         // Create sleek native-styled unlocked pill button
         const btn = document.createElement("button")
@@ -373,9 +481,11 @@ const injectAlgoVaultOverlay = () => {
         }
 
         if (nativeLockedBtn && nativeLockedBtn.parentElement) {
-          // Replace or insert directly before the locked button and hide the locked button
-          nativeLockedBtn.style.display = "none"
-          nativeLockedBtn.parentElement.insertBefore(btn, nativeLockedBtn)
+          // Hide native locked button and insert our unlocked button in its place
+          nativeLockedBtn.style.setProperty("display", "none", "important")
+          if (!document.getElementById("av-company-trigger-btn")) {
+            nativeLockedBtn.parentElement.insertBefore(btn, nativeLockedBtn)
+          }
         } else {
           // Insert next to Hint or at the end of metadata row
           targetRow.appendChild(btn)
@@ -479,7 +589,15 @@ const injectAlgoVaultOverlay = () => {
       const q = filter.toLowerCase().trim()
       const filtered = evidences.filter((e: any) => e.companyName.toLowerCase().includes(q))
       if (filtered.length === 0) {
-        list.innerHTML = `<div style="text-align: center; color: #71717a; font-size: 12px; padding: 24px;">No companies found matching "${filter}"</div>`
+        const emptyDiv = document.createElement("div")
+        Object.assign(emptyDiv.style, {
+          textAlign: "center",
+          color: "#71717a",
+          fontSize: "12px",
+          padding: "24px"
+        })
+        emptyDiv.textContent = `No companies found matching "${filter}"`
+        list.appendChild(emptyDiv)
         return
       }
 
@@ -770,26 +888,30 @@ const injectAlgoVaultOverlay = () => {
 }
 
 let observerTimeout: number | null = null;
-const observer = new MutationObserver((mutations) => {
-  // Completely ignore mutations happening inside the code editor to prevent typing lag
-  if (mutations.every(m => (m.target as Element).closest?.('.monaco-editor, .view-lines, .CodeMirror, [data-track-load="code_editor"]'))) {
-    return;
-  }
+const observer = new MutationObserver(() => {
+  // Ultra-fast early exit if a batch re-injection is already scheduled
+  if (observerTimeout) return;
 
-  if (ratingInjected && !document.querySelector('.av-rating')) ratingInjected = false;
-  if (predictionInjected && !document.getElementById('av-solve-chance-bubble')) predictionInjected = false;
-  
-  if (observerTimeout) window.clearTimeout(observerTimeout);
   observerTimeout = window.setTimeout(() => {
+    observerTimeout = null;
+    // Skip re-injection if all overlays are still intact (common during AC verdict render)
+    const ratingGone = ratingInjected && !document.querySelector('.av-rating');
+    const predictionGone = predictionInjected && !document.getElementById('av-solve-chance-bubble');
+    if (!ratingGone && !predictionGone && ratingInjected) return;
+    if (ratingGone) ratingInjected = false;
+    if (predictionGone) predictionInjected = false;
     injectAlgoVaultOverlay();
     hideForbiddenTabs();
     injectIntentionalRevealButton();
-  }, 250);
+  }, 500);
 });
 
 observer.observe(document.body, { childList: true, subtree: true });
 
-window.addEventListener("beforeunload", () => observer.disconnect());
+window.addEventListener("beforeunload", () => {
+  if (observerTimeout) clearTimeout(observerTimeout);
+  observer.disconnect();
+});
 
 // Start process
 setTimeout(() => {

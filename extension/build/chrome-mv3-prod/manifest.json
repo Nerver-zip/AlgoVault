@@ -105,7 +105,7 @@
         "https://leetcode.com/contest/*/problems/*"
       ],
       "js": [
-        "solve-celebration.e2d6314d.js"
+        "floating-button.124de113.js"
       ],
       "css": []
     },
@@ -125,7 +125,7 @@
         "https://leetcode.com/contest/*/problems/*"
       ],
       "js": [
-        "floating-button.124de113.js"
+        "solve-celebration.e2d6314d.js"
       ],
       "css": []
     },
@@ -163,7 +163,7 @@
         "https://leetcode.com/*"
       ],
       "resources": [
-        "solve-celebration.95bad065.css"
+        "floating-button.95bad065.css"
       ]
     },
     {
@@ -172,7 +172,7 @@
         "https://leetcode.com/*"
       ],
       "resources": [
-        "solve-celebration.95bad065.css"
+        "floating-button.95bad065.css"
       ]
     },
     {
@@ -180,7 +180,7 @@
         "https://leetcode.com/*"
       ],
       "resources": [
-        "solve-celebration.95bad065.css"
+        "floating-button.95bad065.css"
       ]
     }
   ]

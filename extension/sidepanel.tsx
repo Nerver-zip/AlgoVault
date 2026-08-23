@@ -121,7 +121,7 @@ export default function SidePanel() {
         <TabBar activeTab={activeTab} setActiveTab={handleTabChange} />
         
         {/* ─── VIEWPORT ──────────────────────────────────────── */}
-        <div className="mt-4 pb-4 relative">
+        <div className="mt-4 pb-4 relative min-w-0 w-full max-w-full overflow-hidden">
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
               key={activeTab}

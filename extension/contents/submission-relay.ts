@@ -217,6 +217,10 @@ window.addEventListener("message", ((event: MessageEvent) => {
   const runtimeMs = parseRuntimeMs(detail.runtime)
   const memoryKb = parseMemoryKb(detail.memory)
 
+  // Use code from the interceptor's captured payload; skip expensive DOM fallback
+  // editorCodeFallback() scans every .view-line with innerText which forces reflow
+  const code = detail.code || undefined
+
   const payload: SubmissionPayload = {
     submissionId: detail.submissionId ? String(detail.submissionId) : undefined,
     titleSlug: slug,
@@ -229,20 +233,27 @@ window.addEventListener("message", ((event: MessageEvent) => {
     totalCorrect: detail.totalCorrect,
     totalTestcases: detail.totalTestcases,
     submittedAt: new Date().toISOString(),
-    code: detail.code || editorCodeFallback(),
+    code: code || editorCodeFallback(),
     codeLang: detail.codeLang || detail.lang || languageFallback()
   }
 
+  // Fire the background message immediately (non-blocking)
   chrome.runtime.sendMessage({ action: "submission_result", payload })
+
   if (payload.statusDisplay === "Accepted") {
-    chrome.runtime.sendMessage({ action: "session_finish_v2", language: payload.language })
-    window.postMessage({ type: "AV_SUBMISSION_RESULT_CONFIRMED", nonce: expectedNonce, detail: payload }, window.location.origin || "*")
-    chrome.storage.local.get("algovault.solvedSlugs", (result) => {
-      const cached = result["algovault.solvedSlugs"] || {}
-      const slugs = new Set<string>(Array.isArray(cached?.slugs) ? cached.slugs : [])
-      slugs.add(slug)
-      chrome.storage.local.set({ "algovault.solvedSlugs": { ...cached, fetchedAt: Date.now(), slugs: Array.from(slugs) } })
-    })
-    showPostSolveDialog(slug)
+    // Yield to the browser before doing any more work.
+    // This prevents "Page Unresponsive" by letting LeetCode's own AC
+    // rendering complete first before we layer on our UI.
+    setTimeout(() => {
+      chrome.runtime.sendMessage({ action: "session_finish_v2", language: payload.language })
+      window.postMessage({ type: "AV_SUBMISSION_RESULT_CONFIRMED", nonce: expectedNonce, detail: payload }, window.location.origin || "*")
+      chrome.storage.local.get("algovault.solvedSlugs", (result) => {
+        const cached = result["algovault.solvedSlugs"] || {}
+        const slugs = new Set<string>(Array.isArray(cached?.slugs) ? cached.slugs : [])
+        slugs.add(slug)
+        chrome.storage.local.set({ "algovault.solvedSlugs": { ...cached, fetchedAt: Date.now(), slugs: Array.from(slugs) } })
+      })
+      showPostSolveDialog(slug)
+    }, 150)
   }
 }))

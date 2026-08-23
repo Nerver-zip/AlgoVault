@@ -16,6 +16,7 @@ import {
   setGithubAutoSync as persistGithubAutoSync,
   clearGithubAuth,
   setJwtToken,
+  clearJwtToken,
   getLastSync
 } from "../../lib/storage"
 import { fetchUserStatus } from "../../lib/api/leetcode"

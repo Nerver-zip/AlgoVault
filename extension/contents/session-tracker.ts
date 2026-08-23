@@ -150,9 +150,9 @@ window.addEventListener("pagehide", handleBlur)
 window.addEventListener("resume", handleFocus)
 window.addEventListener("pageshow", handleFocus)
 
-// SPA Router Observer (Detect problem slug changes instantly without full reload)
+// SPA Router Listener (Detect problem slug changes with zero typing overhead)
 let lastObservedUrl = location.href
-const spaObserver = new MutationObserver(() => {
+function checkUrlChange() {
   if (location.href !== lastObservedUrl) {
     lastObservedUrl = location.href
     const newSlug = getLeetCodeProblemSlug()
@@ -161,9 +161,15 @@ const spaObserver = new MutationObserver(() => {
       handleFocus()
     }
   }
-})
+}
 
-spaObserver.observe(document.body, { childList: true, subtree: true })
+window.addEventListener("popstate", checkUrlChange)
+window.addEventListener("hashchange", checkUrlChange)
+const urlCheckInterval = setInterval(checkUrlChange, 500)
+window.addEventListener("beforeunload", () => {
+  clearInterval(urlCheckInterval)
+  if (idleCheckInterval) clearInterval(idleCheckInterval)
+})
 
 // Initial check on load
 handleFocus()

@@ -1,5 +1,5 @@
 // ─── ALGOVAULT COMPANY INTERVIEW PRACTICE ENGINE (REAL LEETCODE DATA) ────────
-// Real, authentic dataset compiled from 440+ tech & finance companies.
+// Real, authentic dataset compiled from 680+ tech & finance companies.
 // Dataset provenance: LeetCode Verified Interview Questions (Updated: June 2025).
 
 import rawCompaniesJson from "./companies-dataset.json"
@@ -145,19 +145,88 @@ export function calculateWindowDifficultyStats(
   }
 }
 
-// ─── MASTER COMPANY DIRECTORY ───────────────────────────────────────────────
+// ─── HIGH-PERFORMANCE DATASET HYDRATION ────────────────────────────────────
 
-export const COMPANIES_DATA: CompanySummary[] = (rawCompaniesJson as any) as CompanySummary[]
-
-// ─── HIGH-SPEED INVERTED SLUG INDEX (O(1) IN-PAGE LEETCODE LOOKUP) ─────────
-
-export const PROBLEM_SLUG_TO_COMPANIES = new Map<string, CompanyProblemEvidence[]>()
-
-for (const company of COMPANIES_DATA) {
-  for (const prob of company.problems) {
-    const slugKey = prob.slug.toLowerCase()
-    const existing = PROBLEM_SLUG_TO_COMPANIES.get(slugKey) || []
-    existing.push(prob)
-    PROBLEM_SLUG_TO_COMPANIES.set(slugKey, existing)
-  }
+interface CompactDataset {
+  p: Record<string, [string, string, string, string, number]>
+  c: Array<{
+    i: string
+    n: string
+    s: string
+    c: CompanyCategory
+    d?: string
+    t?: string[]
+    p: Array<[string, number, TimeWindow[]]>
+  }>
 }
+
+function hydrateCompanies(raw: any): { companies: CompanySummary[]; slugMap: Map<string, CompanyProblemEvidence[]> } {
+  const dataset = raw as CompactDataset
+  const probMap = dataset.p || {}
+  const compList = dataset.c || []
+
+  const slugMap = new Map<string, CompanyProblemEvidence[]>()
+  const companies: CompanySummary[] = []
+
+  for (let i = 0; i < compList.length; i++) {
+    const c = compList[i]
+    const cProblems: CompanyProblemEvidence[] = []
+
+    for (let j = 0; j < c.p.length; j++) {
+      const [slug, freq, windows] = c.p[j]
+      const pInfo = probMap[slug] || ["Unknown", "M", "Algorithms", "", 0]
+      const diff = pInfo[1] === "E" ? "Easy" : pInfo[1] === "H" ? "Hard" : "Medium"
+      const w = windows || ["all"]
+      const primaryWindow = w.includes("30d") ? "30d" : w.includes("3m") ? "3m" : w.includes("6m") ? "6m" : w.includes("1y") ? "1y" : "all"
+      const tfLabel = primaryWindow === "30d" ? "30 Days" : primaryWindow === "3m" ? "3 Months" : primaryWindow === "6m" ? "6 Months" : primaryWindow === "1y" ? "> 6 Months" : "All Time"
+      const freqTier = freq >= 75 ? "VERY_HIGH" : freq >= 50 ? "HIGH" : freq >= 30 ? "MEDIUM" : "LOW"
+
+      const evidence: CompanyProblemEvidence = {
+        companyId: c.i,
+        companyName: c.n,
+        problemId: pInfo[4] || 0,
+        title: pInfo[0],
+        slug,
+        difficulty: diff,
+        frequencyScore: freq,
+        frequencyTier: freqTier,
+        timeframe: primaryWindow,
+        timeframeLabel: tfLabel,
+        windows: w,
+        topic: pInfo[2] || "Algorithms",
+        acceptanceRate: pInfo[3] || "",
+        source: "LEETCODE",
+        sourceUpdatedAt: "June 2025"
+      }
+
+      cProblems.push(evidence)
+
+      const slugKey = slug.toLowerCase()
+      const existing = slugMap.get(slugKey) || []
+      existing.push(evidence)
+      slugMap.set(slugKey, existing)
+    }
+
+    companies.push({
+      id: c.i,
+      name: c.n,
+      slug: c.s,
+      category: c.c,
+      accentColor: "#dfa054",
+      domain: c.d,
+      logoSvg: "",
+      totalProblems: cProblems.length,
+      mostFrequentTopics: c.t || [],
+      source: "LEETCODE",
+      sourceUpdatedAt: "June 2025",
+      problems: cProblems
+    })
+  }
+
+  return { companies, slugMap }
+}
+
+const hydrated = hydrateCompanies(rawCompaniesJson)
+
+export const COMPANIES_DATA: CompanySummary[] = hydrated.companies
+export const PROBLEM_SLUG_TO_COMPANIES: Map<string, CompanyProblemEvidence[]> = hydrated.slugMap

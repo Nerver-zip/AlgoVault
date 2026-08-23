@@ -114,11 +114,42 @@ const THEMES: Record<string, ThemeAssets> = {
   }
 }
 
+// Preload audio files into memory so playback is instant on AC
+const audioCache = new Map<string, HTMLAudioElement>()
+
+function preloadAudio(url: string) {
+  if (audioCache.has(url)) return
+  try {
+    const audio = new Audio()
+    audio.preload = "auto"
+    audio.src = url
+    audio.volume = 0.5
+    // Force browser to start fetching & decoding immediately
+    audio.load()
+    audioCache.set(url, audio)
+  } catch {}
+}
+
+// Eagerly preload all theme audio assets on page load
+Object.values(THEMES).forEach((theme) => {
+  preloadAudio(theme.audio.victory)
+  preloadAudio(theme.audio.defeat)
+})
+
 const playSound = (soundUrl: string) => {
   try {
-    const audio = new Audio(soundUrl)
-    audio.volume = 0.5
-    audio.play().catch(() => {})
+    const cached = audioCache.get(soundUrl)
+    if (cached) {
+      // Clone the cached audio node for overlapping playback safety
+      const clone = cached.cloneNode(true) as HTMLAudioElement
+      clone.volume = 0.5
+      clone.play().catch(() => {})
+    } else {
+      // Fallback: create fresh Audio if cache miss
+      const audio = new Audio(soundUrl)
+      audio.volume = 0.5
+      audio.play().catch(() => {})
+    }
   } catch {}
 }
 
@@ -166,14 +197,23 @@ export default function SolveCelebration() {
     }
     chrome.storage.onChanged.addListener(handleStorageChange)
 
+let lastCelebrationTimestamp = 0
+
     const handleSubmission = (event: MessageEvent) => {
-      // Handle each submission strictly once
-      if (event.data?.type !== "AV_SUBMISSION_RESULT" && event.data?.type !== "AV_SUBMISSION_RESULT_CONFIRMED") return
+      // Listen strictly to the confirmed and validated submission event once
+      if (event.data?.type !== "AV_SUBMISSION_RESULT_CONFIRMED") return
       
       const expectedNonce = (window as any).__ALGOVAULT_ISOLATED_NONCE__
-      if (!event.data?.nonce || event.data.nonce !== expectedNonce) {
+      if (!event.data?.nonce || !expectedNonce || event.data.nonce !== expectedNonce) {
         return
       }
+
+      // Hard debounce guard: allow at most 1 celebration audio/overlay per 3.5 seconds
+      const now = Date.now()
+      if (now - lastCelebrationTimestamp < 3500) {
+        return
+      }
+      lastCelebrationTimestamp = now
 
       const detail = event.data.detail || {}
       const submissionKey = detail.submissionId ? String(detail.submissionId) : `${detail.titleSlug || 'unknown'}-${detail.statusCode}-${detail.runtime || ''}`
@@ -202,7 +242,7 @@ export default function SolveCelebration() {
 
       const activeTheme = THEMES[prefsRef.current.theme] || THEMES.gta
 
-      // Fast-path synchronous audio trigger
+      // Fast-path synchronous audio trigger (plays exactly once)
       if (prefsRef.current.sound) {
         playSound(newType === "VICTORY" ? activeTheme.audio.victory : activeTheme.audio.defeat)
       }

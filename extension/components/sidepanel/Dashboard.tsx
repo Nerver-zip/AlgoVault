@@ -989,7 +989,7 @@ export const Dashboard = () => {
         zerotracMap={zerotracMap}
         zerotrac={zerotrac}
         weakness={weakness}
-        username={data?.username || "Som_07"}
+        username={(data as any)?.username || "Som_07"}
       />
 
       {error && <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-900/40 bg-rose-950/20 px-3 py-2 text-[10px] text-rose-300"><span>{error}</span><button type="button" onClick={() => void refresh()} className="shrink-0 font-semibold underline underline-offset-2">Retry</button></div>}

@@ -59,64 +59,71 @@ const RESOURCES: Array<{ name: string; description: string; url: string; kind: R
   },
   {
     name: "USACO Guide",
-    description: "A curated progression of concepts and practice problems with strong topic coverage.",
+    description: "Comprehensive competitive programming syllabus with clear prerequisites, editorial depth, and module problems.",
     url: "https://usaco.guide/",
-    kind: "practice",
-    focus: "Guided practice"
+    kind: "reference",
+    focus: "Olympiad and contest theory"
   },
   {
-    name: "CSES Problem Set",
-    description: "Focused canonical practice once a pattern has clicked and you want to prove the idea transfers.",
-    url: "https://cses.fi/problemset/",
+    name: "Algorithms by Jeff Erickson",
+    description: "A deep, proof-grounded algorithms text that makes recursion, graphs, and dynamic programming crystal clear.",
+    url: "https://jeffe.cs.illinois.edu/teaching/algorithms/",
+    kind: "reference",
+    focus: "Theoretical rigor"
+  },
+  {
+    name: "LeetCode Explore Cards",
+    description: "Official interactive modules for targeted practice on specific data structures and paradigms.",
+    url: "https://leetcode.com/explore/",
     kind: "practice",
-    focus: "Pattern transfer"
+    focus: "Interactive cards"
   }
 ]
 
-const KIND_META: Record<ResourceKind, { label: string; icon: React.ElementType; color: string; bg: string; border: string }> = {
-  video: { label: "Watch Video", icon: PlayCircle, color: "#f43f5e", bg: "rgba(244,63,94,0.12)", border: "rgba(244,63,94,0.25)" },
-  reference: { label: "Reference", icon: BookOpen, color: "#38bdf8", bg: "rgba(56,189,248,0.12)", border: "rgba(56,189,248,0.25)" },
-  practice: { label: "Practice Track", icon: SearchCode, color: "#34d399", bg: "rgba(52,211,153,0.12)", border: "rgba(52,211,153,0.25)" }
-}
-
 export const Resources = () => {
-  const [activeTab, setActiveTab] = useState<"roadmap" | "resources" | "templates">("roadmap")
+  const [activeTab, setActiveTab] = useState<"roadmap" | "resources" | "templates">("templates")
   const [filter, setFilter] = useState<"all" | ResourceKind>("all")
   const visible = useMemo(() => filter === "all" ? RESOURCES : RESOURCES.filter((resource) => resource.kind === filter), [filter])
 
   return (
-    <div className="grid gap-3.5 pb-6 font-sans animate-fadeIn">
-      {/* Top Level Segmented Navigation Tab */}
-      <div className="flex bg-zinc-950/80 p-1.5 rounded-xl border border-zinc-800/80 shadow-inner">
+    <div className="space-y-3 pb-6 font-sans animate-fadeIn min-w-0 w-full max-w-full overflow-x-hidden">
+      {/* Top Level 3-Tab Segmented Navigation - 3 Equal Columns */}
+      <div className="grid grid-cols-3 gap-1 bg-zinc-950/90 p-1 rounded-xl border border-zinc-800/80 shadow-inner w-full min-w-0">
         <button
           onClick={() => setActiveTab("roadmap")}
-          className={`flex-1 flex items-center justify-center gap-1.5 text-[10px] font-bold py-2 rounded-lg transition-all font-mono uppercase tracking-wider ${
+          className={`flex items-center justify-center gap-1 text-[10px] font-bold py-1.5 rounded-lg transition-all font-mono uppercase tracking-wider truncate ${
             activeTab === "roadmap"
               ? "bg-zinc-900 text-[#dfa054] border border-[#dfa054]/30 shadow-md"
               : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/40"
           }`}
+          title="Curriculum Roadmap"
         >
-          <SearchCode size={13} /> Curriculum
+          <SearchCode size={12} className="shrink-0" />
+          <span>Curriculum</span>
         </button>
         <button
           onClick={() => setActiveTab("templates")}
-          className={`flex-1 flex items-center justify-center gap-1.5 text-[10px] font-bold py-2 rounded-lg transition-all font-mono uppercase tracking-wider ${
+          className={`flex items-center justify-center gap-1 text-[10px] font-bold py-1.5 rounded-lg transition-all font-mono uppercase tracking-wider truncate ${
             activeTab === "templates"
               ? "bg-zinc-900 text-[#dfa054] border border-[#dfa054]/30 shadow-md"
               : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/40"
           }`}
+          title="Code Templates"
         >
-          <Code2 size={13} /> Templates
+          <Code2 size={12} className="shrink-0" />
+          <span>Templates</span>
         </button>
         <button
           onClick={() => setActiveTab("resources")}
-          className={`flex-1 flex items-center justify-center gap-1.5 text-[10px] font-bold py-2 rounded-lg transition-all font-mono uppercase tracking-wider ${
+          className={`flex items-center justify-center gap-1 text-[10px] font-bold py-1.5 rounded-lg transition-all font-mono uppercase tracking-wider truncate ${
             activeTab === "resources"
               ? "bg-zinc-900 text-[#dfa054] border border-[#dfa054]/30 shadow-md"
               : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/40"
           }`}
+          title="Learning Resources"
         >
-          <BookOpen size={13} /> Resources
+          <BookOpen size={12} className="shrink-0" />
+          <span>Resources</span>
         </button>
       </div>
 
@@ -128,6 +135,7 @@ export const Resources = () => {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.18 }}
+            className="w-full min-w-0 max-w-full overflow-hidden"
           >
             <CurriculumBoard />
           </motion.div>
@@ -138,6 +146,7 @@ export const Resources = () => {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.18 }}
+            className="w-full min-w-0 max-w-full overflow-hidden"
           >
             <TemplateVault />
           </motion.div>
@@ -148,89 +157,54 @@ export const Resources = () => {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.18 }}
-            className="grid gap-3.5"
+            className="space-y-3 w-full min-w-0 max-w-full"
           >
-            {/* Learn with Intent Hero Header */}
-            <Card className="relative overflow-hidden border border-[#dfa054]/25 bg-gradient-to-br from-[#1a130b] via-zinc-950/90 to-zinc-950 p-0 shadow-lg">
-              <div className="p-4">
-                <div className="flex items-center gap-2">
-                  <span className="panel-label text-[#dfa054]">Curated Knowledge Base</span>
-                  <span className="text-[9px] bg-[#dfa054]/10 text-[#dfa054] border border-[#dfa054]/25 px-1.5 py-0.2 rounded font-mono font-bold">Intent-Driven</span>
-                </div>
-                <h2 className="mt-2 text-sm font-bold text-zinc-100">A useful explanation, at the right moment.</h2>
-                <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
-                  Attempt first on LeetCode. Then select a structured roadmap, video explanation, or reference sheet below.
-                </p>
-              </div>
+            <div className="flex gap-1.5 overflow-x-auto scrollbar-none pb-0.5">
+              {(["all", "video", "practice", "reference"] as const).map((kind) => (
+                <button
+                  key={kind}
+                  onClick={() => setFilter(kind)}
+                  className={`rounded-md px-2.5 py-1 text-[10px] font-mono capitalize transition-colors ${
+                    filter === kind
+                      ? "bg-zinc-800 text-zinc-100 border border-zinc-700"
+                      : "text-zinc-500 hover:text-zinc-300 bg-zinc-900/40"
+                  }`}
+                >
+                  {kind}
+                </button>
+              ))}
+            </div>
 
-              {/* Filter Pills */}
-              <div className="flex gap-1.5 border-t border-zinc-800/80 bg-zinc-950/60 p-2 overflow-x-auto">
-                {(["all", "practice", "video", "reference"] as const).map((kind) => {
-                  const isActive = filter === kind
-                  return (
-                    <button
-                      key={kind}
-                      onClick={() => setFilter(kind)}
-                      className={`rounded-md px-3 py-1 text-[10.5px] font-mono font-bold transition-all shrink-0 ${
-                        isActive 
-                          ? "bg-[#dfa054]/15 text-[#dfa054] border border-[#dfa054]/40 shadow-sm" 
-                          : "text-zinc-400 border border-transparent hover:bg-zinc-900 hover:text-zinc-200"
-                      }`}
+            <div className="space-y-2.5">
+              {visible.map((resource) => (
+                <Card
+                  key={resource.name}
+                  className="p-3 border border-zinc-800/80 bg-zinc-950/70 hover:border-zinc-700 transition-all flex flex-col justify-between"
+                >
+                  <div>
+                    <div className="flex items-start justify-between gap-2">
+                      <h3 className="text-xs font-bold text-zinc-100">{resource.name}</h3>
+                      <span className="rounded px-1.5 py-0.5 text-[9px] font-mono text-[#dfa054] bg-[#dfa054]/10 border border-[#dfa054]/20 uppercase">
+                        {resource.kind}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-relaxed text-zinc-400 font-sans">
+                      {resource.description}
+                    </p>
+                  </div>
+                  <div className="mt-2.5 flex items-center justify-between border-t border-zinc-900 pt-2">
+                    <span className="text-[10px] text-zinc-500 font-mono">{resource.focus}</span>
+                    <a
+                      href={resource.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-[10px] font-mono text-[#dfa054] hover:underline"
                     >
-                      {kind === "all" ? "All Resources" : KIND_META[kind].label}
-                    </button>
-                  )
-                })}
-              </div>
-            </Card>
-
-            {/* Resource Grid Cards */}
-            <div className="grid gap-2.5">
-              {visible.map((resource) => {
-                const meta = KIND_META[resource.kind]
-                const Icon = meta.icon
-                return (
-                  <a 
-                    key={resource.name} 
-                    href={resource.url} 
-                    target="_blank" 
-                    rel="noopener noreferrer" 
-                    className="group block"
-                  >
-                    <Card className="p-3.5 transition-all duration-200 border border-zinc-800/80 bg-zinc-950/60 hover:border-zinc-700 hover:bg-zinc-900/50 shadow-sm">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <div 
-                              className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0 border"
-                              style={{ backgroundColor: meta.bg, borderColor: meta.border, color: meta.color }}
-                            >
-                              <Icon size={13} />
-                            </div>
-                            <span className="truncate text-xs font-bold text-zinc-100 group-hover:text-[#dfa054] transition-colors">
-                              {resource.name}
-                            </span>
-                          </div>
-                          <p className="mt-2 text-[10.5px] leading-relaxed text-zinc-400 font-sans">
-                            {resource.description}
-                          </p>
-                        </div>
-                        <ExternalLink size={13} className="mt-1 shrink-0 text-zinc-500 transition-transform group-hover:text-zinc-200 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
-                      </div>
-                      
-                      <div className="mt-3 flex items-center justify-between border-t border-zinc-900/80 pt-2 text-[10px] font-mono">
-                        <span className="text-zinc-500 truncate max-w-[200px]">{resource.focus}</span>
-                        <span 
-                          className="rounded-full px-2 py-0.5 text-[9px] font-bold border shrink-0"
-                          style={{ backgroundColor: meta.bg, borderColor: meta.border, color: meta.color }}
-                        >
-                          {meta.label}
-                        </span>
-                      </div>
-                    </Card>
-                  </a>
-                )
-              })}
+                      Open <ExternalLink size={10} />
+                    </a>
+                  </div>
+                </Card>
+              ))}
             </div>
           </motion.div>
         )}

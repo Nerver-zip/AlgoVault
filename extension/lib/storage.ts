@@ -334,7 +334,6 @@ export async function setGithubAutoSync(enabled: boolean): Promise<void> {
     if (chrome.storage.local) {
       await chrome.storage.local.set({
         [STORAGE_KEYS.GITHUB_AUTO_SYNC]: boolVal,
-        "algovault.github.autoSync": boolVal,
         "githubAutoSync": boolVal
       })
     }

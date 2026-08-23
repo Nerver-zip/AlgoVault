@@ -44,6 +44,7 @@ const CompanyLogo: React.FC<{ company: CompanySummary; className?: string; imgCl
   const [useFallback, setUseFallback] = useState(false)
   const domain = company.domain || `${company.slug.replace(/[^a-z0-9]/g, "")}.com`
   const faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`
+  const initials = (company.name || "CO").slice(0, 2).toUpperCase()
 
   return (
     <div className={`${className} rounded-lg bg-zinc-950 p-1.5 flex items-center justify-center border border-zinc-800 shrink-0 group-hover:border-[#dfa054]/40 transition-all shadow-inner overflow-hidden`}>
@@ -56,7 +57,9 @@ const CompanyLogo: React.FC<{ company: CompanySummary; className?: string; imgCl
           onError={() => setUseFallback(true)}
         />
       ) : (
-        <div dangerouslySetInnerHTML={{ __html: company.logoSvg }} className="w-full h-full flex items-center justify-center" />
+        <div className="w-full h-full flex items-center justify-center text-[10px] font-mono font-bold text-[#dfa054] select-none">
+          {initials}
+        </div>
       )}
     </div>
   )

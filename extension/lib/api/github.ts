@@ -245,6 +245,187 @@ export async function commitToGithub(
   }
 }
 
+export interface BatchFileWrite {
+  path: string
+  message: string
+  content: string
+}
+
+/**
+ * Commits multiple files in a single atomic Git commit using the Git Trees API.
+ * This reduces N sequential API roundtrips down to ~4 total requests regardless
+ * of file count: (1) get branch ref, (2) create tree, (3) create commit, (4) update ref.
+ *
+ * Falls back to sequential single-file commits if the Trees API fails (e.g.
+ * fine-grained token without "Contents: read & write" permission).
+ */
+export async function batchCommitToGithub(
+  pat: string,
+  repoPath: string,
+  writes: BatchFileWrite[],
+  branch?: string
+): Promise<{ ok: boolean; message?: string; revoked?: boolean }> {
+  if (!writes.length) return { ok: true }
+
+  const cleanRepo = repoPath.trim()
+    .replace(/^https:\/\/github\.com\//, "")
+    .replace(/\.git$/, "");
+  const [owner, repo] = cleanRepo.split("/");
+  if (!owner || !repo) {
+    return { ok: false, message: "Invalid repository path. Format must be 'owner/repo'." };
+  }
+
+  const headers: Record<string, string> = {
+    Authorization: `token ${pat}`,
+    Accept: "application/vnd.github.v3+json",
+    "Content-Type": "application/json"
+  };
+
+  const targetBranch = branch || "main";
+
+  try {
+    // Step 1: Get the latest commit SHA for the branch
+    const refRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(targetBranch)}`,
+      { headers }
+    );
+
+    if (refRes.status === 401 || refRes.status === 403) {
+      return { ok: false, revoked: true, message: "GitHub token was revoked or expired. Please reconnect in Settings." };
+    }
+
+    if (!refRes.ok) {
+      // Trees API not available or branch missing -- fall back to sequential
+      return sequentialFallback(pat, repoPath, writes, branch);
+    }
+
+    const refData = await refRes.json();
+    const latestCommitSha: string = refData.object?.sha;
+    if (!latestCommitSha) {
+      return sequentialFallback(pat, repoPath, writes, branch);
+    }
+
+    // Step 2: Fetch the latest commit object to obtain its true tree SHA
+    const commitObjRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/commits/${latestCommitSha}`,
+      { headers }
+    );
+    if (!commitObjRes.ok) {
+      return sequentialFallback(pat, repoPath, writes, branch);
+    }
+    const commitObjData = await commitObjRes.json();
+    const baseTreeSha: string = commitObjData.tree?.sha;
+    if (!baseTreeSha) {
+      return sequentialFallback(pat, repoPath, writes, branch);
+    }
+
+    // Step 3: Create blobs for each file and build the tree entries
+    const treeEntries: Array<{ path: string; mode: string; type: string; content: string }> = [];
+    for (const write of writes) {
+      treeEntries.push({
+        path: write.path,
+        mode: "100644",
+        type: "blob",
+        content: write.content
+      });
+    }
+
+    // Step 4: Create a new tree based on the latest commit's tree SHA
+    const treeRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/trees`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          base_tree: baseTreeSha,
+          tree: treeEntries
+        })
+      }
+    );
+
+    if (!treeRes.ok) {
+      // If tree creation fails, fall back to sequential contents API
+      return sequentialFallback(pat, repoPath, writes, branch);
+    }
+
+    const treeData = await treeRes.json();
+    const newTreeSha: string = treeData.sha;
+
+    // Step 5: Create a new commit pointing to the new tree
+    const commitMessage = writes.length === 1
+      ? writes[0].message
+      : `${writes[0].message} (+${writes.length - 1} files) - AlgoVault`;
+
+    const commitRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/commits`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          message: commitMessage,
+          tree: newTreeSha,
+          parents: [latestCommitSha]
+        })
+      }
+    );
+
+    if (!commitRes.ok) {
+      return sequentialFallback(pat, repoPath, writes, branch);
+    }
+
+    const commitData = await commitRes.json();
+    const newCommitSha: string = commitData.sha;
+
+    // Step 6: Update the branch ref to point to the new commit
+    const updateRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(targetBranch)}`,
+      {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ sha: newCommitSha, force: true })
+      }
+    );
+
+    if (!updateRes.ok) {
+      // If ref update fails, try sequential fallback before failing
+      const fallback = await sequentialFallback(pat, repoPath, writes, branch);
+      if (fallback.ok) return fallback;
+
+      const errText = await updateRes.text().catch(() => "");
+      const isRevoked = updateRes.status === 401 || updateRes.status === 403;
+      return {
+        ok: false,
+        revoked: isRevoked,
+        message: isRevoked
+          ? "GitHub token was revoked or expired. Please reconnect in Settings."
+          : `Failed to update branch ref (${updateRes.status}): ${errText}`
+      };
+    }
+
+    return { ok: true };
+  } catch (error: any) {
+    // Network error on Trees API -- fall back to sequential
+    try {
+      return await sequentialFallback(pat, repoPath, writes, branch);
+    } catch (fallbackErr: any) {
+      return { ok: false, message: fallbackErr.message || "Failed to commit to GitHub" };
+    }
+  }
+}
+
+async function sequentialFallback(
+  pat: string,
+  repoPath: string,
+  writes: BatchFileWrite[],
+  branch?: string
+): Promise<{ ok: boolean; message?: string; revoked?: boolean }> {
+  for (const write of writes) {
+    const result = await commitToGithub(pat, repoPath, write.path, write.message, write.content, branch);
+    if (!result.ok) return result;
+  }
+  return { ok: true };
+}
+
 /**
  * Maps LeetCode language string to standard file extension.
  */

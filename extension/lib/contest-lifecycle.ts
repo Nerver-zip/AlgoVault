@@ -93,17 +93,23 @@ export async function loadRecentAttendedContests(username: string, limit: number
   return items.reverse().slice(0, limit)
 }
 
-export async function loadContestLifecycle(username: string): Promise<ContestLifecycleItem[]> {
+export async function loadContestLifecycle(username: string, preloadedOfficialResponse?: any): Promise<ContestLifecycleItem[]> {
   const refreshedAt = new Date().toISOString()
   const entrantHubPromise = Promise.race([
     fetchEntrantHubHistoryBackend(username, "US").catch(() => []),
-    new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 1200))
+    new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 600))
   ])
 
+  const officialPromise = preloadedOfficialResponse !== undefined
+    ? Promise.resolve(preloadedOfficialResponse)
+    : sendMessage<any>({ action: "get_user_contest_history", payload: { username } }).catch(() => null)
+
+  const pastPromise = sendMessage<any>({ action: "get_leetcode_past_contests" }).catch(() => null)
+
   const [officialResponse, entrantHubRes, pastResponse] = await Promise.all([
-    sendMessage<any>({ action: "get_user_contest_history", payload: { username } }).catch(() => null),
+    officialPromise,
     entrantHubPromise,
-    sendMessage<any>({ action: "get_leetcode_past_contests" }).catch(() => null)
+    pastPromise
   ])
 
   const officialRows: OfficialContestRow[] = officialResponse?.ok
