@@ -35,7 +35,7 @@ public class SpacedRepetitionEngine {
         7.2102,  // w4:  initial difficulty base D₀(1)
         0.5316,  // w5:  initial difficulty grade scaling factor
         1.0651,  // w6:  difficulty linear change factor (ΔD per grade step)
-        0.0280,  // w7:  difficulty mean reversion strength toward D₀(3)
+        0.0046,  // w7:  difficulty mean reversion strength toward D₀(3)
         1.5418,  // w8:  recall stability base factor
         0.1576,  // w9:  recall stability sensitivity to previous stability (S^(-w9))
         1.0100,  // w10: recall stability retrievability factor (e^(w10*(1-R)) - 1)
@@ -44,9 +44,9 @@ public class SpacedRepetitionEngine {
         0.3481,  // w13: forget stability previous stability power factor ((S+1)^w13 - 1)
         0.2231,  // w14: recall stability Hard penalty modifier (G = 2, < 1.0)
         1.3559,  // w15: recall stability Easy bonus modifier (G = 4, > 1.0)
-        0.0046,  // w16: reserved parameter in standard FSRS-4.5 weight vector
+        0.0280,  // w16: forget stability retrievability factor (e^(w16*(1-R)))
         2.9282,  // w17: DECAY exponent for power-law forgetting curve (DECAY = -w17)
-        0.4403   // w18: forget stability retrievability factor (e^(w18*(1-R)))
+        0.4403   // w18: reserved / short-term stability factor in standard FSRS-4.5
     };
 
     /** Target retention rate — 90% is the researched optimal for long-term learning. */
@@ -207,13 +207,13 @@ public class SpacedRepetitionEngine {
 
     /**
      * Stability after forgetting (grade = Again) with dynamic retrievability R.
-     * \(S'_f = w_{11} \cdot D^{-w_{12}} \cdot ((S + 1)^{w_{13}} - 1) \cdot e^{w_{18} \cdot (1 - R)}\)
+     * \(S'_f = w_{11} \cdot D^{-w_{12}} \cdot ((S + 1)^{w_{13}} - 1) \cdot e^{w_{16} \cdot (1 - R)}\)
      */
     public double nextForgetStability(double prevS, double difficulty, double retrievability) {
         double newS = W[11]
                 * Math.pow(difficulty, -W[12])
                 * (Math.pow(prevS + 1.0, W[13]) - 1.0)
-                * Math.exp(W[18] * (1.0 - retrievability));
+                * Math.exp(W[16] * (1.0 - retrievability));
 
         return Math.max(0.1, newS);
     }

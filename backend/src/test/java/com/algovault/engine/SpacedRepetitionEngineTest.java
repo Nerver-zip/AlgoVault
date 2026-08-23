@@ -97,11 +97,11 @@ class SpacedRepetitionEngineTest {
         double uncappedS = engine.nextForgetStability(prevS, difficulty, retrievability);
 
         assertTrue(uncappedS >= 0.1, "Forget stability must respect minimum floor of 0.1");
-        // Verify formula calculation: w11 * (difficulty^-w12) * ((prevS + 1)^w13 - 1) * exp(w18 * (1 - R))
+        // Verify formula calculation: w11 * (difficulty^-w12) * ((prevS + 1)^w13 - 1) * exp(w16 * (1 - R))
         double expected = SpacedRepetitionEngine.W[11]
             * Math.pow(difficulty, -SpacedRepetitionEngine.W[12])
             * (Math.pow(prevS + 1.0, SpacedRepetitionEngine.W[13]) - 1.0)
-            * Math.exp(SpacedRepetitionEngine.W[18] * (1.0 - retrievability));
+            * Math.exp(SpacedRepetitionEngine.W[16] * (1.0 - retrievability));
         assertEquals(Math.max(0.1, expected), uncappedS, 0.0001);
     }
 
