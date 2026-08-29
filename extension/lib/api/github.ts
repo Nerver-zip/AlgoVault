@@ -28,6 +28,13 @@ const base64Url = (bytes: Uint8Array): string => {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 };
 
+const base64Utf8 = (value: string): string => {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+};
+
 const createPkcePair = async (): Promise<{ verifier: string; challenge: string }> => {
   const random = new Uint8Array(32);
   crypto.getRandomValues(random);
@@ -173,12 +180,7 @@ export async function commitToGithub(
     }
 
     // 2. Base64 encode file contents
-    const utf8Bytes = new TextEncoder().encode(fileContent);
-    let binary = "";
-    for (let i = 0; i < utf8Bytes.length; i++) {
-      binary += String.fromCharCode(utf8Bytes[i]);
-    }
-    const base64Content = btoa(binary);
+    const base64Content = base64Utf8(fileContent);
 
     // Duplicate protection check: if existing base64 content matches exactly, skip commit
     if (sha && existingContent && existingContent === base64Content) {
@@ -253,21 +255,171 @@ export interface BatchFileWrite {
   content: string
 }
 
+export interface BatchCommitOptions {
+  allowSequentialFallback?: boolean
+  refUpdateRetriesRemaining?: number
+}
+
+export interface BatchCommitResult {
+  ok: boolean
+  message?: string
+  revoked?: boolean
+  retryableWithSmallerBatch?: boolean
+}
+
+export interface GithubTreePathsResult {
+  ok: boolean
+  paths?: string[]
+  truncated?: boolean
+  message?: string
+  revoked?: boolean
+}
+
+export async function getGithubTreePaths(
+  pat: string,
+  repoPath: string,
+  branch?: string
+): Promise<GithubTreePathsResult> {
+  const cleanRepo = repoPath.trim()
+    .replace(/^https:\/\/github\.com\//, "")
+    .replace(/\.git$/, "")
+  const [owner, repo] = cleanRepo.split("/")
+  if (!owner || !repo) return { ok: false, message: "Invalid repository path. Format must be 'owner/repo'." }
+
+  const headers: Record<string, string> = {
+    Authorization: `token ${pat}`,
+    Accept: "application/vnd.github.v3+json",
+    "Cache-Control": "no-cache"
+  }
+  const targetBranch = branch || "main"
+  const refRes = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(targetBranch)}`,
+    { headers }
+  )
+  if (refRes.status === 409) return { ok: true, paths: [], truncated: false }
+  if (!refRes.ok) {
+    const revoked = refRes.status === 401 || refRes.status === 403
+    return {
+      ok: false,
+      revoked,
+      message: revoked
+        ? "GitHub token was revoked or expired. Please reconnect in Settings."
+        : `Unable to read GitHub branch '${targetBranch}' for reconciliation (${refRes.status}).`
+    }
+  }
+  const refData = await refRes.json()
+  const commitSha: string | undefined = refData.object?.sha
+  if (!commitSha) return { ok: false, message: `GitHub branch '${targetBranch}' did not return a commit SHA.` }
+
+  const treeRes = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/git/trees/${commitSha}?recursive=1`,
+    { headers }
+  )
+  if (!treeRes.ok) {
+    const revoked = treeRes.status === 401 || treeRes.status === 403
+    return {
+      ok: false,
+      revoked,
+      message: revoked
+        ? "GitHub token was revoked or expired. Please reconnect in Settings."
+        : `Unable to read the GitHub repository tree (${treeRes.status}).`
+    }
+  }
+  const treeData = await treeRes.json()
+  return {
+    ok: true,
+    truncated: Boolean(treeData.truncated),
+    paths: Array.isArray(treeData.tree)
+      ? treeData.tree.map((entry: any) => entry?.path).filter((path: unknown): path is string => typeof path === "string")
+      : []
+  }
+}
+
+async function initializeEmptyGithubRepository(
+  headers: Record<string, string>,
+  owner: string,
+  repo: string,
+  targetBranch: string,
+  firstWrite: BatchFileWrite
+): Promise<BatchCommitResult> {
+  const initRes = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/contents/${encodeGithubContentPath(firstWrite.path)}`,
+    {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({
+        message: "Initialize AlgoVault solution repository",
+        content: base64Utf8(firstWrite.content)
+      })
+    }
+  );
+
+  if (!initRes.ok) {
+    const revoked = initRes.status === 401 || initRes.status === 403;
+    return {
+      ok: false,
+      revoked,
+      message: revoked
+        ? "GitHub token was revoked or expired. Please reconnect in Settings."
+        : `Unable to initialize the empty GitHub repository (${initRes.status}).`
+    };
+  }
+
+  const initData = await initRes.json();
+  const initialCommitSha: string | undefined = initData.commit?.sha;
+  if (!initialCommitSha) {
+    return { ok: false, message: "GitHub initialized the repository without returning a commit SHA." };
+  }
+
+  const targetRefRes = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(targetBranch)}`,
+    { headers }
+  );
+  if (targetRefRes.ok) return { ok: true };
+  if (targetRefRes.status === 401 || targetRefRes.status === 403) {
+    return { ok: false, revoked: true, message: "GitHub token was revoked or expired. Please reconnect in Settings." };
+  }
+  if (targetRefRes.status !== 404) {
+    return { ok: false, message: `Unable to verify initialized GitHub branch '${targetBranch}' (${targetRefRes.status}).` };
+  }
+
+  const createRefRes = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/git/refs`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ ref: `refs/heads/${targetBranch}`, sha: initialCommitSha })
+    }
+  );
+  if (!createRefRes.ok) {
+    const revoked = createRefRes.status === 401 || createRefRes.status === 403;
+    return {
+      ok: false,
+      revoked,
+      message: revoked
+        ? "GitHub token was revoked or expired. Please reconnect in Settings."
+        : `Unable to create GitHub branch '${targetBranch}' after initialization (${createRefRes.status}).`
+    };
+  }
+  return { ok: true };
+}
+
 /**
  * Commits multiple files in a single atomic Git commit using the Git Trees API.
  * This reduces N sequential API roundtrips down to ~4 total requests regardless
  * of file count: (1) get branch ref, (2) create tree, (3) create commit, (4) update ref.
  *
- * Falls back to sequential single-file commits if the Trees API fails (e.g.
- * fine-grained token without "Contents: read & write" permission).
+ * Falls back to sequential single-file commits by default. Bulk history
+ * exports disable that fallback so a rejected batch can be split safely.
  */
 export async function batchCommitToGithub(
   pat: string,
   repoPath: string,
   writes: BatchFileWrite[],
   branch?: string,
-  commitMessageOverride?: string
-): Promise<{ ok: boolean; message?: string; revoked?: boolean }> {
+  commitMessageOverride?: string,
+  options: BatchCommitOptions = {}
+): Promise<BatchCommitResult> {
   if (!writes.length) return { ok: true }
 
   const cleanRepo = repoPath.trim()
@@ -285,6 +437,12 @@ export async function batchCommitToGithub(
   };
 
   const targetBranch = branch || "main";
+  const fallbackOrFail = async (message: string, retryableWithSmallerBatch = false): Promise<BatchCommitResult> => {
+    if (options.allowSequentialFallback === false) {
+      return { ok: false, message, retryableWithSmallerBatch };
+    }
+    return sequentialFallback(pat, repoPath, writes, branch);
+  };
 
   try {
     // Step 1: Get the latest commit SHA for the branch
@@ -297,15 +455,20 @@ export async function batchCommitToGithub(
       return { ok: false, revoked: true, message: "GitHub token was revoked or expired. Please reconnect in Settings." };
     }
 
+    if (refRes.status === 409) {
+      const initialization = await initializeEmptyGithubRepository(headers, owner, repo, targetBranch, writes[0]);
+      if (!initialization.ok) return initialization;
+      return batchCommitToGithub(pat, repoPath, writes, branch, commitMessageOverride, options);
+    }
+
     if (!refRes.ok) {
-      // Trees API not available or branch missing -- fall back to sequential
-      return sequentialFallback(pat, repoPath, writes, branch);
+      return fallbackOrFail(`Unable to read GitHub branch '${targetBranch}' (${refRes.status}).`);
     }
 
     const refData = await refRes.json();
     const latestCommitSha: string = refData.object?.sha;
     if (!latestCommitSha) {
-      return sequentialFallback(pat, repoPath, writes, branch);
+      return fallbackOrFail(`GitHub branch '${targetBranch}' did not return a commit SHA.`);
     }
 
     // Step 2: Fetch the latest commit object to obtain its true tree SHA
@@ -314,12 +477,12 @@ export async function batchCommitToGithub(
       { headers }
     );
     if (!commitObjRes.ok) {
-      return sequentialFallback(pat, repoPath, writes, branch);
+      return fallbackOrFail(`Unable to read the latest GitHub commit (${commitObjRes.status}).`);
     }
     const commitObjData = await commitObjRes.json();
     const baseTreeSha: string = commitObjData.tree?.sha;
     if (!baseTreeSha) {
-      return sequentialFallback(pat, repoPath, writes, branch);
+      return fallbackOrFail("The latest GitHub commit did not return a tree SHA.");
     }
 
     // Step 3: Create blobs for each file and build the tree entries
@@ -347,8 +510,11 @@ export async function batchCommitToGithub(
     );
 
     if (!treeRes.ok) {
-      // If tree creation fails, fall back to sequential contents API
-      return sequentialFallback(pat, repoPath, writes, branch);
+      const retryableWithSmallerBatch = treeRes.status === 413 || treeRes.status === 422
+      return fallbackOrFail(
+        `GitHub rejected the tree batch (${treeRes.status}).`,
+        retryableWithSmallerBatch
+      );
     }
 
     const treeData = await treeRes.json();
@@ -373,7 +539,7 @@ export async function batchCommitToGithub(
     );
 
     if (!commitRes.ok) {
-      return sequentialFallback(pat, repoPath, writes, branch);
+      return fallbackOrFail(`Unable to create the GitHub commit (${commitRes.status}).`);
     }
 
     const commitData = await commitRes.json();
@@ -390,24 +556,66 @@ export async function batchCommitToGithub(
     );
 
     if (!updateRes.ok) {
-      // If ref update fails, try sequential fallback before failing
-      const fallback = await sequentialFallback(pat, repoPath, writes, branch);
-      if (fallback.ok) return fallback;
-
       const errText = await updateRes.text().catch(() => "");
       const isRevoked = updateRes.status === 401 || updateRes.status === 403;
+      const refMoved = updateRes.status === 409 || (updateRes.status === 422 && /not a fast forward/i.test(errText));
+      if (refMoved) {
+        // Never force a branch ref. If another writer advanced the branch,
+        // ask GitHub to integrate the prepared commit into the current branch.
+        // The merges endpoint preserves both histories atomically.
+        const mergeRes = await fetch(
+          `https://api.github.com/repos/${owner}/${repo}/merges`,
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              base: targetBranch,
+              head: newCommitSha,
+              commit_message: `Merge concurrent AlgoVault export into ${targetBranch}`
+            })
+          }
+        );
+        if (mergeRes.ok) return { ok: true };
+        if (mergeRes.status === 401 || mergeRes.status === 403) {
+          return { ok: false, revoked: true, message: "GitHub token was revoked or expired. Please reconnect in Settings." };
+        }
+        if (mergeRes.status !== 409 && mergeRes.status !== 422) {
+          const mergeError = await mergeRes.text().catch(() => "");
+          return { ok: false, message: `GitHub could not safely merge the concurrent export (${mergeRes.status}): ${mergeError}` };
+        }
+      }
+      const maxRefUpdateRetries = 6;
+      const retriesRemaining = options.refUpdateRetriesRemaining ?? maxRefUpdateRetries;
+      if (refMoved && retriesRemaining > 0) {
+        const attempt = maxRefUpdateRetries - retriesRemaining;
+        const exponentialDelay = Math.min(4000, 250 * (2 ** attempt));
+        const jitter = Math.floor(Math.random() * 250);
+        await new Promise((resolve) => setTimeout(resolve, exponentialDelay + jitter));
+        return batchCommitToGithub(pat, repoPath, writes, branch, commitMessageOverride, {
+          ...options,
+          refUpdateRetriesRemaining: retriesRemaining - 1
+        });
+      }
+      if (!isRevoked && options.allowSequentialFallback !== false) {
+        const fallback = await sequentialFallback(pat, repoPath, writes, branch);
+        if (fallback.ok) return fallback;
+      }
       return {
         ok: false,
         revoked: isRevoked,
         message: isRevoked
           ? "GitHub token was revoked or expired. Please reconnect in Settings."
+          : refMoved
+            ? `GitHub branch '${targetBranch}' could not be advanced after ${maxRefUpdateRetries} conflict retries.`
           : `Failed to update branch ref (${updateRes.status}): ${errText}`
       };
     }
 
     return { ok: true };
   } catch (error: any) {
-    // Network error on Trees API -- fall back to sequential
+    if (options.allowSequentialFallback === false) {
+      return { ok: false, message: error.message || "Failed to commit GitHub tree batch" };
+    }
     try {
       return await sequentialFallback(pat, repoPath, writes, branch);
     } catch (fallbackErr: any) {

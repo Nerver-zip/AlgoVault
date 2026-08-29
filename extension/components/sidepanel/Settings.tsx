@@ -654,6 +654,11 @@ export const Settings = () => {
                 SYNC COMPLETED SUCCESSFULLY
             </div>
         )}
+        {syncStatus?.status === 'PARTIAL' && (
+            <div className="mt-3 text-[10px] text-amber-400 font-mono text-center bg-amber-950/20 border border-amber-900/30 py-2 px-3 rounded-lg">
+                SYNC PARTIAL: {syncStatus.message}
+            </div>
+        )}
         {syncStatus?.status !== 'RUNNING' && (syncHasMore as any)?.hasMore && (
             <div className="mt-3 p-3 bg-zinc-950 border border-zinc-800 rounded-lg flex flex-col gap-2">
                 <div className="text-[10px] text-zinc-400 font-mono leading-relaxed">
@@ -816,7 +821,7 @@ export const Settings = () => {
                   </span>
                 </div>
                 <div className="text-[10px] text-zinc-500 font-mono mt-0.5 leading-relaxed">
-                  Push live and synchronized accepted solutions, measured runtime/memory, and estimated Big-O to GitHub
+                  Push live and synchronized accepted solutions, measured runtime/memory, and estimated Big-O to GitHub. History uses adaptive batches of up to 100 solutions per commit.
                 </div>
               </div>
               <button

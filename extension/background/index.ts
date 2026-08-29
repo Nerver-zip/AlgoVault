@@ -1,6 +1,6 @@
-import { fetchUserProfile, fetchSolvedProblems, fetchAllSubmissions, fetchSubmissionDetails, fetchContestHistory, fetchProblemMetadata, fetchUserStatus, fetchContestQuestions, fetchReplayEvents, fetchUpcomingContests, fetchPastContests } from "../lib/api/leetcode"
+import { fetchUserProfile, fetchSolvedProblems, fetchAllSubmissions, fetchSubmissionDetails, fetchSubmissionDetailsBatch, fetchProblemSubmissionPages, fetchContestHistory, fetchProblemMetadata, fetchUserStatus, fetchContestQuestions, fetchReplayEvents, fetchUpcomingContests, fetchPastContests, LeetCodeApiError, type ProblemSubmissionRequest } from "../lib/api/leetcode"
 import { getUserSettings, getUsername, setLastSync, setUsername, storage, getGithubPat, getGithubRepo, getGithubBranch, getGithubBasePath, getGithubAutoSync, setGithubAutoSync, getZerotracData, getZerotracLastFetched, setZerotracData, clearGithubAuth, clearJwtToken } from "../lib/storage"
-import { commitToGithub, batchCommitToGithub, getExtensionForLanguage } from "../lib/api/github"
+import { commitToGithub, batchCommitToGithub, getExtensionForLanguage, getGithubTreePaths } from "../lib/api/github"
 import { analyzeComplexity } from "../lib/complexity"
 import { joinGithubPath } from "../lib/github-path"
 import { type LeetCodeRegion } from "../lib/api/entranthub"
@@ -18,6 +18,9 @@ import { createSession, transitionSession } from "../lib/session-engine/EngineKe
 import { normalizeZerotracPayload } from "../lib/zerotrac"
 import { PROBLEM_SLUG_TO_COMPANIES } from "../lib/company-data"
 import { STORAGE_KEYS } from "../lib/constants"
+import { partitionGithubArtifacts } from "../lib/github-batching"
+import { acceptedProblemCount, requireCompleteSolvedProblemList, SOLVED_PROBLEM_CACHE_SOURCE } from "../lib/leetcode-history"
+import { findProblemsMissingFromGithub } from "../lib/github-reconciliation"
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => console.error(error))
 
@@ -890,6 +893,14 @@ async function updateGithubHelpReport(report: any) {
   })
 }
 
+function githubWritesForArtifact(artifact: any) {
+  return [
+    { path: artifact.codePath, message: `Export ${artifact.metadata.title}`, content: artifact.codeContent },
+    { path: artifact.readmePath, message: `Export notes for ${artifact.metadata.title}`, content: artifact.readme },
+    { path: artifact.metadataPath, message: `Export metadata for ${artifact.metadata.title}`, content: JSON.stringify(artifact.metadata, null, 2) + "\n" }
+  ]
+}
+
 async function exportAcceptedHistoryToGithub(
   rawSubmissions: any[],
   signal: AbortSignal | undefined,
@@ -970,10 +981,10 @@ async function exportAcceptedHistoryToGithub(
   }
 
   let exported = 0
-  const artifactBatchSize = 15
-  for (let index = 0; index < artifacts.length; index += artifactBatchSize) {
+  const artifactBatches = partitionGithubArtifacts(artifacts, githubWritesForArtifact)
+
+  const commitHistoryBatch = async (batch: any[]): Promise<any[]> => {
     if (signal?.aborted) throw new Error("Sync stopped by user")
-    const batch = artifacts.slice(index, index + artifactBatchSize)
     const { result, committed } = await withGithubWriteLock(async () => {
       const latestIndex = (await storage.get<GithubExportIndex>(GITHUB_EXPORT_INDEX_KEY)) || {}
       latestIndex[target] ||= {}
@@ -983,17 +994,14 @@ async function exportAcceptedHistoryToGithub(
       })
       if (!eligible.length) return { result: { ok: true }, committed: [] as any[] }
 
-      const writes = eligible.flatMap((artifact) => [
-        { path: artifact.codePath, message: `Export ${artifact.metadata.title}`, content: artifact.codeContent },
-        { path: artifact.readmePath, message: `Export notes for ${artifact.metadata.title}`, content: artifact.readme },
-        { path: artifact.metadataPath, message: `Export metadata for ${artifact.metadata.title}`, content: JSON.stringify(artifact.metadata, null, 2) + "\n" }
-      ])
+      const writes = eligible.flatMap(githubWritesForArtifact)
       const commitResult = await batchCommitToGithub(
         pat,
         repo,
         writes,
         branch,
-        `Export ${eligible.length} accepted LeetCode solution${eligible.length === 1 ? "" : "s"} - AlgoVault`
+        `Export ${eligible.length} accepted LeetCode solution${eligible.length === 1 ? "" : "s"} - AlgoVault`,
+        { allowSequentialFallback: false }
       )
       if (commitResult.ok) {
         for (const artifact of eligible) {
@@ -1007,7 +1015,20 @@ async function exportAcceptedHistoryToGithub(
       }
       return { result: commitResult, committed: commitResult.ok ? eligible : [] }
     })
+
     if (!result.ok) {
+      if (result.retryableWithSmallerBatch && batch.length > 1) {
+        const midpoint = Math.ceil(batch.length / 2)
+        updateStatus(
+          "RUNNING",
+          `GitHub rejected a large batch; retrying as ${midpoint} + ${batch.length - midpoint} solutions...`,
+          problemCount,
+          submissionCount
+        )
+        const first = await commitHistoryBatch(batch.slice(0, midpoint))
+        const second = await commitHistoryBatch(batch.slice(midpoint))
+        return [...first, ...second]
+      }
       if (result.revoked) {
         await clearGithubAuth()
         await clearJwtToken()
@@ -1016,6 +1037,11 @@ async function exportAcceptedHistoryToGithub(
       throw new Error(`GitHub history export failed: ${result.message}`)
     }
 
+    return committed
+  }
+
+  for (const batch of artifactBatches) {
+    const committed = await commitHistoryBatch(batch)
     for (const artifact of committed) {
       exportedThisRun.add(artifact.payload.titleSlug)
     }
@@ -1032,6 +1058,164 @@ async function exportAcceptedHistoryToGithub(
   return exported
 }
 
+async function recoverMissingSolvedSolutions(
+  problems: any[],
+  signal: AbortSignal | undefined,
+  exportedThisRun: Set<string>,
+  updateStatus: (status: string, msg: string, count?: number, subCount?: number) => void,
+  submissionCount: number
+) {
+  if (!(await getGithubAutoSync())) return { exported: 0, unresolved: 0 }
+
+  let pat = await getGithubPat()
+  let repo = await getGithubRepo()
+  if (!pat || !repo) return { exported: 0, unresolved: 0 }
+  pat = stripWrappingQuotes(pat)
+  repo = stripWrappingQuotes(repo)
+  const branch = await getGithubBranch() || undefined
+  const basePath = await getGithubBasePath()
+  const target = githubExportTarget(repo, branch, basePath)
+  const exportIndex = (await storage.get<GithubExportIndex>(GITHUB_EXPORT_INDEX_KEY)) || {}
+  const exportedForTarget = exportIndex[target] || {}
+  const remoteTree = await getGithubTreePaths(pat, repo, branch)
+  if (!remoteTree.ok) {
+    if (remoteTree.revoked) {
+      await clearGithubAuth()
+      await clearJwtToken()
+    }
+    throw new Error(`GitHub history reconciliation failed: ${remoteTree.message}`)
+  }
+  if (remoteTree.truncated) {
+    throw new Error("GitHub history reconciliation failed: the repository tree was truncated.")
+  }
+  const missingProblems = findProblemsMissingFromGithub(
+    problems,
+    exportedForTarget,
+    remoteTree.paths || []
+  ) as any[]
+
+  if (!missingProblems.length) return { exported: 0, unresolved: 0 }
+  // The remote branch is authoritative. Remove stale local records before
+  // exporting so entries left behind by an interrupted or superseded branch
+  // update cannot suppress files that are absent from GitHub.
+  for (const problem of missingProblems) delete exportedForTarget[problem.titleSlug]
+  exportIndex[target] = exportedForTarget
+  await storage.set(GITHUB_EXPORT_INDEX_KEY, exportIndex)
+  // A previous global-history run may have been marked complete even though
+  // LeetCode omitted older accepted submissions. Do not keep advertising that
+  // checkpoint as valid while the per-problem recovery is in progress.
+  await storage.remove(STORAGE_KEYS.LAST_SYNC)
+
+  let exported = 0
+  let unresolved = 0
+  const problemBatchSize = 8
+  const submissionPageSize = 20
+  const recoveredCommitSize = 100
+  let pendingGithubExport: any[] = []
+
+  for (let batchStart = 0; batchStart < missingProblems.length; batchStart += problemBatchSize) {
+    if (signal?.aborted) throw new Error("Sync stopped by user")
+    const problemBatch = missingProblems.slice(batchStart, batchStart + problemBatchSize)
+    let pending: ProblemSubmissionRequest[] = problemBatch.map((problem: any) => ({
+      titleSlug: problem.titleSlug,
+      offset: 0,
+      lastKey: null
+    }))
+    const acceptedBySlug = new Map<string, any>()
+    let pageRounds = 0
+
+    while (pending.length && pageRounds < 50) {
+      if (signal?.aborted) throw new Error("Sync stopped by user")
+      updateStatus(
+        "RUNNING",
+        `Recovering accepted solutions missing from the global history (${Math.min(batchStart + acceptedBySlug.size, missingProblems.length)}/${missingProblems.length})...`,
+        problems.length,
+        submissionCount
+      )
+      const pages = await fetchProblemSubmissionPages(pending, submissionPageSize)
+      const nextPending: ProblemSubmissionRequest[] = []
+      for (let index = 0; index < pages.length; index += 1) {
+        const page = pages[index]
+        const accepted = page.submissions.find((submission: any) =>
+          submission.statusDisplay === "Accepted" || Number(submission.status) === 10
+        )
+        if (accepted) {
+          acceptedBySlug.set(page.titleSlug, accepted)
+          continue
+        }
+        if (page.hasNext && page.submissions.length > 0) {
+          nextPending.push({
+            titleSlug: page.titleSlug,
+            offset: (pending[index].offset || 0) + page.submissions.length,
+            lastKey: page.lastKey
+          })
+        } else {
+          unresolved += 1
+        }
+      }
+      pending = nextPending
+      pageRounds += 1
+      if (pending.length) await new Promise((resolve) => setTimeout(resolve, 700))
+    }
+    unresolved += pending.length
+
+    const accepted = Array.from(acceptedBySlug.entries())
+    const detailsById = new Map<string, any>()
+    for (let detailStart = 0; detailStart < accepted.length; detailStart += 8) {
+      if (signal?.aborted) throw new Error("Sync stopped by user")
+      const ids = accepted
+        .slice(detailStart, detailStart + 8)
+        .map(([, submission]: any) => Number(submission.id))
+        .filter((id: number) => Number.isSafeInteger(id) && id > 0)
+      const details = await fetchSubmissionDetailsBatch(ids)
+      details.forEach((detail: any) => detailsById.set(String(detail.id), detail))
+      if (detailStart + 8 < accepted.length) await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+
+    const recoveredSubmissions = accepted.map(([titleSlug, submission]: any) => {
+      const details = detailsById.get(String(submission.id))
+      const detailLanguage = details?.lang?.verboseName || details?.lang?.name
+      return {
+        id: String(submission.id),
+        title: submission.title || details?.question?.title,
+        title_slug: titleSlug,
+        status_display: "Accepted",
+        status: 10,
+        lang: submission.lang || detailLanguage,
+        timestamp: submission.timestamp || details?.timestamp,
+        runtime: submission.runtime || details?.runtime,
+        memory: submission.memory || details?.memory,
+        code: details?.code
+      }
+    })
+
+    pendingGithubExport.push(...recoveredSubmissions)
+    const isLastProblemBatch = batchStart + problemBatchSize >= missingProblems.length
+    if (pendingGithubExport.length >= recoveredCommitSize || (isLastProblemBatch && pendingGithubExport.length)) {
+      exported += await exportAcceptedHistoryToGithub(
+        pendingGithubExport,
+        signal,
+        exportedThisRun,
+        updateStatus,
+        problems.length,
+        submissionCount
+      )
+      pendingGithubExport = []
+    }
+    updateStatus(
+      "RUNNING",
+      `Recovered ${Math.min(batchStart + problemBatch.length, missingProblems.length)}/${missingProblems.length} missing solved problems...`,
+      problems.length,
+      submissionCount
+    )
+    if (batchStart + problemBatchSize < missingProblems.length) {
+      await new Promise((resolve) => setTimeout(resolve, 900))
+    }
+  }
+
+  return { exported, unresolved }
+}
+
 async function runSync(username: string, startOffset = 0, signal?: AbortSignal, forceFullSync = false, exportedThisRun = new Set<string>()) {
   if (!username || !username.trim()) {
     throw new Error("LeetCode username is required")
@@ -1043,6 +1227,7 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
     await storage.remove("algovault.latestSyncedSubmissionTimestamp")
     await storage.remove("algovault.solvedSlugs")
     await storage.remove("algovault.syncHasMore")
+    await storage.remove(STORAGE_KEYS.LAST_SYNC)
     startOffset = 0
   }
 
@@ -1064,17 +1249,19 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
     const profileRes = await fetchUserProfile(normalizedUsername)
     if (!profileRes.data?.matchedUser) throw new Error("User not found on LeetCode")
     const profile = profileRes.data.matchedUser
+    const expectedSolvedCount = acceptedProblemCount(profile)
 
     const problems: any[] = []
     const cachedSolved = forceFullSync ? null : await storage.get<any>("algovault.solvedSlugs")
-    const isCacheValid = cachedSolved && cachedSolved.fetchedAt && (Date.now() - cachedSolved.fetchedAt < 15 * 60 * 1000) && Array.isArray(cachedSolved.rawProblems)
+    const isCurrentSolvedCache = cachedSolved?.source === SOLVED_PROBLEM_CACHE_SOURCE
+    const isCacheValid = isCurrentSolvedCache && cachedSolved.fetchedAt && (Date.now() - cachedSolved.fetchedAt < 15 * 60 * 1000) && Array.isArray(cachedSolved.rawProblems)
 
     if (isCacheValid) {
       problems.push(...cachedSolved.rawProblems)
     } else if (startOffset === 0) {
       updateStatus("RUNNING", "Fetching solved problems...", 0, 0)
       let problemOffset = 0
-      const problemPageSize = 100
+      const problemPageSize = 50
       let totalSolved = Number.POSITIVE_INFINITY
       while (problems.length < totalSolved) {
         if (signal?.aborted) throw new Error("Sync stopped by user");
@@ -1087,20 +1274,21 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
         problems.push(...questions)
         problemOffset += questions.length
         updateStatus("RUNNING", "Fetching solved problems...", problems.length, 0)
-        await new Promise((resolve) => setTimeout(resolve, 300))
+        await new Promise((resolve) => setTimeout(resolve, 600))
       }
       await storage.set("algovault.solvedSlugs", {
+        source: SOLVED_PROBLEM_CACHE_SOURCE,
         fetchedAt: Date.now(),
         slugs: problems.map((problem: any) => problem.titleSlug).filter(Boolean),
         rawProblems: problems
       })
     } else {
-      if (cachedSolved && Array.isArray(cachedSolved.rawProblems)) {
+      if (isCurrentSolvedCache && Array.isArray(cachedSolved.rawProblems)) {
         problems.push(...cachedSolved.rawProblems)
       } else {
         updateStatus("RUNNING", "Fetching solved problems...", 0, 0)
         let problemOffset = 0
-        const problemPageSize = 100
+        const problemPageSize = 50
         let totalSolved = Number.POSITIVE_INFINITY
         while (problems.length < totalSolved) {
           if (signal?.aborted) throw new Error("Sync stopped by user");
@@ -1113,10 +1301,20 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
           problems.push(...questions)
           problemOffset += questions.length
           updateStatus("RUNNING", "Fetching solved problems...", problems.length, 0)
-          await new Promise((resolve) => setTimeout(resolve, 300))
+          await new Promise((resolve) => setTimeout(resolve, 600))
         }
+        await storage.set("algovault.solvedSlugs", {
+          source: SOLVED_PROBLEM_CACHE_SOURCE,
+          fetchedAt: Date.now(),
+          slugs: problems.map((problem: any) => problem.titleSlug).filter(Boolean),
+          rawProblems: problems
+        })
       }
     }
+
+    const completeProblems = requireCompleteSolvedProblemList(problems, expectedSolvedCount)
+    problems.length = 0
+    problems.push(...completeProblems)
 
     updateStatus("RUNNING", "Fetching submissions...", problems.length, 0)
 
@@ -1165,16 +1363,10 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
       
       updateStatus("RUNNING", "Fetching submissions...", problems.length, startOffset + rawSubs.length)
       
-      await new Promise((resolve) => setTimeout(resolve, 300))
+      await new Promise((resolve) => setTimeout(resolve, 750))
     }
 
-    // Save status to chrome storage for settings view
     const hasMoreHistory = hasNext && !foundAlreadySynced
-    await storage.set("algovault.syncHasMore", {
-      hasMore: hasMoreHistory,
-      nextOffset: offset,
-      username: normalizedUsername
-    })
 
     const uniqueRawSubs = Array.from(new Map(rawSubs.map(s => [s.id, s])).values())
 
@@ -1200,7 +1392,7 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
       const metadata = await fetchProblemMetadata(attemptedOnlySlugs.slice(index, index + 40))
       problems.push(...metadata)
       updateStatus("RUNNING", "Enriching attempted problems...", problems.length, startOffset + submissions.length)
-      await new Promise((resolve) => setTimeout(resolve, 150))
+      await new Promise((resolve) => setTimeout(resolve, 500))
     }
 
     updateStatus("RUNNING", "Fetching contest history...", problems.length, startOffset + submissions.length)
@@ -1228,7 +1420,23 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
       startOffset + submissions.length
     )
 
-    await setLastSync(Date.now())
+    const recovered = hasMoreHistory
+      ? { exported: 0, unresolved: 0 }
+      : await recoverMissingSolvedSolutions(
+        problems,
+        signal,
+        exportedThisRun,
+        updateStatus,
+        startOffset + submissions.length
+      )
+
+    // Advance the resumable cursor only after both the backend upload and the
+    // optional GitHub export succeed. A failed export must retry this page.
+    await storage.set("algovault.syncHasMore", {
+      hasMore: hasMoreHistory,
+      nextOffset: offset,
+      username: normalizedUsername
+    })
 
     // Save the timestamp of the newest submission in this sync
     if (!isHistoryBackfill && submissions.length > 0) {
@@ -1247,9 +1455,12 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
     const exportSuffix = exportedThisRun.size > 0
       ? ` Exported ${exportedThisRun.size} accepted solution${exportedThisRun.size === 1 ? "" : "s"} to GitHub.`
       : ""
+    const recoverySuffix = recovered.exported > 0
+      ? ` Recovered ${recovered.exported} additional accepted solution${recovered.exported === 1 ? "" : "s"} omitted by the global history endpoint.`
+      : ""
     const completionMessage = hasMoreHistory
       ? `Synced ${submissions.length} submissions. Older history is ready for the next 400-record batch.${exportSuffix}`
-      : `Sync completed successfully. Your history is up to date.${exportSuffix}`
+      : `Sync completed successfully. Your history is up to date.${exportSuffix}${recoverySuffix}`
     if (hasMoreHistory) {
       updateStatus("RUNNING", `${completionMessage} Continuing automatically…`, problems.length, startOffset + submissions.length)
       // Keep a deliberate pause between 400-record uploads. The cursor is
@@ -1258,6 +1469,12 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
       if (signal?.aborted) throw new Error("Sync stopped by user");
       return runSync(normalizedUsername, offset, signal, false, exportedThisRun)
     }
+    if (recovered.unresolved > 0) {
+      const partialMessage = `History export is incomplete: ${recovered.unresolved} solved problem${recovered.unresolved === 1 ? "" : "s"} did not expose an accepted submission. Run Quick Sync to retry.${recoverySuffix}`
+      updateStatus("PARTIAL", partialMessage, problems.length, startOffset + submissions.length)
+      return { ok: true, partial: true, unresolved: recovered.unresolved, nextOffset: offset }
+    }
+    await setLastSync(Date.now())
     updateStatus("SUCCESS", completionMessage, problems.length, startOffset + submissions.length)
     return { ok: true, hasMore: hasMoreHistory, nextOffset: offset }
   } catch (e: any) {
@@ -1301,7 +1518,12 @@ async function fetchSubmissionPage(offset: number, limit: number) {
     } catch (error) {
       lastError = error
       if (attempt < 3) {
-        await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt))
+        const apiError = error instanceof LeetCodeApiError ? error : null
+        const rateLimited = apiError?.status === 403 || apiError?.status === 429
+        const delay = apiError?.retryAfterMs || (rateLimited
+          ? 5000 * 2 ** attempt + Math.floor(Math.random() * 750)
+          : 1000 * 2 ** attempt)
+        await new Promise((resolve) => setTimeout(resolve, delay))
       }
     }
   }

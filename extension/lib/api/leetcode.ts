@@ -1,26 +1,78 @@
 import { LEETCODE_GRAPHQL_URL } from "../constants"
 
+export class LeetCodeApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly endpoint: string,
+    public readonly retryAfterMs?: number
+  ) {
+    super(message)
+    this.name = "LeetCodeApiError"
+  }
+}
+
+async function getLeetcodeAuthHeaders(): Promise<Record<string, string>> {
+  const csrfCookie = await chrome.cookies.get({ url: "https://leetcode.com", name: "csrftoken" })
+  return csrfCookie?.value ? { "X-CSRFToken": csrfCookie.value } : {}
+}
+
+function retryAfterMs(response: Response) {
+  const seconds = Number(response.headers.get("Retry-After"))
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined
+}
+
+function graphqlOperation(query: string) {
+  return query.match(/\b(?:query|mutation)\s+([A-Za-z0-9_]+)/)?.[1] || "GraphQL"
+}
+
+function leetcodeHttpError(response: Response, endpoint: string) {
+  const guidance = response.status === 403
+    ? " Refresh or sign in to LeetCode.com, then wait a few minutes before retrying."
+    : response.status === 429
+      ? " LeetCode is rate limiting requests; wait before retrying."
+      : ""
+  return new LeetCodeApiError(
+    `LeetCode ${endpoint} error: ${response.status} ${response.statusText}.${guidance}`,
+    response.status,
+    endpoint,
+    retryAfterMs(response)
+  )
+}
+
 export const fetchGraphQL = async (query: string, variables: any = {}) => {
-  const response = await fetch(LEETCODE_GRAPHQL_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Origin': 'https://leetcode.com',
-      'Referer': 'https://leetcode.com/',
-    },
-    credentials: 'include',
-    body: JSON.stringify({ query, variables }),
-  });
-  
-  if (!response.ok) {
-    throw new Error(`LeetCode API error: ${response.status} ${response.statusText}`);
+  const operation = graphqlOperation(query)
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const authHeaders = await getLeetcodeAuthHeaders()
+    const response = await fetch(LEETCODE_GRAPHQL_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Origin': 'https://leetcode.com',
+        'Referer': 'https://leetcode.com/',
+        ...authHeaders
+      },
+      credentials: 'include',
+      body: JSON.stringify({ query, variables }),
+    });
+
+    if (!response.ok) {
+      const error = leetcodeHttpError(response, operation)
+      if ((response.status === 403 || response.status === 429) && attempt < 2) {
+        const delay = error.retryAfterMs || (5000 * (2 ** attempt) + Math.floor(Math.random() * 750))
+        await new Promise((resolve) => setTimeout(resolve, delay))
+        continue
+      }
+      throw error
+    }
+
+    const payload = await response.json();
+    if (payload.errors?.length) {
+      throw new Error(payload.errors.map((error: any) => error.message).join("; "));
+    }
+    return payload;
   }
-  
-  const payload = await response.json();
-  if (payload.errors?.length) {
-    throw new Error(payload.errors.map((error: any) => error.message).join("; "));
-  }
-  return payload;
+  throw new Error(`LeetCode ${operation} request failed after retries`)
 };
 
 export const fetchUserProfile = async (username: string) => {
@@ -34,6 +86,12 @@ export const fetchUserProfile = async (username: string) => {
           ranking
         }
         submitStats {
+          acSubmissionNum {
+            difficulty
+            count
+          }
+        }
+        submitStatsGlobal {
           acSubmissionNum {
             difficulty
             count
@@ -59,29 +117,33 @@ export const fetchUserStatus = async () => {
 
 export const fetchSolvedProblems = async (skip: number, limit: number) => {
   const query = `
-    query problemsetQuestionList($categorySlug: String, $limit: Int, $skip: Int, $filters: QuestionListFilterInput) {
-      problemsetQuestionList: questionList(
-        categorySlug: $categorySlug
-        limit: $limit
-        skip: $skip
-        filters: $filters
-      ) {
+    query userProgressQuestionList($filters: UserProgressQuestionListInput!) {
+      problemsetQuestionList: userProgressQuestionList(filters: $filters) {
         totalNum
-        questions: data {
-          frontendQuestionId: questionFrontendId
+        questions {
+          frontendQuestionId: frontendId
           title
           titleSlug
           difficulty
+          questionStatus
+          lastSubmittedAt
+          numSubmitted
           topicTags {
             name
-            id
             slug
           }
         }
       }
     }
   `;
-  return fetchGraphQL(query, { categorySlug: "", skip, limit, filters: { status: "AC" } });
+  return fetchGraphQL(query, {
+    filters: {
+      skip,
+      limit,
+      questionStatus: "SOLVED",
+      sortOrder: "ASCENDING"
+    }
+  });
 };
 
 export const fetchProblemMetadata = async (titleSlugs: string[]) => {
@@ -107,20 +169,19 @@ export const fetchProblemMetadata = async (titleSlugs: string[]) => {
 
 export const fetchAllSubmissions = async (offset: number, limit: number) => {
   // LeetCode REST API requires CSRF token in headers (unlike GraphQL which is more lenient)
-  const cookie = await chrome.cookies.get({ url: "https://leetcode.com", name: "csrftoken" });
-  const csrfToken = cookie?.value || "";
+  const authHeaders = await getLeetcodeAuthHeaders()
   const url = `https://leetcode.com/api/submissions/?offset=${offset}&limit=${limit}`;
   const response = await fetch(url, {
     method: 'GET',
     credentials: 'include',
     headers: {
-      'X-CSRFToken': csrfToken,
       'Referer': 'https://leetcode.com/',
+      ...authHeaders
     },
   });
   
   if (!response.ok) {
-    throw new Error(`LeetCode API error: ${response.status} ${response.statusText}`);
+    throw leetcodeHttpError(response, `submissions page at offset ${offset}`)
   }
   
   return response.json();
@@ -149,6 +210,89 @@ export const fetchSubmissionDetails = async (submissionId: number) => {
   const response = await fetchGraphQL(query, { submissionId });
   return response.data?.submissionDetails ?? null;
 };
+
+export interface ProblemSubmissionRequest {
+  titleSlug: string
+  offset?: number
+  lastKey?: string | null
+}
+
+export interface ProblemSubmissionPage {
+  titleSlug: string
+  submissions: any[]
+  hasNext: boolean
+  lastKey: string | null
+}
+
+/**
+ * Reads the per-problem submission lists used by LeetCode's Submissions tab.
+ * Aliasing several problems into one GraphQL operation keeps full-history
+ * recovery practical without issuing one HTTP request per solved problem.
+ */
+export const fetchProblemSubmissionPages = async (
+  requests: ProblemSubmissionRequest[],
+  limit = 20
+): Promise<ProblemSubmissionPage[]> => {
+  if (!requests.length) return []
+  const fields = requests.map((request, index) => `
+    q${index}: questionSubmissionList(
+      offset: ${Math.max(0, request.offset || 0)}
+      limit: ${Math.max(1, limit)}
+      ${request.lastKey ? `lastKey: ${JSON.stringify(request.lastKey)}` : ""}
+      questionSlug: ${JSON.stringify(request.titleSlug)}
+    ) {
+      lastKey
+      hasNext
+      submissions {
+        id
+        title
+        titleSlug
+        statusDisplay
+        lang
+        runtime
+        memory
+        timestamp
+      }
+    }
+  `).join("\n")
+  const response = await fetchGraphQL(`query missingAcceptedSubmissions { ${fields} }`)
+  return requests.map((request, index) => {
+    const page = response.data?.[`q${index}`] || {}
+    return {
+      titleSlug: request.titleSlug,
+      submissions: Array.isArray(page.submissions) ? page.submissions : [],
+      hasNext: Boolean(page.hasNext),
+      lastKey: page.lastKey || null
+    }
+  })
+}
+
+export const fetchSubmissionDetailsBatch = async (submissionIds: number[]) => {
+  const ids = submissionIds.filter((id) => Number.isSafeInteger(id) && id > 0)
+  if (!ids.length) return []
+  const fields = ids.map((id, index) => `
+    s${index}: submissionDetails(submissionId: ${id}) {
+      code
+      lang {
+        name
+        verboseName
+      }
+      runtime
+      memory
+      statusDisplay
+      timestamp
+      question {
+        title
+        titleSlug
+      }
+    }
+  `).join("\n")
+  const response = await fetchGraphQL(`query missingSubmissionDetails { ${fields} }`)
+  return ids.map((id, index) => ({
+    id: String(id),
+    ...(response.data?.[`s${index}`] || {})
+  }))
+}
 
 export const fetchContestHistory = async (username: string) => {
   const query = `
