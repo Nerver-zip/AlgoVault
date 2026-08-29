@@ -21,6 +21,7 @@ import { STORAGE_KEYS } from "../lib/constants"
 import { partitionGithubArtifacts } from "../lib/github-batching"
 import { acceptedProblemCount, requireCompleteSolvedProblemList, SOLVED_PROBLEM_CACHE_SOURCE } from "../lib/leetcode-history"
 import { findProblemsMissingFromGithub } from "../lib/github-reconciliation"
+import { buildGithubDashboardReadme } from "../lib/github-dashboard"
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => console.error(error))
 
@@ -1216,6 +1217,37 @@ async function recoverMissingSolvedSolutions(
   return { exported, unresolved }
 }
 
+async function syncGithubRepositoryDashboard(
+  problems: any[],
+  archivedCount: number,
+  username: string
+) {
+  if (!(await getGithubAutoSync())) return
+  let pat = await getGithubPat()
+  let repo = await getGithubRepo()
+  if (!pat || !repo) return
+  pat = stripWrappingQuotes(pat)
+  repo = stripWrappingQuotes(repo)
+  const branch = await getGithubBranch() || undefined
+  const basePath = await getGithubBasePath()
+  const content = buildGithubDashboardReadme(problems, { basePath, archivedCount, username })
+  const result = await withGithubWriteLock(() => commitToGithub(
+    pat,
+    repo,
+    "README.md",
+    "docs: update AlgoVault solution dashboard",
+    content,
+    branch
+  ))
+  if (!result.ok) {
+    if (result.revoked) {
+      await clearGithubAuth()
+      await clearJwtToken()
+    }
+    throw new Error(`GitHub dashboard update failed: ${result.message}`)
+  }
+}
+
 async function runSync(username: string, startOffset = 0, signal?: AbortSignal, forceFullSync = false, exportedThisRun = new Set<string>()) {
   if (!username || !username.trim()) {
     throw new Error("LeetCode username is required")
@@ -1429,6 +1461,14 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
         updateStatus,
         startOffset + submissions.length
       )
+
+    if (!hasMoreHistory) {
+      await syncGithubRepositoryDashboard(
+        problems,
+        Math.max(0, problems.length - recovered.unresolved),
+        normalizedUsername
+      )
+    }
 
     // Advance the resumable cursor only after both the backend upload and the
     // optional GitHub export succeed. A failed export must retry this page.

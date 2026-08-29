@@ -821,7 +821,7 @@ export const Settings = () => {
                   </span>
                 </div>
                 <div className="text-[10px] text-zinc-500 font-mono mt-0.5 leading-relaxed">
-                  Push live and synchronized accepted solutions, measured runtime/memory, and estimated Big-O to GitHub. History uses adaptive batches of up to 100 solutions per commit.
+                  Push live and synchronized accepted solutions, measured runtime/memory, and estimated Big-O to GitHub. History uses adaptive batches of up to 100 solutions per commit and maintains a repository README dashboard.
                 </div>
               </div>
               <button
