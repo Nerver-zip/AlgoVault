@@ -1,0 +1,16 @@
+{
+  "name": "@parcel/reporter-dev-server",
+  "version": "2.16.4-algovault",
+  "description": "Parcel 2.9.3-compatible dev server reporter with cross-origin access disabled",
+  "license": "MIT",
+  "private": true,
+  "main": "lib/ServerReporter.js",
+  "engines": {
+    "node": ">= 12.0.0",
+    "parcel": "^2.9.3"
+  },
+  "dependencies": {
+    "@parcel/plugin": "2.9.3",
+    "@parcel/utils": "2.9.3"
+  }
+}
