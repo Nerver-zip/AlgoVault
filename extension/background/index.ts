@@ -1,6 +1,8 @@
-import { fetchUserProfile, fetchSolvedProblems, fetchAllSubmissions, fetchContestHistory, fetchProblemMetadata, fetchUserStatus, fetchContestQuestions, fetchReplayEvents, fetchUpcomingContests, fetchPastContests } from "../lib/api/leetcode"
-import { getUserSettings, getUsername, setLastSync, setUsername, storage, getGithubPat, getGithubRepo, getGithubBranch, getGithubAutoSync, setGithubAutoSync, getZerotracData, getZerotracLastFetched, setZerotracData, clearGithubAuth, clearJwtToken } from "../lib/storage"
+import { fetchUserProfile, fetchSolvedProblems, fetchAllSubmissions, fetchSubmissionDetails, fetchContestHistory, fetchProblemMetadata, fetchUserStatus, fetchContestQuestions, fetchReplayEvents, fetchUpcomingContests, fetchPastContests } from "../lib/api/leetcode"
+import { getUserSettings, getUsername, setLastSync, setUsername, storage, getGithubPat, getGithubRepo, getGithubBranch, getGithubBasePath, getGithubAutoSync, setGithubAutoSync, getZerotracData, getZerotracLastFetched, setZerotracData, clearGithubAuth, clearJwtToken } from "../lib/storage"
 import { commitToGithub, batchCommitToGithub, getExtensionForLanguage } from "../lib/api/github"
+import { analyzeComplexity } from "../lib/complexity"
+import { joinGithubPath } from "../lib/github-path"
 import { type LeetCodeRegion } from "../lib/api/entranthub"
 import {
   fetchPrediction,
@@ -15,11 +17,13 @@ import {
 import { createSession, transitionSession } from "../lib/session-engine/EngineKernel"
 import { normalizeZerotracPayload } from "../lib/zerotrac"
 import { PROBLEM_SLUG_TO_COMPANIES } from "../lib/company-data"
+import { STORAGE_KEYS } from "../lib/constants"
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => console.error(error))
 
 let isSyncing = false;
 let syncAbortController: AbortController | null = null;
+let githubWriteQueue: Promise<void> = Promise.resolve()
 
 const ACTIVE_SESSION_KEY = "algovault.session.active"
 const LOGS_INDEX_KEY = "algovault.logs.index"
@@ -679,22 +683,80 @@ function helpTypeLabel(helpType?: string) {
   }
 }
 
+const GITHUB_EXPORT_INDEX_KEY = STORAGE_KEYS.GITHUB_EXPORT_INDEX
 
+interface GithubExportRecord {
+  submissionId: string | null
+  timestamp: number
+  path: string
+}
 
-async function buildGithubArtifact(payload: any, helpType: string, sessionData?: any) {
-  const metaList = await fetchProblemMetadata([payload.titleSlug]).catch(() => [])
-  const meta: any = metaList && metaList.length ? metaList[0] : null
+type GithubExportIndex = Record<string, Record<string, GithubExportRecord>>
+
+function withGithubWriteLock<T>(task: () => Promise<T>): Promise<T> {
+  const run = githubWriteQueue.then(task, task)
+  githubWriteQueue = run.then(() => undefined, () => undefined)
+  return run
+}
+
+function githubExportTarget(repo: string, branch: string | undefined, basePath: string) {
+  return `${repo.trim().toLowerCase()}|${branch || "default"}|${basePath}`
+}
+
+function submissionTimestamp(payload: any) {
+  const numeric = Number(payload?.timestamp)
+  if (Number.isFinite(numeric) && numeric > 0) return numeric
+  const parsed = Date.parse(payload?.submittedAt || "")
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0
+}
+
+async function markGithubExported(repo: string, branch: string | undefined, basePath: string, artifact: any) {
+  const index = (await storage.get<GithubExportIndex>(GITHUB_EXPORT_INDEX_KEY)) || {}
+  const target = githubExportTarget(repo, branch, basePath)
+  index[target] ||= {}
+  index[target][artifact.payload.titleSlug] = {
+    submissionId: artifact.payload.submissionId ? String(artifact.payload.submissionId) : null,
+    timestamp: submissionTimestamp(artifact.payload),
+    path: artifact.folder
+  }
+  await storage.set(GITHUB_EXPORT_INDEX_KEY, index)
+}
+
+function parseRuntimeMs(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  const match = String(value || "").match(/[\d.]+/)
+  return match ? Number(match[0]) : undefined
+}
+
+function parseMemoryKb(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  const text = String(value || "")
+  const match = text.match(/[\d.]+/)
+  if (!match) return undefined
+  const amount = Number(match[0])
+  if (/\b(?:mb|mib)\b/i.test(text)) return Math.round(amount * 1024)
+  if (/\b(?:gb|gib)\b/i.test(text)) return Math.round(amount * 1024 * 1024)
+  return Math.round(amount)
+}
+
+async function buildGithubArtifact(payload: any, helpType: string, sessionData?: any, providedMeta?: any) {
+  const metaList = providedMeta ? [] : await fetchProblemMetadata([payload.titleSlug]).catch(() => [])
+  const meta: any = providedMeta || (metaList && metaList.length ? metaList[0] : null)
   const qId = meta?.frontendQuestionId ? String(meta.frontendQuestionId) : ""
   const qTitle = meta?.title || payload.title || payload.titleSlug
   const difficulty = meta?.difficulty || "Unknown"
   const difficultyFolder = slugPathSegment(difficulty)
   const idPrefix = qId ? `${qId}-` : ""
-  const folder = `leetcode/${difficultyFolder}/${idPrefix}${payload.titleSlug}`
+  const basePath = await getGithubBasePath()
+  const folder = joinGithubPath(basePath, difficultyFolder, `${idPrefix}${payload.titleSlug}`)
   const language = payload.codeLang || payload.language || "Unknown"
   const ext = payload.code ? getExtensionForLanguage(language) : "missing.txt"
   const codePath = `${folder}/solution.${ext}`
   const tags = Array.isArray(meta?.topicTags) ? meta.topicTags.map((tag: any) => tag.name).filter(Boolean) : []
-  const timeSpentSeconds = typeof sessionData?.focusSeconds === "number" ? sessionData.focusSeconds : null
+  const timeSpentSeconds = typeof sessionData?.focusSeconds === "number"
+    ? sessionData.focusSeconds
+    : typeof payload.focusSeconds === "number" ? payload.focusSeconds : null
+  const complexity = analyzeComplexity(payload.code, language)
 
   const metadata = {
     title: qTitle,
@@ -709,6 +771,7 @@ async function buildGithubArtifact(payload: any, helpType: string, sessionData?:
     submittedAt: payload.submittedAt,
     runtimeMs: payload.runtimeMs ?? null,
     memoryKb: payload.memoryKb ?? null,
+    complexity,
     totalCorrect: payload.totalCorrect ?? null,
     totalTestcases: payload.totalTestcases ?? null,
     helpType,
@@ -717,7 +780,7 @@ async function buildGithubArtifact(payload: any, helpType: string, sessionData?:
     syncedAt: new Date().toISOString()
   }
 
-  const readme = `<h2><a href="https://leetcode.com/problems/${payload.titleSlug}/">${qId ? `${qId}. ` : ""}${qTitle}</a></h2><h3>${difficulty}</h3><hr>${meta?.content || "Problem description not found."}`;
+  const readme = `<h2><a href="https://leetcode.com/problems/${payload.titleSlug}/">${qId ? `${qId}. ` : ""}${qTitle}</a></h2><h3>${difficulty}</h3><hr>${meta?.content || "Problem description not found."}<hr><h3>Submission metrics</h3><ul><li><strong>Runtime measured by LeetCode:</strong> ${formatMs(payload.runtimeMs)}</li><li><strong>Memory measured by LeetCode:</strong> ${formatMb(payload.memoryKb)}</li></ul><h3>Big-O analysis</h3><ul><li><strong>Time:</strong> ${complexity.time}</li><li><strong>Space:</strong> ${complexity.space}</li><li><strong>Source:</strong> ${complexity.source} (${complexity.confidence} confidence)</li></ul><p><em>${complexity.explanation}</em></p>`;
 
   const codeContent = payload.code || [
     "AlgoVault could not capture source code for this accepted event.",
@@ -725,6 +788,7 @@ async function buildGithubArtifact(payload: any, helpType: string, sessionData?:
   ].join("\n");
 
   return {
+    basePath,
     folder,
     codePath,
     readmePath: `${folder}/README.md`,
@@ -783,7 +847,11 @@ async function syncAcceptedSubmissionToGithub(payload: any, helpType = "PENDING_
   ]
 
   // Single atomic commit for all 3 files (code + README + metadata)
-  const result = await batchCommitToGithub(pat, repo, writes, branch)
+  const result = await withGithubWriteLock(async () => {
+    const commitResult = await batchCommitToGithub(pat, repo, writes, branch)
+    if (commitResult.ok) await markGithubExported(repo, branch, artifact.basePath, artifact)
+    return commitResult
+  })
   if (!result.ok) {
     if (result.revoked) {
       await clearGithubAuth()
@@ -822,7 +890,149 @@ async function updateGithubHelpReport(report: any) {
   })
 }
 
-async function runSync(username: string, startOffset = 0, signal?: AbortSignal, forceFullSync = false) {
+async function exportAcceptedHistoryToGithub(
+  rawSubmissions: any[],
+  signal: AbortSignal | undefined,
+  exportedThisRun: Set<string>,
+  updateStatus: (status: string, msg: string, count?: number, subCount?: number) => void,
+  problemCount: number,
+  submissionCount: number
+) {
+  if (!(await getGithubAutoSync())) return 0
+
+  let pat = await getGithubPat()
+  let repo = await getGithubRepo()
+  if (!pat || !repo) {
+    await storage.set("algovault.gitSyncStatus", {
+      success: false,
+      message: "GitHub credentials are not configured; LeetCode history was synced without repository export.",
+      timestamp: Date.now()
+    })
+    return 0
+  }
+
+  pat = stripWrappingQuotes(pat)
+  repo = stripWrappingQuotes(repo)
+  const branch = await getGithubBranch() || undefined
+  const basePath = await getGithubBasePath()
+  const target = githubExportTarget(repo, branch, basePath)
+  const exportIndex = (await storage.get<GithubExportIndex>(GITHUB_EXPORT_INDEX_KEY)) || {}
+  exportIndex[target] ||= {}
+
+  const acceptedBySlug = new Map<string, any>()
+  for (const submission of rawSubmissions) {
+    const slug = submission.title_slug
+    const accepted = submission.status_display === "Accepted" || Number(submission.status) === 10
+    if (!slug || !accepted || acceptedBySlug.has(slug) || exportedThisRun.has(slug)) continue
+    const previous = exportIndex[target][slug]
+    const timestamp = Number(submission.timestamp) || 0
+    if (previous && previous.timestamp >= timestamp) {
+      exportedThisRun.add(slug)
+      continue
+    }
+    acceptedBySlug.set(slug, submission)
+  }
+
+  const candidates = Array.from(acceptedBySlug.values())
+  if (!candidates.length) return 0
+
+  updateStatus("RUNNING", `Preparing ${candidates.length} accepted solution${candidates.length === 1 ? "" : "s"} for GitHub...`, problemCount, submissionCount)
+  const metadataBySlug = new Map<string, any>()
+  for (let index = 0; index < candidates.length; index += 30) {
+    if (signal?.aborted) throw new Error("Sync stopped by user")
+    const metadata = await fetchProblemMetadata(candidates.slice(index, index + 30).map((item) => item.title_slug)).catch(() => [])
+    metadata.forEach((item: any) => metadataBySlug.set(item.titleSlug, item))
+  }
+
+  const artifacts: any[] = []
+  for (let index = 0; index < candidates.length; index += 1) {
+    if (signal?.aborted) throw new Error("Sync stopped by user")
+    const submission = candidates[index]
+    let details: any = null
+    if (!submission.code) {
+      details = await fetchSubmissionDetails(Number(submission.id)).catch(() => null)
+    }
+    const timestamp = Number(submission.timestamp || details?.timestamp) || 0
+    const payload = {
+      submissionId: String(submission.id),
+      titleSlug: submission.title_slug,
+      title: submission.title || details?.question?.title,
+      statusDisplay: submission.status_display || details?.statusDisplay || "Accepted",
+      language: submission.lang || details?.lang?.verboseName || details?.lang?.name,
+      code: submission.code || details?.code,
+      runtimeMs: parseRuntimeMs(submission.runtime || details?.runtime),
+      memoryKb: parseMemoryKb(submission.memory || details?.memory),
+      timestamp,
+      submittedAt: timestamp ? new Date(timestamp * 1000).toISOString() : new Date().toISOString()
+    }
+    artifacts.push(await buildGithubArtifact(payload, "NOT_RECORDED", undefined, metadataBySlug.get(payload.titleSlug)))
+    updateStatus("RUNNING", `Preparing accepted solutions for GitHub (${index + 1}/${candidates.length})...`, problemCount, submissionCount)
+  }
+
+  let exported = 0
+  const artifactBatchSize = 15
+  for (let index = 0; index < artifacts.length; index += artifactBatchSize) {
+    if (signal?.aborted) throw new Error("Sync stopped by user")
+    const batch = artifacts.slice(index, index + artifactBatchSize)
+    const { result, committed } = await withGithubWriteLock(async () => {
+      const latestIndex = (await storage.get<GithubExportIndex>(GITHUB_EXPORT_INDEX_KEY)) || {}
+      latestIndex[target] ||= {}
+      const eligible = batch.filter((artifact) => {
+        const previous = latestIndex[target][artifact.payload.titleSlug]
+        return !previous || previous.timestamp < submissionTimestamp(artifact.payload)
+      })
+      if (!eligible.length) return { result: { ok: true }, committed: [] as any[] }
+
+      const writes = eligible.flatMap((artifact) => [
+        { path: artifact.codePath, message: `Export ${artifact.metadata.title}`, content: artifact.codeContent },
+        { path: artifact.readmePath, message: `Export notes for ${artifact.metadata.title}`, content: artifact.readme },
+        { path: artifact.metadataPath, message: `Export metadata for ${artifact.metadata.title}`, content: JSON.stringify(artifact.metadata, null, 2) + "\n" }
+      ])
+      const commitResult = await batchCommitToGithub(
+        pat,
+        repo,
+        writes,
+        branch,
+        `Export ${eligible.length} accepted LeetCode solution${eligible.length === 1 ? "" : "s"} - AlgoVault`
+      )
+      if (commitResult.ok) {
+        for (const artifact of eligible) {
+          latestIndex[target][artifact.payload.titleSlug] = {
+            submissionId: artifact.payload.submissionId ? String(artifact.payload.submissionId) : null,
+            timestamp: submissionTimestamp(artifact.payload),
+            path: artifact.folder
+          }
+        }
+        await storage.set(GITHUB_EXPORT_INDEX_KEY, latestIndex)
+      }
+      return { result: commitResult, committed: commitResult.ok ? eligible : [] }
+    })
+    if (!result.ok) {
+      if (result.revoked) {
+        await clearGithubAuth()
+        await clearJwtToken()
+      }
+      await storage.set("algovault.gitSyncStatus", { success: false, message: result.message, timestamp: Date.now() })
+      throw new Error(`GitHub history export failed: ${result.message}`)
+    }
+
+    for (const artifact of committed) {
+      exportedThisRun.add(artifact.payload.titleSlug)
+    }
+    exported += committed.length
+    updateStatus("RUNNING", `Exported ${exported}/${artifacts.length} accepted solutions to GitHub...`, problemCount, submissionCount)
+  }
+
+  await storage.set("algovault.gitSyncStatus", {
+    success: true,
+    message: `Exported ${exported} accepted solution${exported === 1 ? "" : "s"} from LeetCode history.`,
+    timestamp: Date.now(),
+    path: basePath
+  })
+  return exported
+}
+
+async function runSync(username: string, startOffset = 0, signal?: AbortSignal, forceFullSync = false, exportedThisRun = new Set<string>()) {
   if (!username || !username.trim()) {
     throw new Error("LeetCode username is required")
   }
@@ -1009,6 +1219,15 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
       contestRanking
     })
 
+    await exportAcceptedHistoryToGithub(
+      uniqueRawSubs,
+      signal,
+      exportedThisRun,
+      updateStatus,
+      problems.length,
+      startOffset + submissions.length
+    )
+
     await setLastSync(Date.now())
 
     // Save the timestamp of the newest submission in this sync
@@ -1025,16 +1244,19 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
       }
     }
 
+    const exportSuffix = exportedThisRun.size > 0
+      ? ` Exported ${exportedThisRun.size} accepted solution${exportedThisRun.size === 1 ? "" : "s"} to GitHub.`
+      : ""
     const completionMessage = hasMoreHistory
-      ? `Synced ${submissions.length} submissions. Older history is ready for the next 400-record batch.`
-      : `Sync completed successfully. Your history is up to date.`
+      ? `Synced ${submissions.length} submissions. Older history is ready for the next 400-record batch.${exportSuffix}`
+      : `Sync completed successfully. Your history is up to date.${exportSuffix}`
     if (hasMoreHistory) {
       updateStatus("RUNNING", `${completionMessage} Continuing automatically…`, problems.length, startOffset + submissions.length)
       // Keep a deliberate pause between 400-record uploads. The cursor is
       // persisted above, so an interrupted extension can still resume safely.
       await new Promise((resolve) => setTimeout(resolve, 1500))
       if (signal?.aborted) throw new Error("Sync stopped by user");
-      return runSync(normalizedUsername, offset, signal)
+      return runSync(normalizedUsername, offset, signal, false, exportedThisRun)
     }
     updateStatus("SUCCESS", completionMessage, problems.length, startOffset + submissions.length)
     return { ok: true, hasMore: hasMoreHistory, nextOffset: offset }

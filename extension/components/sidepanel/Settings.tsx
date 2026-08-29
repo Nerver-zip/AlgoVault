@@ -12,6 +12,8 @@ import {
   setGithubUser as persistGithubUser,
   getGithubBranch,
   setGithubBranch as persistGithubBranch,
+  getGithubBasePath,
+  setGithubBasePath as persistGithubBasePath,
   getGithubAutoSync,
   setGithubAutoSync as persistGithubAutoSync,
   clearGithubAuth,
@@ -29,6 +31,7 @@ import {
   type GithubRepoItem
 } from "../../lib/api/github"
 import { COMMUNITY_CONFIG } from "../../lib/community"
+import { DEFAULT_GITHUB_BASE_PATH, normalizeGithubBasePath } from "../../lib/github-path"
 
 interface SyncStatus {
   message?: string;
@@ -40,6 +43,7 @@ interface SyncStatus {
   nextOffset?: number;
   success?: boolean;
   problem?: string;
+  path?: string;
   timestamp?: number;
 }
 
@@ -57,6 +61,8 @@ export const Settings = () => {
   const [githubPat, setGithubPat] = useState<string>('');
   const [githubRepo, setGithubRepo] = useState<string>('');
   const [githubBranch, setGithubBranch] = useState<string>('main');
+  const [githubBasePath, setGithubBasePath] = useState<string>(DEFAULT_GITHUB_BASE_PATH);
+  const [githubBasePathError, setGithubBasePathError] = useState<string | null>(null);
   const [githubUser, setGithubUser] = useState<GithubUser | null>(null);
   const [githubRepos, setGithubRepos] = useState<GithubRepoItem[]>([]);
   const [authenticating, setAuthenticating] = useState<boolean>(false);
@@ -111,6 +117,7 @@ export const Settings = () => {
     getUsername().then((value) => setUsername(value || ""));
     getGithubRepo().then((value) => setGithubRepo(value || ""));
     getGithubBranch().then((value) => setGithubBranch(value || "main"));
+    getGithubBasePath().then(setGithubBasePath);
     getGithubUser().then((val) => setGithubUser(val || null));
     getGithubAutoSync().then((val) => setGithubAutoSyncState(val));
     try {
@@ -350,6 +357,8 @@ export const Settings = () => {
     setGithubUser(null);
     setGithubRepo('');
     setGithubBranch('main');
+    setGithubBasePath(DEFAULT_GITHUB_BASE_PATH);
+    setGithubBasePathError(null);
     setGithubRepos([]);
     setGitSyncStatus(null);
   };
@@ -372,18 +381,41 @@ export const Settings = () => {
     await persistGithubBranch(branchVal);
   };
 
+  const handleBasePathChange = async (path: string) => {
+    setGithubBasePath(path);
+    const result = normalizeGithubBasePath(path);
+    setGithubBasePathError(result.error);
+    if (!result.error) await persistGithubBasePath(result.value);
+  };
+
+  const handleBasePathBlur = async () => {
+    const result = normalizeGithubBasePath(githubBasePath);
+    setGithubBasePathError(result.error);
+    if (result.error) return;
+    const saved = await persistGithubBasePath(result.value);
+    setGithubBasePath(saved);
+  };
+
   const handleGithubSaveManual = async () => {
     const manualToken = githubPat.trim();
     if (!manualToken) {
       setAuthError("Enter a fine-grained GitHub token first.");
       return;
     }
+    const normalizedBasePath = normalizeGithubBasePath(githubBasePath);
+    if (normalizedBasePath.error) {
+      setGithubBasePathError(normalizedBasePath.error);
+      setAuthError(normalizedBasePath.error);
+      return;
+    }
     setAuthError(null);
     const auth = await authenticateGithubToken(manualToken);
     await setJwtToken(auth.token);
-    persistGithubPat(manualToken);
-    persistGithubRepo(githubRepo.trim());
-    persistGithubBranch(githubBranch.trim());
+    await persistGithubPat(manualToken);
+    await persistGithubRepo(githubRepo.trim());
+    await persistGithubBranch(githubBranch.trim());
+    await persistGithubBasePath(normalizedBasePath.value);
+    setGithubBasePath(normalizedBasePath.value);
     
     if (manualToken) {
       const profileRes = await fetchUserGithubProfile(manualToken);
@@ -529,7 +561,7 @@ export const Settings = () => {
       <Card className="p-3.5">
         <h3 className="text-xs font-semibold uppercase tracking-widest text-zinc-400 mb-2">Data Synchronization</h3>
         <p className="text-[11px] text-zinc-500 font-mono leading-relaxed mb-3.5">
-            AlgoVault imports history in safe batches of up to 400 submissions, then keeps new submissions up to date.
+            AlgoVault imports history in safe batches of up to 400 submissions, then keeps new submissions up to date. When GitHub Auto-Sync is enabled, accepted solutions in those batches are exported too.
         </p>
         {lastSync && (
           <div className="mb-3 text-[10px] text-emerald-400 font-mono bg-emerald-950/15 border border-emerald-900/25 rounded-lg px-3 py-2">
@@ -751,6 +783,29 @@ export const Settings = () => {
               />
             </div>
 
+            <div>
+              <label className="text-[10px] text-zinc-400 block mb-1 font-mono">Base folder in repository</label>
+              <input
+                type="text"
+                value={githubBasePath}
+                onChange={(e) => void handleBasePathChange(e.target.value)}
+                onBlur={() => void handleBasePathBlur()}
+                placeholder={DEFAULT_GITHUB_BASE_PATH}
+                aria-invalid={Boolean(githubBasePathError)}
+                className={`w-full bg-zinc-900/30 border rounded-lg px-3 py-2 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none transition-all font-mono ${githubBasePathError ? 'border-red-800 focus:border-red-500' : 'border-zinc-800 focus:border-[#dfa054]'}`}
+              />
+              {githubBasePathError ? (
+                <p className="mt-1 text-[9px] text-red-400 font-mono">⚠️ {githubBasePathError}</p>
+              ) : (
+                <p className="mt-1 text-[9px] text-zinc-500 font-mono break-all">
+                  Preview: {normalizeGithubBasePath(githubBasePath).value}/medium/1-two-sum/
+                </p>
+              )}
+              <p className="mt-1 text-[9px] text-amber-500/90 font-mono leading-relaxed">
+                Changing this folder does not move existing files. It only changes the destination of future exports; use Force Full Re-Sync to export history to the new folder.
+              </p>
+            </div>
+
             {/* Auto-Sync Toggle */}
             <div className="flex justify-between items-center p-2.5 rounded-lg border border-zinc-800 bg-zinc-900/40 mt-1">
               <div>
@@ -761,7 +816,7 @@ export const Settings = () => {
                   </span>
                 </div>
                 <div className="text-[10px] text-zinc-500 font-mono mt-0.5 leading-relaxed">
-                  Automatically push accepted solutions & complexity stats to GitHub
+                  Push live and synchronized accepted solutions, measured runtime/memory, and estimated Big-O to GitHub
                 </div>
               </div>
               <button
@@ -865,7 +920,8 @@ export const Settings = () => {
                 <span className="text-[9px] font-normal text-zinc-400">[{gitSyncStatus.message}]</span>
               )}
             </div>
-            <div className="truncate text-zinc-200">Problem: {gitSyncStatus.problem}</div>
+            {gitSyncStatus.problem && <div className="truncate text-zinc-200">Problem: {gitSyncStatus.problem}</div>}
+            {gitSyncStatus.path && <div className="truncate text-zinc-300">Path: {gitSyncStatus.path}</div>}
             {gitSyncStatus.timestamp && (
               <div className="text-zinc-600 mt-1 text-[8px] text-right">
                 {new Date(gitSyncStatus.timestamp).toLocaleTimeString()}

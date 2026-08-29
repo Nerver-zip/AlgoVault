@@ -1,5 +1,6 @@
 import { exchangeGithubCode, getGithubOAuthState } from "./backend";
 import { getGithubAutoSync } from "../storage";
+import { encodeGithubContentPath } from "../github-path";
 
 // Client IDs identify an OAuth app and are public by design. The client
 // secret is deliberately backend-only and must never be bundled here.
@@ -144,7 +145,8 @@ export async function commitToGithub(
     };
 
     const branchQuery = branch ? `?ref=${encodeURIComponent(branch)}` : "";
-    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}${branchQuery}`;
+    const encodedFilePath = encodeGithubContentPath(filePath)
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${encodedFilePath}${branchQuery}`;
 
     // 1. Get file SHA if it already exists
     let sha: string | undefined = undefined;
@@ -195,7 +197,7 @@ export async function commitToGithub(
       body.branch = branch;
     }
 
-    let putRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`, {
+    let putRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${encodedFilePath}`, {
       method: "PUT",
       headers,
       body: JSON.stringify(body)
@@ -215,7 +217,7 @@ export async function commitToGithub(
           const retryJson = await retryGetRes.json();
           if (retryJson.sha) {
             body.sha = retryJson.sha;
-            putRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`, {
+            putRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${encodedFilePath}`, {
               method: "PUT",
               headers,
               body: JSON.stringify(body)
@@ -263,7 +265,8 @@ export async function batchCommitToGithub(
   pat: string,
   repoPath: string,
   writes: BatchFileWrite[],
-  branch?: string
+  branch?: string,
+  commitMessageOverride?: string
 ): Promise<{ ok: boolean; message?: string; revoked?: boolean }> {
   if (!writes.length) return { ok: true }
 
@@ -352,9 +355,9 @@ export async function batchCommitToGithub(
     const newTreeSha: string = treeData.sha;
 
     // Step 5: Create a new commit pointing to the new tree
-    const commitMessage = writes.length === 1
+    const commitMessage = commitMessageOverride || (writes.length === 1
       ? writes[0].message
-      : `${writes[0].message} (+${writes.length - 1} files) - AlgoVault`;
+      : `${writes[0].message} (+${writes.length - 1} files) - AlgoVault`);
 
     const commitRes = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/git/commits`,
@@ -382,7 +385,7 @@ export async function batchCommitToGithub(
       {
         method: "PATCH",
         headers,
-        body: JSON.stringify({ sha: newCommitSha, force: true })
+        body: JSON.stringify({ sha: newCommitSha, force: false })
       }
     );
 

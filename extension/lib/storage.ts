@@ -1,6 +1,7 @@
 import { Storage } from "@plasmohq/storage"
 
 import { STORAGE_KEYS } from "./constants"
+import { DEFAULT_GITHUB_BASE_PATH, requireGithubBasePath } from "./github-path"
 import type {
   ContestResult,
   DashboardData,
@@ -56,6 +57,7 @@ export async function setUsername(username: string): Promise<void> {
       storage.remove("algovault.cache.contest_snapshot"),
       storage.remove("algovault.session.store"),
       storage.remove("algovault.logs.index"),
+      storage.remove(STORAGE_KEYS.GITHUB_EXPORT_INDEX),
     ])
     // Clear monthly log buckets (algovault.logs.YYYY_MM)
     const allData = await chrome.storage.local.get(null)
@@ -289,6 +291,21 @@ export async function setGithubBranch(branch: string): Promise<void> {
   await setTyped(STORAGE_KEYS.GITHUB_BRANCH, branch)
 }
 
+export async function getGithubBasePath(): Promise<string> {
+  const stored = await getTyped<string>(STORAGE_KEYS.GITHUB_BASE_PATH)
+  try {
+    return requireGithubBasePath(stored || DEFAULT_GITHUB_BASE_PATH)
+  } catch {
+    return DEFAULT_GITHUB_BASE_PATH
+  }
+}
+
+export async function setGithubBasePath(path: string): Promise<string> {
+  const normalized = requireGithubBasePath(path)
+  await setTyped(STORAGE_KEYS.GITHUB_BASE_PATH, normalized)
+  return normalized
+}
+
 export async function getGithubAutoSync(): Promise<boolean> {
   try {
     const val = await storage.get<any>(STORAGE_KEYS.GITHUB_AUTO_SYNC)
@@ -351,6 +368,7 @@ export async function clearGithubAuth(): Promise<void> {
   await storage.remove(STORAGE_KEYS.GITHUB_USER)
   await storage.remove(STORAGE_KEYS.GITHUB_REPO)
   await storage.remove(STORAGE_KEYS.GITHUB_BRANCH)
+  await storage.remove(STORAGE_KEYS.GITHUB_BASE_PATH)
   await storage.remove("algovault.gitSyncStatus")
 }
 

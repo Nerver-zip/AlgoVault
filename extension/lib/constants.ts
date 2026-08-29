@@ -22,5 +22,7 @@ export const STORAGE_KEYS = {
   GITHUB_REPO: "algovault.github.repo",
   GITHUB_USER: "algovault.github.user",
   GITHUB_BRANCH: "algovault.github.branch",
+  GITHUB_BASE_PATH: "algovault.github.basePath",
+  GITHUB_EXPORT_INDEX: "algovault.github.exportIndex.v1",
   GITHUB_AUTO_SYNC: "algovault.github.autoSync"
 } as const;

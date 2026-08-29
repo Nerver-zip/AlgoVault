@@ -126,6 +126,30 @@ export const fetchAllSubmissions = async (offset: number, limit: number) => {
   return response.json();
 };
 
+export const fetchSubmissionDetails = async (submissionId: number) => {
+  const query = `
+    query submissionDetails($submissionId: Int!) {
+      submissionDetails(submissionId: $submissionId) {
+        code
+        lang {
+          name
+          verboseName
+        }
+        runtime
+        memory
+        statusDisplay
+        timestamp
+        question {
+          title
+          titleSlug
+        }
+      }
+    }
+  `;
+  const response = await fetchGraphQL(query, { submissionId });
+  return response.data?.submissionDetails ?? null;
+};
+
 export const fetchContestHistory = async (username: string) => {
   const query = `
     query userContestRankingInfo($username: String!) {
