@@ -5,21 +5,14 @@
   window.__ALGOVAULT_FETCH_PATCHED__ = true;
 
   // The nonce will be read from the DOM attribute set by submission-interceptor.ts
-  var nonce = document.documentElement.getAttribute("data-algovault-nonce");
-  if (nonce) {
-    document.documentElement.removeAttribute("data-algovault-nonce");
-  } else {
-    // Observe for the attribute in case isolated world script runs slightly after
-    var observer = new MutationObserver(function() {
-      var val = document.documentElement.getAttribute("data-algovault-nonce");
-      if (val) {
-        nonce = val;
-        document.documentElement.removeAttribute("data-algovault-nonce");
-        observer.disconnect();
-      }
-    });
-    observer.observe(document.documentElement, { attributes: true });
-  }
+  var nonce = document.documentElement.getAttribute("data-algovault-nonce") || "";
+  var observer = new MutationObserver(function() {
+    var val = document.documentElement.getAttribute("data-algovault-nonce");
+    if (val) {
+      nonce = val;
+    }
+  });
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-algovault-nonce"] });
 
   var lastSeenSubmissionId;
   var originalFetch = window.fetch;
@@ -39,22 +32,20 @@
     var body = data && data.data ? data.data : data;
     if (!body || body.state !== 'SUCCESS') return;
     
-    // Only fire if the submit action was active (ignores run code)
-    if (!window.__ALGOVAULT_IS_SUBMITTING__) return;
-    
     var match = String(url).match(/\/submissions\/detail\/(\d+)\/check/);
     var submissionId = match ? match[1] : undefined;
+    var isSubmissionCheck = Boolean(submissionId);
+
+    // Only fire for real submission checks or active submit action (ignores run code)
+    if (!isSubmissionCheck && !window.__ALGOVAULT_IS_SUBMITTING__) return;
+    
     if (submissionId && submissionId === lastSeenSubmissionId) return;
-    lastSeenSubmissionId = submissionId;
+    if (submissionId) lastSeenSubmissionId = submissionId;
 
     // Reset submit state once the terminal SUCCESS state is captured
     window.__ALGOVAULT_IS_SUBMITTING__ = false;
     
-    // If nonce wasn't available yet, try reading it now
-    if (!nonce) {
-      nonce = document.documentElement.getAttribute("data-algovault-nonce");
-      if (nonce) document.documentElement.removeAttribute("data-algovault-nonce");
-    }
+    var currentNonce = nonce || document.documentElement.getAttribute("data-algovault-nonce");
     
     var captured = window.__ALGOVAULT_LAST_SUBMITTED_CODE__ || {};
     window.postMessage({

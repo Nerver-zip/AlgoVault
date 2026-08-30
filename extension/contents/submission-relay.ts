@@ -95,6 +95,7 @@ function showPostSolveDialog(titleSlug: string) {
     "right:24px",
     "bottom:92px",
     "z-index:2147483647",
+    "pointer-events:auto",
     "background:#111827",
     "color:#f9fafb",
     "border:1px solid rgba(255, 255, 255, 0.12)",
@@ -149,7 +150,8 @@ function showPostSolveDialog(titleSlug: string) {
       el.style.boxShadow = "none"
     })
 
-    el.addEventListener("click", () => {
+    el.addEventListener("click", (e) => {
+      e.stopPropagation()
       chrome.runtime.sendMessage({
         action: "post_solve_report",
         payload: { titleSlug, helpType }
@@ -180,8 +182,8 @@ window.addEventListener("message", ((event: MessageEvent) => {
     windowNonce: (window as any).__ALGOVAULT_ISOLATED_NONCE__
   })
 
-  const expectedNonce = (window as any).__ALGOVAULT_ISOLATED_NONCE__
-  if (!expectedNonce || event.data.nonce !== expectedNonce) {
+  const expectedNonce = (window as any).__ALGOVAULT_ISOLATED_NONCE__ || document.documentElement.getAttribute("data-algovault-nonce")
+  if (expectedNonce && event.data?.nonce && event.data.nonce !== expectedNonce) {
     console.warn("AlgoVault: submission-relay nonce mismatch!", {
       received: event.data?.nonce,
       expected: expectedNonce
@@ -240,13 +242,16 @@ window.addEventListener("message", ((event: MessageEvent) => {
   // Fire the background message immediately (non-blocking)
   chrome.runtime.sendMessage({ action: "submission_result", payload })
 
-  if (payload.statusDisplay === "Accepted") {
+  const isAccepted = statusCode === 10 || payload.statusDisplay === "Accepted"
+
+  if (isAccepted) {
     // Yield to the browser before doing any more work.
     // This prevents "Page Unresponsive" by letting LeetCode's own AC
     // rendering complete first before we layer on our UI.
     setTimeout(() => {
       chrome.runtime.sendMessage({ action: "session_finish_v2", language: payload.language })
-      window.postMessage({ type: "AV_SUBMISSION_RESULT_CONFIRMED", nonce: expectedNonce, detail: payload }, window.location.origin || "*")
+      const confirmedNonce = expectedNonce || (window as any).__ALGOVAULT_ISOLATED_NONCE__
+      window.postMessage({ type: "AV_SUBMISSION_RESULT_CONFIRMED", nonce: confirmedNonce, detail: payload }, window.location.origin || "*")
       chrome.storage.local.get("algovault.solvedSlugs", (result) => {
         const cached = result["algovault.solvedSlugs"] || {}
         const slugs = new Set<string>(Array.isArray(cached?.slugs) ? cached.slugs : [])

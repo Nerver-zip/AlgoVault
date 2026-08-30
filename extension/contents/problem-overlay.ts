@@ -14,31 +14,13 @@ let isZenithRevealed = false;
 const hideForbiddenTabs = () => {
   if (!isZenithActive || isZenithRevealed) return;
 
-  // 1. Target via XPath text search for "Editorial", "Solutions", "Discussion"
-  const xpathResult = document.evaluate(
-    "//*[text()='Editorial' or text()='Solutions' or text()='Discussion']",
-    document,
-    null,
-    XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
-    null
-  );
-
-  for (let i = 0; i < xpathResult.snapshotLength; i++) {
-    const node = xpathResult.snapshotItem(i) as HTMLElement;
-    if (node) {
-      // Find closest tab container or interactive wrapper
-      const tabContainer = node.closest('[role="tab"], a, button, div[class*="tab"]') || node;
-      if (tabContainer && !tabContainer.textContent?.includes("Description") && !tabContainer.id?.includes("av-intentional-reveal")) {
-        (tabContainer as HTMLElement).style.setProperty("display", "none", "important");
-      }
-    }
-  }
-
-  // 2. Target tablist children that are not Description
-  const tablist = document.querySelectorAll('[role="tablist"] > *');
-  tablist.forEach((child) => {
+  // Target tablist children that are not Description (scoped to role="tablist")
+  const tablistChildren = document.querySelectorAll('[role="tablist"] > *, [role="tablist"] [role="tab"], [role="tablist"] a, [role="tablist"] button');
+  tablistChildren.forEach((child) => {
+    // Never touch our own injected buttons or dialogs
+    if (child.id?.includes("av-") || child.closest("#algovault-post-solve, plasmo-csui")) return;
     const text = child.textContent?.trim() || "";
-    if ((text.includes("Editorial") || text.includes("Solutions") || text.includes("Discussion") || text.includes("Discuss")) && !child.id?.includes("av-intentional-reveal")) {
+    if (text.includes("Editorial") || text.includes("Solutions") || text.includes("Discussion") || text.includes("Discuss")) {
       (child as HTMLElement).style.setProperty("display", "none", "important");
     }
   });
@@ -202,40 +184,25 @@ const fetchPrediction = async () => {
 }
 
 const injectAlgoVaultOverlay = () => {
-  // 1. Acceptance Rate & Global Accepted/Submissions
+  // 1. Acceptance Rate & Global Accepted/Submissions (scoped strictly to description panel)
   if (!acceptanceHidden) {
     chrome.storage.sync.get(['hideAcceptanceRate'], (result) => {
       if (result.hideAcceptanceRate === false) return;
 
-      // Hide global "Accepted" and "Submissions" numbers
-      const iterAccepted = document.evaluate(
-        "//*[text()='Accepted' or text()='Submissions']",
-        document, null, XPathResult.ANY_TYPE, null
-      );
-      let nextAcc = iterAccepted.iterateNext() as HTMLElement;
-      while (nextAcc) {
-        let valNode = nextAcc.nextElementSibling as HTMLElement;
-        if (!valNode || !valNode.textContent?.match(/\d/)) {
-            valNode = nextAcc.parentElement?.nextElementSibling as HTMLElement;
-        }
-        if (valNode) {
-            valNode.style.display = 'none';
-        }
-        nextAcc.style.display = 'none';
-        nextAcc = iterAccepted.iterateNext() as HTMLElement;
-      }
+      const descContainer = document.querySelector('[data-track-load="description_content"]')?.parentElement || document.querySelector('[role="tabpanel"]');
+      if (!descContainer) return;
 
-      // Find the acceptance rate label more robustly using XPath
+      // Find the acceptance rate label specifically within the problem description container
       const iter = document.evaluate(
-        "//*[text()='Acceptance' or text()='Acceptance Rate']",
-        document, null, XPathResult.ANY_TYPE, null
+        ".//*[text()='Acceptance' or text()='Acceptance Rate']",
+        descContainer, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
       );
-      const accLabel = iter.iterateNext() as HTMLElement;
+      const accLabel = iter.singleNodeValue as HTMLElement;
 
       if (accLabel) {
         let accValue = accLabel.nextElementSibling as HTMLElement;
         if (!accValue || !accValue.textContent?.includes('%')) {
-            accValue = accLabel.parentElement?.nextElementSibling as HTMLElement;
+          accValue = accLabel.parentElement?.nextElementSibling as HTMLElement;
         }
 
         if (accValue && accValue.style.display !== 'none' && accValue.textContent?.includes('%')) {
@@ -298,60 +265,46 @@ const injectAlgoVaultOverlay = () => {
       }
     })
 
-    // 2. Search for the exact innermost difficulty element (strictly "Easy", "Medium", or "Hard")
-    const allElements = Array.from(document.querySelectorAll('div, span'))
-    let bestDiffTag: HTMLElement | null = null
+    // 2. Fast search: look for difficulty tag via scoped selectors or inside the description panel
+    const searchScopes = [
+      document.querySelector('[data-track-load="description_content"]')?.parentElement,
+      document.querySelector('[role="tabpanel"]'),
+      document.querySelector('div[class*="description"]')
+    ].filter(Boolean) as HTMLElement[]
 
-    for (const el of allElements) {
-      // Exclude containers that have buttons, links, or other pills inside
-      if (el.querySelector('button, [role="button"], a, input, #av-company-trigger-btn, #av-start-zenith-btn')) continue
+    const candidateSelector = '[class*="text-difficulty-"], [class*="text-olive"], [class*="text-yellow"], [class*="text-pink"], [class*="text-green"], [class*="text-red"], [class*="text-brand-orange"], div[class*="rounded-full"], span[class*="rounded-full"], div[class*="badge"], span[class*="badge"]'
 
-      // Extract text excluding any existing av-rating badge
-      const cloneText = Array.from(el.childNodes)
-        .filter(node => node.nodeType === Node.TEXT_NODE || !(node as HTMLElement).classList?.contains("av-rating"))
-        .map(node => node.textContent || "")
-        .join("")
-        .trim()
-
-      if (cloneText === "Easy" || cloneText === "Medium" || cloneText === "Hard") {
-        const parent = el.parentElement
-        if (parent) {
-          const parentText = parent.textContent || ""
-          if (
-            parentText.includes("Topics") ||
-            parentText.includes("Companies") ||
-            parentText.includes("Hint") ||
-            parent.classList.toString().includes("flex") ||
-            parent.classList.toString().includes("items-center") ||
-            parent.parentElement?.classList.toString().includes("flex")
-          ) {
-            bestDiffTag = el as HTMLElement
-            break
-          }
+    for (const scope of searchScopes) {
+      const candidates = Array.from(scope.querySelectorAll<HTMLElement>(candidateSelector))
+      for (const el of candidates) {
+        if (el.querySelector('button, [role="button"], a, input, #av-company-trigger-btn, #av-start-zenith-btn')) continue
+        const text = Array.from(el.childNodes)
+          .filter(node => node.nodeType === Node.TEXT_NODE || !(node as HTMLElement).classList?.contains("av-rating"))
+          .map(node => node.textContent || "")
+          .join("")
+          .trim()
+        if (text === "Easy" || text === "Medium" || text === "Hard") {
+          return { diffTag: el, metadataRow: el.parentElement }
         }
       }
     }
 
-    if (bestDiffTag && bestDiffTag.parentElement) {
-      return { diffTag: bestDiffTag, metadataRow: bestDiffTag.parentElement }
-    }
-
     // 3. Fallback: find Topics or Companies button and locate the difficulty sibling
-    const topicsOrCompanies = Array.from(document.querySelectorAll('button, div[role="button"], a, div')).find(el => {
+    const topicsOrCompanies = Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"]')).find(el => {
       const t = el.textContent?.trim() || ""
       return t === "Topics" || t === "Companies" || t.startsWith("Topics") || t.startsWith("Companies")
     })
 
     if (topicsOrCompanies && topicsOrCompanies.parentElement) {
-      const row = topicsOrCompanies.parentElement as HTMLElement
-      for (const child of Array.from(row.children)) {
+      const row = topicsOrCompanies.parentElement
+      for (const child of Array.from(row.children) as HTMLElement[]) {
         const text = Array.from(child.childNodes)
           .filter(node => node.nodeType === Node.TEXT_NODE || !(node as HTMLElement).classList?.contains("av-rating"))
           .map(node => node.textContent || "")
           .join("")
           .trim()
         if (text === "Easy" || text === "Medium" || text === "Hard") {
-          return { diffTag: child as HTMLElement, metadataRow: row }
+          return { diffTag: child, metadataRow: row }
         }
       }
       return { diffTag: null, metadataRow: row }
@@ -888,12 +841,33 @@ const injectAlgoVaultOverlay = () => {
 }
 
 let observerTimeout: number | null = null;
-const observer = new MutationObserver(() => {
+const observer = new MutationObserver((mutations) => {
+  // Ignore mutations strictly from internal extension UI elements, modals, and Monaco code editor
+  const isInternal = mutations.every((m) => {
+    const target = m.target as HTMLElement | null;
+    if (!target) return true;
+    return target.closest?.(
+      '.monaco-editor, .view-lines, .CodeMirror, plasmo-csui, #algovault-post-solve, #av-company-modal, #av-start-zenith-btn'
+    ) !== null;
+  });
+  if (isInternal) return;
+
   // Ultra-fast early exit if a batch re-injection is already scheduled
   if (observerTimeout) return;
 
   observerTimeout = window.setTimeout(() => {
     observerTimeout = null;
+
+    // Check if the problem description header is visible in the DOM
+    const hasHeader = document.querySelector('[data-track-load="description_content"]') !== null ||
+      document.querySelector('[data-algovault-rating]') !== null ||
+      document.querySelector('[class*="text-difficulty-"]') !== null;
+
+    // If description header is not in the DOM (e.g. Submissions/Testcases tab active), skip heavy work
+    if (!hasHeader) {
+      return;
+    }
+
     // Skip re-injection if all overlays are still intact (common during AC verdict render)
     const ratingGone = ratingInjected && !document.querySelector('.av-rating');
     const predictionGone = predictionInjected && !document.getElementById('av-solve-chance-bubble');
@@ -903,7 +877,7 @@ const observer = new MutationObserver(() => {
     injectAlgoVaultOverlay();
     hideForbiddenTabs();
     injectIntentionalRevealButton();
-  }, 500);
+  }, 400);
 });
 
 observer.observe(document.body, { childList: true, subtree: true });

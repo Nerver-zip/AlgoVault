@@ -13,7 +13,7 @@ export const getStyle = () => {
       position: fixed;
       inset: 0;
       pointer-events: none;
-      z-index: 2147483647;
+      z-index: 2147483640;
     }
   ` + cssText.replaceAll(':root', ':host(plasmo-csui)')
   return style
@@ -140,12 +140,10 @@ const playSound = (soundUrl: string) => {
   try {
     const cached = audioCache.get(soundUrl)
     if (cached) {
-      // Clone the cached audio node for overlapping playback safety
-      const clone = cached.cloneNode(true) as HTMLAudioElement
-      clone.volume = 0.5
-      clone.play().catch(() => {})
+      cached.currentTime = 0
+      cached.volume = 0.5
+      cached.play().catch(() => {})
     } else {
-      // Fallback: create fresh Audio if cache miss
       const audio = new Audio(soundUrl)
       audio.volume = 0.5
       audio.play().catch(() => {})
@@ -305,8 +303,8 @@ let lastCelebrationTimestamp = 0
 
   return (
     <div
-      className={`fixed inset-0 bg-zinc-950/90 z-[999999] flex flex-col items-center justify-center font-sans select-none pointer-events-auto transform-gpu will-change-[opacity,transform] transition-opacity duration-300 ease-out ${
-        visible ? "opacity-100" : "opacity-0"
+      className={`fixed inset-0 bg-zinc-950/90 z-[999999] flex flex-col items-center justify-center font-sans select-none transform-gpu will-change-[opacity,transform] transition-opacity duration-300 ease-out ${
+        visible ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
       }`}
       onClick={() => {
         setVisible(false)

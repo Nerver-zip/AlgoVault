@@ -25,6 +25,12 @@ import { buildGithubDashboardReadme } from "../lib/github-dashboard"
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => console.error(error))
 
+function safeBroadcast(message: any) {
+  try {
+    chrome.runtime.sendMessage(message).catch(() => {})
+  } catch {}
+}
+
 let isSyncing = false;
 let syncAbortController: AbortController | null = null;
 let githubWriteQueue: Promise<void> = Promise.resolve()
@@ -78,69 +84,48 @@ async function archivePracticeLog(sessionInput: any, isSolved: boolean, language
     logId,
     sessionId: session.id,
     slug: session.slug,
-    startedAt: tElapsedStart,
-    completedAt: now,
-    activeSecs,
-    elapsedSecs,
+    startedAt: new Date(tElapsedStart).toISOString(),
+    completedAt: (isSolved || session.st === "SOLVED") ? new Date(now).toISOString() : undefined,
+    activeSeconds: activeSecs,
+    elapsedSeconds: Math.max(activeSecs, elapsedSecs),
     focusScore,
-    tabs: session.tabs || 0,
-    pastes: session.pastes || 0,
-    isSolved: Boolean(isSolved || session.st === "SOLVED"),
-    language
+    tabSwitches: session.tabs || 0,
+    pasteCount: session.pastes || 0,
+    isSolved: !!isSolved || session.st === "SOLVED",
+    language: language || undefined
   }
 
-  // 1. Upsert into Monthly Bucket `algovault.logs.YYYY_MM`
   const dateObj = new Date(tElapsedStart)
-  const yyyyMm = `${dateObj.getFullYear()}_${String(dateObj.getMonth() + 1).padStart(2, "0")}`
-  const bucketKey = `algovault.logs.${yyyyMm}`
-  const existingBucket = (await storage.get<any[]>(bucketKey)) || []
-  const bucketIndex = existingBucket.findIndex(
-    (item: any) => (session.id && item.sessionId === session.id) || (item.slug === session.slug && item.startedAt === tElapsedStart)
-  )
-  if (bucketIndex >= 0) {
-    existingBucket[bucketIndex] = {
-      ...existingBucket[bucketIndex],
-      ...logItem,
-      isSolved: isSolved || existingBucket[bucketIndex].isSolved
-    }
-  } else {
-    existingBucket.push(logItem)
-  }
-  await storage.set(bucketKey, existingBucket)
+  const monthKey = `algovault.logs.${dateObj.getUTCFullYear()}-${String(dateObj.getUTCMonth() + 1).padStart(2, "0")}`
 
-  // 2. Upsert into Ultra-Fast Summary Index
-  const indexItem = {
-    sessionId: session.id,
-    slug: session.slug,
-    ts: tElapsedStart,
-    actSecs: activeSecs,
-    elSecs: elapsedSecs,
-    score: focusScore,
-    solved: Boolean(isSolved || session.st === "SOLVED")
-  }
-  const existingIndex = (await storage.get<any[]>(LOGS_INDEX_KEY)) || []
-  const summaryIndex = existingIndex.findIndex(
-    (item: any) => (session.id && item.sessionId === session.id) || (item.slug === session.slug && item.ts === tElapsedStart)
-  )
-  if (summaryIndex >= 0) {
-    existingIndex[summaryIndex] = {
-      ...existingIndex[summaryIndex],
-      ...indexItem,
-      solved: Boolean(isSolved || existingIndex[summaryIndex].solved)
+  try {
+    const [existingMonthLogs, existingIndex] = await Promise.all([
+      storage.get<any[]>(monthKey).then((res) => (Array.isArray(res) ? res : [])),
+      storage.get<string[]>(LOGS_INDEX_KEY).then((res) => (Array.isArray(res) ? res : []))
+    ])
+
+    const updatedMonthLogs = existingMonthLogs.filter((item) => item.logId !== logId && item.sessionId !== session.id)
+    updatedMonthLogs.push(logItem)
+    await storage.set(monthKey, updatedMonthLogs)
+
+    if (!existingIndex.includes(monthKey)) {
+      existingIndex.push(monthKey)
+      existingIndex.sort().reverse()
+      await storage.set(LOGS_INDEX_KEY, existingIndex)
     }
-  } else {
-    existingIndex.push(indexItem)
+  } catch (err) {
+    console.error("[APSE v2] Failed to archive practice log:", err)
   }
-  await storage.set(LOGS_INDEX_KEY, existingIndex)
 }
 
-// Tab Removal Listener for Tab Ownership Safety
-chrome.tabs.onRemoved.addListener(async (closedTabId) => {
-  const active = await storage.get<any>(ACTIVE_SESSION_KEY)
-  if (active && active.ownerTabId === closedTabId && active.st === "RUNNING") {
-    const updated = transitionSession(active, "PAUSED", "TAB", Date.now())
-    await storage.set(ACTIVE_SESSION_KEY, { ...updated, ownerTabId: null })
-    await archivePracticeLog(updated, updated.st === "SOLVED")
+// ─── APSE v2 SYNC & TELEMETRY LISTENERS ──────────────────────────────
+
+// Storage Event Relay for Multi-Tab Sync
+storage.watch({
+  [ACTIVE_SESSION_KEY]: (change) => {
+    if (change.newValue !== undefined) {
+      safeBroadcast({ action: "session_updated_v2", session: change.newValue })
+    }
   }
 })
 
@@ -152,7 +137,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     const updated = transitionSession(updatedSession, "PAUSED", "TAB", Date.now())
     await storage.set(ACTIVE_SESSION_KEY, updated)
     await archivePracticeLog(updated, updated.st === "SOLVED")
-    chrome.runtime.sendMessage({ action: "session_updated_v2", session: updated })
+    safeBroadcast({ action: "session_updated_v2", session: updated })
   }
 })
 
@@ -206,7 +191,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         tabs: isTabSwitch ? (session.tabs || 0) + 1 : (session.tabs || 0)
       }
       await storage.set(ACTIVE_SESSION_KEY, updated)
-      chrome.runtime.sendMessage({ action: "session_updated_v2", session: updated })
+      safeBroadcast({ action: "session_updated_v2", session: updated })
       sendResponse({ ok: true, session: updated })
     })
     return true
@@ -234,7 +219,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const updated = transitionSession(existingSession, "RUNNING", null, now)
         const finalSession = { ...updated, ownerTabId: tabId || existingSession.ownerTabId }
         await storage.set(ACTIVE_SESSION_KEY, finalSession)
-        chrome.runtime.sendMessage({ action: "session_updated_v2", session: finalSession })
+        safeBroadcast({ action: "session_updated_v2", session: finalSession })
         sendResponse({ ok: true, session: finalSession })
         return
       }
@@ -272,7 +257,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         storage.set(ACTIVE_SESSION_KEY, sessionForSlug),
         storage.set(storeKey, store)
       ])
-      chrome.runtime.sendMessage({ action: "session_updated_v2", session: sessionForSlug })
+      safeBroadcast({ action: "session_updated_v2", session: sessionForSlug })
       sendResponse({ ok: true, session: sessionForSlug })
     })
     return true
@@ -290,7 +275,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const updated = transitionSession(sessionWithTabs, "PAUSED", reason, Date.now())
       await storage.set(ACTIVE_SESSION_KEY, updated)
       await archivePracticeLog(updated, updated.st === "SOLVED")
-      chrome.runtime.sendMessage({ action: "session_updated_v2", session: updated })
+      safeBroadcast({ action: "session_updated_v2", session: updated })
       sendResponse({ ok: true, session: updated })
     })
     return true
@@ -309,7 +294,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ownerTabId: tabId || session.ownerTabId
       }
       await storage.set(ACTIVE_SESSION_KEY, updated)
-      chrome.runtime.sendMessage({ action: "session_updated_v2", session: updated })
+      safeBroadcast({ action: "session_updated_v2", session: updated })
       sendResponse({ ok: true, session: updated })
     })
     return true
@@ -325,7 +310,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         delete store[slug]
         await storage.set(storeKey, store)
       }
-      chrome.runtime.sendMessage({ action: "session_updated_v2", session: null })
+      safeBroadcast({ action: "session_updated_v2", session: null })
       sendResponse({ ok: true, session: null })
     })
     return true
@@ -346,7 +331,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       await archivePracticeLog(updated, true, message.language)
       await storage.set(ACTIVE_SESSION_KEY, updated)
       
-      chrome.runtime.sendMessage({ action: "session_updated_v2", session: updated })
+      safeBroadcast({ action: "session_updated_v2", session: updated })
       sendResponse({ ok: true, session: updated })
     })
     return true
@@ -361,8 +346,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const updated = transitionSession(session, session.st === "SOLVED" ? "SOLVED" : (session.st === "RUNNING" ? "RUNNING" : "PAUSED"), session.pr, Date.now())
       await storage.set(ACTIVE_SESSION_KEY, updated)
       await archivePracticeLog(updated, session.st === "SOLVED", message.language)
-      chrome.runtime.sendMessage({ action: "session_updated_v2", session: updated })
-      chrome.runtime.sendMessage({ action: "dashboard_refresh" })
+      safeBroadcast({ action: "session_updated_v2", session: updated })
+      safeBroadcast({ action: "dashboard_refresh" })
       sendResponse({ ok: true, session: updated })
     })
     return true
@@ -589,7 +574,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           // Defer dashboard refresh to avoid competing with celebration overlay
           // rendering and GitHub sync during the critical post-AC moment
           setTimeout(() => {
-            chrome.runtime.sendMessage({ action: "dashboard_refresh" });
+            safeBroadcast({ action: "dashboard_refresh" });
           }, 2000);
         })
         .catch((err) => {

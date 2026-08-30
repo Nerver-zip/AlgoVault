@@ -63,7 +63,7 @@ export function usePracticeSession() {
 
   // 2. Centralized 1-second Local Tick (Zero Storage Writes)
   useEffect(() => {
-    if (!session) return
+    if (!session || session.st === "PAUSED" || session.st === "SOLVED") return
 
     const interval = setInterval(() => {
       setNow(Date.now())

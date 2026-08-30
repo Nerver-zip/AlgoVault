@@ -65,17 +65,15 @@ document.addEventListener("paste", (event) => {
 // State Tracking
 let currentSlug = getLeetCodeProblemSlug()
 let lastActivityAt = Date.now()
+let isAutoPausedIdle = false
 let idleCheckInterval: NodeJS.Timeout | null = null
 
 function updateActivity() {
   lastActivityAt = Date.now()
-  // If we were auto-paused due to idle, resume on active interaction
-  chrome.storage.local.get(ACTIVE_SESSION_KEY, (res) => {
-    const session = res[ACTIVE_SESSION_KEY]
-    if (session && session.st === "PAUSED" && session.pr === "IDLE" && currentSlug === session.slug) {
-      chrome.runtime.sendMessage({ action: "session_resume_v2" })
-    }
-  })
+  if (isAutoPausedIdle) {
+    isAutoPausedIdle = false
+    chrome.runtime.sendMessage({ action: "session_resume_v2" })
+  }
 }
 
 // Activity Listeners (Throttled)
@@ -94,10 +92,11 @@ document.addEventListener("scroll", updateActivity, { passive: true })
 // Intelligent Idle Poller (Check every 10 seconds, zero storage writes unless state changes)
 idleCheckInterval = setInterval(() => {
   const now = Date.now()
-  if (now - lastActivityAt >= IDLE_TIMEOUT_MS) {
+  if (now - lastActivityAt >= IDLE_TIMEOUT_MS && !isAutoPausedIdle) {
     chrome.storage.local.get(ACTIVE_SESSION_KEY, (res) => {
       const session = res[ACTIVE_SESSION_KEY]
       if (session && session.st === "RUNNING" && currentSlug === session.slug) {
+        isAutoPausedIdle = true
         chrome.runtime.sendMessage({ action: "session_pause_v2", reason: "IDLE" })
       }
     })
