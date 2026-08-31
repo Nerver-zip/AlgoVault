@@ -69,12 +69,12 @@ export async function fetchUserGithubProfile(token: string): Promise<GithubProfi
         Accept: "application/vnd.github.v3+json"
       }
     });
-    if (res.status === 401 || res.status === 403) {
+    if (res.status === 401) {
       return { ok: false, revoked: true, error: "GitHub token was revoked or expired" };
     }
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
-      return { ok: false, error: `GitHub error ${res.status}: ${errText}` };
+      return { ok: false, revoked: false, error: `GitHub error ${res.status}: ${errText}` };
     }
     const user = await res.json();
     return { ok: true, user };
@@ -95,11 +95,12 @@ export async function fetchUserGithubRepos(token: string): Promise<GithubReposRe
         Accept: "application/vnd.github.v3+json"
       }
     });
-    if (res.status === 401 || res.status === 403) {
+    if (res.status === 401) {
       return { ok: false, repos: [], revoked: true, error: "GitHub token was revoked or expired" };
     }
     if (!res.ok) {
-      return { ok: false, repos: [], error: `GitHub error ${res.status}` };
+      const errText = await res.text().catch(() => "");
+      return { ok: false, repos: [], revoked: false, error: `GitHub error ${res.status}: ${errText}` };
     }
     const repos = await res.json();
     if (!Array.isArray(repos)) return { ok: true, repos: [] };
@@ -165,7 +166,7 @@ export async function commitToGithub(
           "Cache-Control": "no-cache"
         }
       });
-      if (getRes.status === 401 || getRes.status === 403) {
+      if (getRes.status === 401) {
         return { ok: false, revoked: true, message: "GitHub token was revoked or expired. Please reconnect in Settings." };
       }
       if (getRes.ok) {
@@ -233,7 +234,7 @@ export async function commitToGithub(
 
     if (!putRes.ok) {
       const errorMsg = await putRes.text();
-      const isRevoked = putRes.status === 401 || putRes.status === 403;
+      const isRevoked = putRes.status === 401;
       return {
         ok: false,
         revoked: isRevoked,
@@ -298,7 +299,7 @@ export async function getGithubTreePaths(
   )
   if (refRes.status === 409) return { ok: true, paths: [], truncated: false }
   if (!refRes.ok) {
-    const revoked = refRes.status === 401 || refRes.status === 403
+    const revoked = refRes.status === 401
     return {
       ok: false,
       revoked,
@@ -316,7 +317,7 @@ export async function getGithubTreePaths(
     { headers }
   )
   if (!treeRes.ok) {
-    const revoked = treeRes.status === 401 || treeRes.status === 403
+    const revoked = treeRes.status === 401
     return {
       ok: false,
       revoked,
@@ -355,7 +356,7 @@ async function initializeEmptyGithubRepository(
   );
 
   if (!initRes.ok) {
-    const revoked = initRes.status === 401 || initRes.status === 403;
+    const revoked = initRes.status === 401;
     return {
       ok: false,
       revoked,
@@ -376,7 +377,7 @@ async function initializeEmptyGithubRepository(
     { headers }
   );
   if (targetRefRes.ok) return { ok: true };
-  if (targetRefRes.status === 401 || targetRefRes.status === 403) {
+  if (targetRefRes.status === 401) {
     return { ok: false, revoked: true, message: "GitHub token was revoked or expired. Please reconnect in Settings." };
   }
   if (targetRefRes.status !== 404) {
@@ -392,7 +393,7 @@ async function initializeEmptyGithubRepository(
     }
   );
   if (!createRefRes.ok) {
-    const revoked = createRefRes.status === 401 || createRefRes.status === 403;
+    const revoked = createRefRes.status === 401;
     return {
       ok: false,
       revoked,
@@ -451,7 +452,7 @@ export async function batchCommitToGithub(
       { headers }
     );
 
-    if (refRes.status === 401 || refRes.status === 403) {
+    if (refRes.status === 401) {
       return { ok: false, revoked: true, message: "GitHub token was revoked or expired. Please reconnect in Settings." };
     }
 
@@ -557,7 +558,7 @@ export async function batchCommitToGithub(
 
     if (!updateRes.ok) {
       const errText = await updateRes.text().catch(() => "");
-      const isRevoked = updateRes.status === 401 || updateRes.status === 403;
+      const isRevoked = updateRes.status === 401;
       const refMoved = updateRes.status === 409 || (updateRes.status === 422 && /not a fast forward/i.test(errText));
       if (refMoved) {
         // Never force a branch ref. If another writer advanced the branch,
@@ -576,7 +577,7 @@ export async function batchCommitToGithub(
           }
         );
         if (mergeRes.ok) return { ok: true };
-        if (mergeRes.status === 401 || mergeRes.status === 403) {
+        if (mergeRes.status === 401) {
           return { ok: false, revoked: true, message: "GitHub token was revoked or expired. Please reconnect in Settings." };
         }
         if (mergeRes.status !== 409 && mergeRes.status !== 422) {

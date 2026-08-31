@@ -842,10 +842,6 @@ async function syncAcceptedSubmissionToGithub(payload: any, helpType = "PENDING_
     return commitResult
   })
   if (!result.ok) {
-    if (result.revoked) {
-      await clearGithubAuth()
-      await clearJwtToken()
-    }
     await storage.set("algovault.gitSyncStatus", {
       success: false,
       message: result.message,
@@ -1015,10 +1011,6 @@ async function exportAcceptedHistoryToGithub(
         const second = await commitHistoryBatch(batch.slice(midpoint))
         return [...first, ...second]
       }
-      if (result.revoked) {
-        await clearGithubAuth()
-        await clearJwtToken()
-      }
       await storage.set("algovault.gitSyncStatus", { success: false, message: result.message, timestamp: Date.now() })
       throw new Error(`GitHub history export failed: ${result.message}`)
     }
@@ -1065,10 +1057,6 @@ async function recoverMissingSolvedSolutions(
   const exportedForTarget = exportIndex[target] || {}
   const remoteTree = await getGithubTreePaths(pat, repo, branch)
   if (!remoteTree.ok) {
-    if (remoteTree.revoked) {
-      await clearGithubAuth()
-      await clearJwtToken()
-    }
     throw new Error(`GitHub history reconciliation failed: ${remoteTree.message}`)
   }
   if (remoteTree.truncated) {
@@ -1225,10 +1213,6 @@ async function syncGithubRepositoryDashboard(
     branch
   ))
   if (!result.ok) {
-    if (result.revoked) {
-      await clearGithubAuth()
-      await clearJwtToken()
-    }
     throw new Error(`GitHub dashboard update failed: ${result.message}`)
   }
 }

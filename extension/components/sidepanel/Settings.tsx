@@ -134,15 +134,8 @@ export const Settings = () => {
       if (token) {
         setGithubPat(token);
         // Refresh GitHub profile & repos, validate token validity
-        fetchUserGithubProfile(token).then(async (res) => {
+        fetchUserGithubProfile(token).then((res) => {
           if (res.revoked) {
-            await clearGithubAuth();
-            await clearJwtToken();
-            setGithubPat('');
-            setGithubUser(null);
-            setGithubRepo('');
-            setGithubRepos([]);
-            setGitSyncStatus(null);
             setAuthError("GitHub token was revoked or expired. Please connect your account again.");
             return;
           }
@@ -152,20 +145,13 @@ export const Settings = () => {
           }
         });
         setLoadingRepos(true);
-        fetchUserGithubRepos(token).then(async (res) => {
+        fetchUserGithubRepos(token).then((res) => {
           if (res.revoked) {
-            await clearGithubAuth();
-            await clearJwtToken();
-            setGithubPat('');
-            setGithubUser(null);
-            setGithubRepo('');
-            setGithubRepos([]);
-            setGitSyncStatus(null);
             setAuthError("GitHub token was revoked or expired. Please connect your account again.");
             setLoadingRepos(false);
             return;
           }
-          if (res.ok) {
+          if (res.ok && res.repos) {
             setGithubRepos(res.repos);
           }
           setLoadingRepos(false);
@@ -207,6 +193,18 @@ export const Settings = () => {
       }
       if (changes["algovault.github.user"]) {
         setGithubUser(changes["algovault.github.user"].newValue || null);
+      }
+      if (changes["algovault.github.repo"]) {
+        const newRepo = changes["algovault.github.repo"].newValue;
+        if (newRepo !== undefined) {
+          setGithubRepo(newRepo || '');
+        }
+      }
+      if (changes["algovault.github.branch"]) {
+        const newBranch = changes["algovault.github.branch"].newValue;
+        if (newBranch !== undefined) {
+          setGithubBranch(newBranch || 'main');
+        }
       }
     };
     chrome.storage.onChanged.addListener(gitListener);
@@ -332,8 +330,9 @@ export const Settings = () => {
         }
         setLoadingRepos(false);
 
-        // Auto-select first repo if none selected yet
-        if (!githubRepo && reposRes.ok && reposRes.repos.length > 0) {
+        // Auto-select first repo only if none selected or stored yet
+        const existingStoredRepo = await getGithubRepo();
+        if (!existingStoredRepo && !githubRepo && reposRes.ok && reposRes.repos.length > 0) {
           setGithubRepo(reposRes.repos[0].full_name);
           await persistGithubRepo(reposRes.repos[0].full_name);
           setGithubBranch(reposRes.repos[0].default_branch || "main");
@@ -759,6 +758,11 @@ export const Settings = () => {
                   className="w-full bg-zinc-900/50 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-[#dfa054] transition-all font-mono"
                 >
                   <option value="" disabled>-- Select a Repository --</option>
+                  {githubRepo && !githubRepos.some(r => r.full_name.toLowerCase() === githubRepo.toLowerCase()) && (
+                    <option value={githubRepo}>
+                      {githubRepo} 📌 (Configured)
+                    </option>
+                  )}
                   {githubRepos.map((repo) => (
                     <option key={repo.full_name} value={repo.full_name}>
                       {repo.full_name} {repo.private ? "🔒" : "🌐"}

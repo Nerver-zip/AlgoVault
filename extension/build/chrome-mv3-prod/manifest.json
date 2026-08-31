@@ -111,11 +111,10 @@
     },
     {
       "matches": [
-        "https://leetcode.com/problems/*",
-        "https://leetcode.com/contest/*/problems/*"
+        "https://leetcode.com/u/*"
       ],
       "js": [
-        "solve-celebration.e2d6314d.js"
+        "profile-overlay.2f269a27.js"
       ],
       "css": []
     },
@@ -131,10 +130,11 @@
     },
     {
       "matches": [
-        "https://leetcode.com/u/*"
+        "https://leetcode.com/problems/*",
+        "https://leetcode.com/contest/*/problems/*"
       ],
       "js": [
-        "profile-overlay.2f269a27.js"
+        "solve-celebration.e2d6314d.js"
       ],
       "css": []
     }
@@ -169,7 +169,6 @@
     },
     {
       "matches": [
-        "https://leetcode.com/*",
         "https://leetcode.com/*"
       ],
       "resources": [
@@ -178,6 +177,7 @@
     },
     {
       "matches": [
+        "https://leetcode.com/*",
         "https://leetcode.com/*"
       ],
       "resources": [
