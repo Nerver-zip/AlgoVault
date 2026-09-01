@@ -814,7 +814,7 @@ async function syncAcceptedSubmissionToGithub(payload: any, helpType: PostSolveH
 
   const savedReport = await getPostSolveReport(payload.titleSlug, payload.submissionId)
   const effectiveHelpType = savedReport?.helpType || helpType
-  const artifact = await buildGithubArtifact(payload, effectiveHelpType, sessionData)
+  let artifact = await buildGithubArtifact(payload, effectiveHelpType, sessionData)
   await storage.set(`algovault.gitSolve.${payload.titleSlug}`, artifact)
 
   let pat = await getGithubPat()
@@ -837,7 +837,7 @@ async function syncAcceptedSubmissionToGithub(payload: any, helpType: PostSolveH
   const timeStr = payload.runtimeMs != null ? `${payload.runtimeMs} ms` : "N/A"
   const spaceStr = payload.memoryKb != null ? `${Math.round(payload.memoryKb / 10.24) / 100} MB` : "N/A"
   
-  const writes = [
+  let writes = [
     {
       path: artifact.codePath,
       message: `${commitPrefix}: Time: ${timeStr}, Space: ${spaceStr} - AlgoVault`,
@@ -857,6 +857,32 @@ async function syncAcceptedSubmissionToGithub(payload: any, helpType: PostSolveH
 
   // Single atomic commit for all 3 files (code + README + metadata)
   const result = await withGithubWriteLock(async () => {
+    // The initial accepted-submission export may have started before the user
+    // selected a help method. Re-read inside the write lock so a stale
+    // PENDING_SELF_REPORT artifact can never overwrite a newer selection.
+    const latestReport = await getPostSolveReport(payload.titleSlug, payload.submissionId)
+    const latestHelpType = latestReport?.helpType || effectiveHelpType
+    if (latestHelpType !== artifact.metadata.helpType) {
+      artifact = await buildGithubArtifact(payload, latestHelpType, sessionData)
+      await storage.set(`algovault.gitSolve.${payload.titleSlug}`, artifact)
+      writes = [
+        {
+          path: artifact.codePath,
+          message: `${commitPrefix}: Time: ${timeStr}, Space: ${spaceStr} - AlgoVault`,
+          content: artifact.codeContent
+        },
+        {
+          path: artifact.readmePath,
+          message: `Update notes for ${commitPrefix}`,
+          content: artifact.readme
+        },
+        {
+          path: artifact.metadataPath,
+          message: `Update metadata for ${commitPrefix}`,
+          content: JSON.stringify(artifact.metadata, null, 2) + "\n"
+        }
+      ]
+    }
     const commitResult = await batchCommitToGithub(pat, repo, writes, branch)
     if (commitResult.ok) await markGithubExported(repo, branch, artifact.basePath, artifact)
     return commitResult
