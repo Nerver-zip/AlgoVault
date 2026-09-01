@@ -97,7 +97,9 @@ the GitHub connection was disconnected; the saved credential is only considered
 rejected after GitHub returns HTTP 401. HTTP 403 means a scope, organization, or
 branch-permission issue, while 404 means that the configured repository, branch,
 or path was not found. Rate-limit and network failures are retryable and do not
-clear the saved connection.
+clear the saved connection. If an older generic "connect GitHub" error is already
+stored in the sync card, the UI rewrites it to an actionable retry message when a
+GitHub credential is still saved.
 
 After an accepted submission, choose **Solo**, **Hint**, **Editorial**, or
 **External** once. The choice is persisted locally before network sync, so a

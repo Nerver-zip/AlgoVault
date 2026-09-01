@@ -32,6 +32,7 @@ import {
 } from "../../lib/api/github"
 import { COMMUNITY_CONFIG } from "../../lib/community"
 import { DEFAULT_GITHUB_BASE_PATH, normalizeGithubBasePath } from "../../lib/github-path"
+import { normalizeSyncStatusForDisplay } from "../../lib/sync-status"
 
 interface SyncStatus {
   message?: string;
@@ -240,8 +241,10 @@ export const Settings = () => {
       });
 
     const checkSync = () => {
-      chrome.storage.local.get(['syncStatus', 'algovault.syncHasMore', 'algovault.jwt'], (res) => {
-        if (res.syncStatus) setSyncStatus(res.syncStatus);
+      chrome.storage.local.get(['syncStatus', 'algovault.syncHasMore', 'algovault.jwt', 'algovault.github.pat'], (res) => {
+        if (res.syncStatus) {
+          setSyncStatus(normalizeSyncStatusForDisplay(res.syncStatus, Boolean(res['algovault.github.pat'])) as SyncStatus | null)
+        }
         getLastSync().then(setLastSync).catch(() => {});
         let hasMoreVal = res['algovault.syncHasMore'];
         if (typeof hasMoreVal === 'string') {
