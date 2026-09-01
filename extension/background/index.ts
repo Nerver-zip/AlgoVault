@@ -605,7 +605,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         void updateGithubHelpReport(report).catch((err) => {
           console.warn("GitHub help report update failed", err?.message || "unknown error")
         })
-        void sendSelfReport(report).catch((err) => {
+        void sendSelfReport({ titleSlug: report.titleSlug, helpType: report.helpType }).catch((err) => {
           console.warn("Backend self report failed", err?.message || "unknown error")
         })
         sendResponse({ ok: true, persisted: true })
