@@ -22,6 +22,7 @@ import { partitionGithubArtifacts } from "../lib/github-batching"
 import { acceptedProblemCount, requireCompleteSolvedProblemList, SOLVED_PROBLEM_CACHE_SOURCE } from "../lib/leetcode-history"
 import { findProblemsMissingFromGithub } from "../lib/github-reconciliation"
 import { buildGithubDashboardReadme } from "../lib/github-dashboard"
+import { matchesPostSolveSubmission, normalizePostSolveHelpType, postSolveReportStorageKey, type PostSolveHelpType, type PostSolveReport } from "../lib/post-solve"
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => console.error(error))
 
@@ -586,19 +587,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "post_solve_report") {
-    // Sync post-solve report to GitHub independently
-    updateGithubHelpReport(message.payload).catch((err) => {
-      console.warn("GitHub help report update failed", err)
-    })
+    const titleSlug = typeof message.payload?.titleSlug === "string" ? message.payload.titleSlug.trim() : ""
+    const helpType = normalizePostSolveHelpType(message.payload?.helpType)
+    if (!titleSlug || !helpType) {
+      sendResponse({ ok: false, error: "Invalid post-solve report." })
+      return true
+    }
 
-    sendSelfReport(message.payload)
+    const submissionId = typeof message.payload?.submissionId === "string"
+      ? message.payload.submissionId.trim()
+      : undefined
+    const report: PostSolveReport = { titleSlug, helpType, selectedAt: Date.now(), submissionId }
+    // Persist locally before any network request. This closes the race where
+    // the user selects Hint/Solo before the initial GitHub artifact exists.
+    storage.set(postSolveReportStorageKey(titleSlug), report)
       .then(() => {
-        sendResponse({ ok: true })
+        void updateGithubHelpReport(report).catch((err) => {
+          console.warn("GitHub help report update failed", err?.message || "unknown error")
+        })
+        void sendSelfReport(report).catch((err) => {
+          console.warn("Backend self report failed", err?.message || "unknown error")
+        })
+        sendResponse({ ok: true, persisted: true })
       })
-      .catch((err) => {
-        console.error("Backend self report failed:", err)
-        sendResponse({ ok: false, error: err.message })
-      })
+      .catch((err) => sendResponse({ ok: false, error: err?.message || "Could not save post-solve report." }))
     return true
   }
 
@@ -789,12 +801,22 @@ async function buildGithubArtifact(payload: any, helpType: string, sessionData?:
   }
 }
 
-async function syncAcceptedSubmissionToGithub(payload: any, helpType = "PENDING_SELF_REPORT", sessionData?: any) {
+async function getPostSolveReport(titleSlug: string, submissionId?: string): Promise<PostSolveReport | null> {
+  const report = await storage.get<PostSolveReport>(postSolveReportStorageKey(titleSlug))
+  if (!report || report.titleSlug !== titleSlug) return null
+  if (!matchesPostSolveSubmission(report, submissionId)) return null
+  const helpType = normalizePostSolveHelpType(report.helpType)
+  return helpType ? { ...report, helpType } : null
+}
+
+async function syncAcceptedSubmissionToGithub(payload: any, helpType: PostSolveHelpType | "PENDING_SELF_REPORT" = "PENDING_SELF_REPORT", sessionData?: any) {
   if (!payload?.titleSlug) return
   const isAutoSyncEnabled = await getGithubAutoSync()
   if (!isAutoSyncEnabled) return
 
-  const artifact = await buildGithubArtifact(payload, helpType, sessionData)
+  const savedReport = await getPostSolveReport(payload.titleSlug, payload.submissionId)
+  const effectiveHelpType = savedReport?.helpType || helpType
+  const artifact = await buildGithubArtifact(payload, effectiveHelpType, sessionData)
   await storage.set(`algovault.gitSolve.${payload.titleSlug}`, artifact)
 
   let pat = await getGithubPat()
@@ -862,15 +884,20 @@ async function syncAcceptedSubmissionToGithub(payload: any, helpType = "PENDING_
 }
 
 async function updateGithubHelpReport(report: any) {
-  if (!report?.titleSlug || !report.helpType) return
+  const helpType = normalizePostSolveHelpType(report?.helpType)
+  if (!report?.titleSlug || !helpType) return
   const isAutoSyncEnabled = await getGithubAutoSync()
   if (!isAutoSyncEnabled) {
     console.log("[AlgoVault] GitHub Auto-Sync is disabled; skipping updateGithubHelpReport.")
     return
   }
-  const artifact = await storage.get<any>(`algovault.gitSolve.${report.titleSlug}`)
+  let artifact = await storage.get<any>(`algovault.gitSolve.${report.titleSlug}`)
+  for (let attempt = 0; !artifact?.payload && attempt < 20; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    artifact = await storage.get<any>(`algovault.gitSolve.${report.titleSlug}`)
+  }
   if (!artifact?.payload) return
-  await syncAcceptedSubmissionToGithub(artifact.payload, report.helpType, {
+  await syncAcceptedSubmissionToGithub(artifact.payload, helpType, {
     focusSeconds: artifact.metadata?.focusSeconds
   })
 }

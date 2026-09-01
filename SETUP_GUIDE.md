@@ -88,3 +88,19 @@ Wait for: `🟢 DONE | Finished in Xms!`
 5. Select your target repository and branch.
 
 Your problem submissions, practice timers, Glicko-2 topic ratings, and weakness analytics will now automatically sync to your GitHub repository and local dashboard!
+
+### GitHub sync diagnostics
+
+AlgoVault keeps the GitHub credential and the AlgoVault cloud session separate. A
+message saying that the cloud session could not be refreshed does not mean that
+the GitHub connection was disconnected; the saved credential is only considered
+rejected after GitHub returns HTTP 401. HTTP 403 means a scope, organization, or
+branch-permission issue, while 404 means that the configured repository, branch,
+or path was not found. Rate-limit and network failures are retryable and do not
+clear the saved connection.
+
+After an accepted submission, choose **Solo**, **Hint**, **Editorial**, or
+**External** once. The choice is persisted locally before network sync, so a
+service-worker restart or a temporary GitHub/backend failure does not lose the
+method. The exported `metadata.json` for the matching submission records the
+selected method after the queued update completes.

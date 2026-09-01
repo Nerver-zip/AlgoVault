@@ -1,5 +1,6 @@
 import type { PlasmoCSConfig } from "plasmo"
 import { getLeetCodeProblemSlug } from "../lib/leetcode-url"
+import { normalizePostSolveHelpType } from "../lib/post-solve"
 
 export const config: PlasmoCSConfig = {
   matches: ["https://leetcode.com/problems/*", "https://leetcode.com/contest/*/problems/*"],
@@ -85,7 +86,7 @@ function verdictFromCode(statusCode?: any, fallback?: string) {
   }
 }
 
-function showPostSolveDialog(titleSlug: string) {
+function showPostSolveDialog(titleSlug: string, submissionId?: string) {
   if (document.getElementById("algovault-post-solve")) return
 
   const wrapper = document.createElement("div")
@@ -150,16 +151,29 @@ function showPostSolveDialog(titleSlug: string) {
       el.style.boxShadow = "none"
     })
 
+    let reportSubmitted = false
     el.addEventListener("click", (e) => {
       e.stopPropagation()
+      if (reportSubmitted) return
+      const normalizedHelpType = normalizePostSolveHelpType(helpType)
+      if (!normalizedHelpType) return
+      reportSubmitted = true
+      wrapper.querySelectorAll("button").forEach((candidate) => {
+        (candidate as HTMLButtonElement).disabled = true
+        candidate.setAttribute("aria-disabled", "true")
+      })
+      el.textContent = "Saving..."
       chrome.runtime.sendMessage({
         action: "post_solve_report",
-        payload: { titleSlug, helpType }
+        payload: { titleSlug, helpType: normalizedHelpType, submissionId }
+      }, () => {
+        // Reading lastError prevents Chrome from reporting an unhandled
+        // rejected message when the service worker is restarting.
+        void chrome.runtime.lastError
+        wrapper.style.opacity = "0"
+        wrapper.style.transform = "scale(0.95)"
+        setTimeout(() => wrapper.remove(), 300)
       })
-      chrome.runtime.sendMessage({ action: "session_finish_v2" })
-      wrapper.style.opacity = "0"
-      wrapper.style.transform = "scale(0.95)"
-      setTimeout(() => wrapper.remove(), 300)
     })
   })
 
@@ -258,7 +272,7 @@ window.addEventListener("message", ((event: MessageEvent) => {
         slugs.add(slug)
         chrome.storage.local.set({ "algovault.solvedSlugs": { ...cached, fetchedAt: Date.now(), slugs: Array.from(slugs) } })
       })
-      showPostSolveDialog(slug)
+      showPostSolveDialog(slug, payload.submissionId)
     }, 150)
   }
 }))

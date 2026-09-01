@@ -1,6 +1,7 @@
 import { BACKEND_URL } from "../constants"
 import { getJwtToken, setJwtToken, clearJwtToken, getGithubPat } from "../storage"
 import type { ActiveSession, DashboardData, PredictionResult, RevisionQueueItem, SessionData, WeaknessSnapshot } from "../types"
+import { BackendAuthError, backendAuthMessage, type BackendAuthFailureKind } from "../backend-auth"
 
 export const getGithubOAuthState = async (): Promise<string> => {
   const res = await fetch(`${BACKEND_URL}/api/auth/github-state`)
@@ -24,41 +25,86 @@ export const exchangeGithubCode = async (code: string, state: string, codeVerifi
 }
 
 export const authenticateGithubToken = async (token: string) => {
-  const res = await fetch(`${BACKEND_URL}/api/auth/github-token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token })
-  })
-  if (!res.ok) throw new Error("GitHub token verification failed")
-  return res.json() as Promise<{ token: string; githubToken: string; username: string }>
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/auth/github-token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token })
+    })
+    if (!res.ok) {
+      if (res.status === 401) {
+        const directStatus = await validateSavedGithubCredential(token)
+        throw new BackendAuthError(
+          directStatus === "invalid" ? "GITHUB_TOKEN_REJECTED" : "CLOUD_SESSION_UNAVAILABLE",
+          backendAuthMessage(directStatus === "invalid" ? "GITHUB_TOKEN_REJECTED" : "CLOUD_SESSION_UNAVAILABLE")
+        )
+      }
+      throw new BackendAuthError("CLOUD_SESSION_UNAVAILABLE", backendAuthMessage("CLOUD_SESSION_UNAVAILABLE"))
+    }
+    return res.json() as Promise<{ token: string; githubToken: string; username: string }>
+  } catch (error) {
+    if (error instanceof BackendAuthError) throw error
+    throw new BackendAuthError("CLOUD_SESSION_UNAVAILABLE", backendAuthMessage("CLOUD_SESSION_UNAVAILABLE"))
+  }
 }
 
-async function trySilentRefresh(): Promise<string | null> {
+async function validateSavedGithubCredential(token: string): Promise<"valid" | "invalid" | "unknown"> {
+  try {
+    const res = await fetch("https://api.github.com/user", {
+      headers: {
+        Authorization: `token ${token}`,
+        Accept: "application/vnd.github.v3+json"
+      }
+    })
+    if (res.status === 401) return "invalid"
+    if (res.ok) return "valid"
+    return "unknown"
+  } catch {
+    return "unknown"
+  }
+}
+
+async function trySilentRefresh(): Promise<{ token: string | null; failure?: BackendAuthFailureKind }> {
   const pat = await getGithubPat()
-  if (!pat) return null
+  if (!pat) return { token: null, failure: "GITHUB_NOT_CONNECTED" }
   try {
     const authRes = await authenticateGithubToken(pat)
     if (authRes?.token) {
       await setJwtToken(authRes.token)
-      return authRes.token
+      return { token: authRes.token }
     }
-  } catch {
-    // Silent fail if network issue or invalid token
+  } catch (error) {
+    if (error instanceof BackendAuthError && error.kind === "GITHUB_TOKEN_REJECTED") {
+      // The backend can return 401 because it is unable to verify GitHub at
+      // that moment. Ask GitHub directly before presenting this as revocation.
+      const directStatus = await validateSavedGithubCredential(pat)
+      return {
+        token: null,
+        failure: directStatus === "invalid" ? "GITHUB_TOKEN_REJECTED" : "CLOUD_SESSION_UNAVAILABLE"
+      }
+    }
+    if (error instanceof BackendAuthError) return { token: null, failure: error.kind }
   }
-  return null
+  return { token: null, failure: "CLOUD_SESSION_UNAVAILABLE" }
 }
 
 // Every API request requires the JWT issued after server-verified GitHub OAuth.
 async function backendFetch<T = any>(path: string, init: RequestInit = {}): Promise<T> {
   let jwt = await getJwtToken()
+  let refreshFailure: BackendAuthFailureKind | undefined
   if (!jwt) {
-    jwt = await trySilentRefresh()
+    const refreshed = await trySilentRefresh()
+    jwt = refreshed.token
+    refreshFailure = refreshed.failure
   }
 
   const headers = new Headers(init.headers)
   headers.set("Content-Type", headers.get("Content-Type") || "application/json")
 
-  if (!jwt) throw new Error("Connect GitHub in Settings before using cloud features.")
+  if (!jwt) {
+    const kind = refreshFailure || "CLOUD_SESSION_UNAVAILABLE"
+    throw new BackendAuthError(kind, backendAuthMessage(kind))
+  }
   headers.set("Authorization", `Bearer ${jwt}`)
 
   const controller = new AbortController();
@@ -77,7 +123,8 @@ async function backendFetch<T = any>(path: string, init: RequestInit = {}): Prom
 
   if (res.status === 401) {
     // Attempt one automatic token refresh and retry
-    const freshJwt = await trySilentRefresh()
+    const refreshed = await trySilentRefresh()
+    const freshJwt = refreshed.token
     if (freshJwt) {
       const retryHeaders = new Headers(init.headers)
       retryHeaders.set("Content-Type", retryHeaders.get("Content-Type") || "application/json")
@@ -103,7 +150,10 @@ async function backendFetch<T = any>(path: string, init: RequestInit = {}): Prom
     }
 
     await clearJwtToken()
-    throw new Error("Your session expired. Reconnect GitHub in Settings.")
+    const kind: BackendAuthFailureKind = refreshed.failure === "GITHUB_TOKEN_REJECTED"
+      ? "GITHUB_TOKEN_REJECTED"
+      : "CLOUD_SESSION_EXPIRED"
+    throw new BackendAuthError(kind, backendAuthMessage(kind))
   }
 
   if (!res.ok) {

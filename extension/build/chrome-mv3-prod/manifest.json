@@ -111,20 +111,20 @@
     },
     {
       "matches": [
-        "https://leetcode.com/u/*"
-      ],
-      "js": [
-        "profile-overlay.2f269a27.js"
-      ],
-      "css": []
-    },
-    {
-      "matches": [
         "https://leetcode.com/problemset/*",
         "https://leetcode.com/tag/*"
       ],
       "js": [
         "problemset-overlay.f4b9334b.js"
+      ],
+      "css": []
+    },
+    {
+      "matches": [
+        "https://leetcode.com/u/*"
+      ],
+      "js": [
+        "profile-overlay.2f269a27.js"
       ],
       "css": []
     },

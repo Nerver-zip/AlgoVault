@@ -1,6 +1,7 @@
 import { exchangeGithubCode, getGithubOAuthState } from "./backend";
 import { getGithubAutoSync } from "../storage";
 import { encodeGithubContentPath } from "../github-path";
+import { classifyGithubHttpFailure, githubNetworkFailure } from "../github-status";
 
 // Client IDs identify an OAuth app and are public by design. The client
 // secret is deliberately backend-only and must never be bundled here.
@@ -59,7 +60,8 @@ export interface GithubReposResult {
 
 /**
  * Fetches authenticated user's profile from GitHub API.
- * Detects 401/403 indicating a revoked or expired token.
+ * Only HTTP 401 proves that the saved credential was rejected. Other failures
+ * must not make the UI look disconnected.
  */
 export async function fetchUserGithubProfile(token: string): Promise<GithubProfileResult> {
   try {
@@ -69,18 +71,16 @@ export async function fetchUserGithubProfile(token: string): Promise<GithubProfi
         Accept: "application/vnd.github.v3+json"
       }
     });
-    if (res.status === 401) {
-      return { ok: false, revoked: true, error: "GitHub token was revoked or expired" };
-    }
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
-      return { ok: false, revoked: false, error: `GitHub error ${res.status}: ${errText}` };
+      const failure = classifyGithubHttpFailure(res.status, "profile", res.headers, errText);
+      return { ok: false, revoked: failure.revoked, error: failure.message };
     }
     const user = await res.json();
     return { ok: true, user };
   } catch (e: any) {
-    console.error("Failed to fetch GitHub profile:", e);
-    return { ok: false, error: e.message || "Network error fetching GitHub profile" };
+    console.warn("Failed to fetch GitHub profile:", e?.message || "network error");
+    return { ok: false, ...githubNetworkFailure("fetching the GitHub profile") };
   }
 }
 
@@ -95,12 +95,10 @@ export async function fetchUserGithubRepos(token: string): Promise<GithubReposRe
         Accept: "application/vnd.github.v3+json"
       }
     });
-    if (res.status === 401) {
-      return { ok: false, repos: [], revoked: true, error: "GitHub token was revoked or expired" };
-    }
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
-      return { ok: false, repos: [], revoked: false, error: `GitHub error ${res.status}: ${errText}` };
+      const failure = classifyGithubHttpFailure(res.status, "repositories", res.headers, errText);
+      return { ok: false, repos: [], revoked: failure.revoked, error: failure.message };
     }
     const repos = await res.json();
     if (!Array.isArray(repos)) return { ok: true, repos: [] };
@@ -114,8 +112,8 @@ export async function fetchUserGithubRepos(token: string): Promise<GithubReposRe
     }));
     return { ok: true, repos: mapped };
   } catch (e: any) {
-    console.error("Failed to fetch GitHub repositories:", e);
-    return { ok: false, repos: [], error: e.message || "Network error" };
+    console.warn("Failed to fetch GitHub repositories:", e?.message || "network error");
+    return { ok: false, repos: [], ...githubNetworkFailure("fetching GitHub repositories") };
   }
 }
 
@@ -166,18 +164,20 @@ export async function commitToGithub(
           "Cache-Control": "no-cache"
         }
       });
-      if (getRes.status === 401) {
-        return { ok: false, revoked: true, message: "GitHub token was revoked or expired. Please reconnect in Settings." };
-      }
       if (getRes.ok) {
         const getJson = await getRes.json();
         sha = getJson.sha;
         if (getJson.content) {
           existingContent = getJson.content.replace(/\n/g, "");
         }
+      } else if (getRes.status !== 404) {
+        const errText = await getRes.text().catch(() => "");
+        const failure = classifyGithubHttpFailure(getRes.status, "file", getRes.headers, errText);
+        return { ok: false, revoked: failure.revoked, message: failure.message };
       }
-    } catch (e) {
-      console.warn("Failed to check if file exists on GitHub", e);
+    } catch (e: any) {
+      const failure = githubNetworkFailure("checking the target file on GitHub");
+      return { ok: false, revoked: failure.revoked, message: failure.message };
     }
 
     // 2. Base64 encode file contents
@@ -233,20 +233,19 @@ export async function commitToGithub(
     }
 
     if (!putRes.ok) {
-      const errorMsg = await putRes.text();
-      const isRevoked = putRes.status === 401;
+      const errorMsg = await putRes.text().catch(() => "");
+      const failure = classifyGithubHttpFailure(putRes.status, "file", putRes.headers, errorMsg);
       return {
         ok: false,
-        revoked: isRevoked,
-        message: isRevoked
-          ? "GitHub token was revoked or expired. Please reconnect in Settings."
-          : `GitHub API error (${putRes.status}): ${errorMsg}`
+        revoked: failure.revoked,
+        message: failure.message
       };
     }
 
     return { ok: true };
   } catch (error: any) {
-    return { ok: false, message: error.message || "Failed to commit to GitHub" };
+    const failure = githubNetworkFailure("committing a file");
+    return { ok: false, revoked: failure.revoked, message: failure.message };
   }
 }
 
@@ -281,58 +280,61 @@ export async function getGithubTreePaths(
   repoPath: string,
   branch?: string
 ): Promise<GithubTreePathsResult> {
-  const cleanRepo = repoPath.trim()
-    .replace(/^https:\/\/github\.com\//, "")
-    .replace(/\.git$/, "")
-  const [owner, repo] = cleanRepo.split("/")
-  if (!owner || !repo) return { ok: false, message: "Invalid repository path. Format must be 'owner/repo'." }
+  try {
+    const cleanRepo = repoPath.trim()
+      .replace(/^https:\/\/github\.com\//, "")
+      .replace(/\.git$/, "")
+    const [owner, repo] = cleanRepo.split("/")
+    if (!owner || !repo) return { ok: false, message: "Invalid repository path. Format must be 'owner/repo'." }
 
-  const headers: Record<string, string> = {
-    Authorization: `token ${pat}`,
-    Accept: "application/vnd.github.v3+json",
-    "Cache-Control": "no-cache"
-  }
-  const targetBranch = branch || "main"
-  const refRes = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(targetBranch)}`,
-    { headers }
-  )
-  if (refRes.status === 409) return { ok: true, paths: [], truncated: false }
-  if (!refRes.ok) {
-    const revoked = refRes.status === 401
-    return {
-      ok: false,
-      revoked,
-      message: revoked
-        ? "GitHub token was revoked or expired. Please reconnect in Settings."
-        : `Unable to read GitHub branch '${targetBranch}' for reconciliation (${refRes.status}).`
+    const headers: Record<string, string> = {
+      Authorization: `token ${pat}`,
+      Accept: "application/vnd.github.v3+json",
+      "Cache-Control": "no-cache"
     }
-  }
-  const refData = await refRes.json()
-  const commitSha: string | undefined = refData.object?.sha
-  if (!commitSha) return { ok: false, message: `GitHub branch '${targetBranch}' did not return a commit SHA.` }
+    const targetBranch = branch || "main"
+    const refRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(targetBranch)}`,
+      { headers }
+    )
+    if (refRes.status === 409) return { ok: true, paths: [], truncated: false }
+    if (!refRes.ok) {
+      const body = await refRes.text().catch(() => "")
+      const failure = classifyGithubHttpFailure(refRes.status, "branch", refRes.headers, body)
+      return {
+        ok: false,
+        revoked: failure.revoked,
+        message: failure.message
+      }
+    }
+    const refData = await refRes.json()
+    const commitSha: string | undefined = refData.object?.sha
+    if (!commitSha) return { ok: false, message: `GitHub branch '${targetBranch}' did not return a commit SHA.` }
 
-  const treeRes = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/git/trees/${commitSha}?recursive=1`,
-    { headers }
-  )
-  if (!treeRes.ok) {
-    const revoked = treeRes.status === 401
-    return {
-      ok: false,
-      revoked,
-      message: revoked
-        ? "GitHub token was revoked or expired. Please reconnect in Settings."
-        : `Unable to read the GitHub repository tree (${treeRes.status}).`
+    const treeRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/trees/${commitSha}?recursive=1`,
+      { headers }
+    )
+    if (!treeRes.ok) {
+      const body = await treeRes.text().catch(() => "")
+      const failure = classifyGithubHttpFailure(treeRes.status, "tree", treeRes.headers, body)
+      return {
+        ok: false,
+        revoked: failure.revoked,
+        message: failure.message
+      }
     }
-  }
-  const treeData = await treeRes.json()
-  return {
-    ok: true,
-    truncated: Boolean(treeData.truncated),
-    paths: Array.isArray(treeData.tree)
-      ? treeData.tree.map((entry: any) => entry?.path).filter((path: unknown): path is string => typeof path === "string")
-      : []
+    const treeData = await treeRes.json()
+    return {
+      ok: true,
+      truncated: Boolean(treeData.truncated),
+      paths: Array.isArray(treeData.tree)
+        ? treeData.tree.map((entry: any) => entry?.path).filter((path: unknown): path is string => typeof path === "string")
+        : []
+    }
+  } catch (error: any) {
+    const failure = githubNetworkFailure("reading the GitHub repository tree")
+    return { ok: false, revoked: failure.revoked, message: failure.message }
   }
 }
 
@@ -356,13 +358,12 @@ async function initializeEmptyGithubRepository(
   );
 
   if (!initRes.ok) {
-    const revoked = initRes.status === 401;
+    const body = await initRes.text().catch(() => "");
+    const failure = classifyGithubHttpFailure(initRes.status, "repository", initRes.headers, body);
     return {
       ok: false,
-      revoked,
-      message: revoked
-        ? "GitHub token was revoked or expired. Please reconnect in Settings."
-        : `Unable to initialize the empty GitHub repository (${initRes.status}).`
+      revoked: failure.revoked,
+      message: failure.message
     };
   }
 
@@ -378,10 +379,13 @@ async function initializeEmptyGithubRepository(
   );
   if (targetRefRes.ok) return { ok: true };
   if (targetRefRes.status === 401) {
-    return { ok: false, revoked: true, message: "GitHub token was revoked or expired. Please reconnect in Settings." };
+    const failure = classifyGithubHttpFailure(targetRefRes.status, "branch", targetRefRes.headers);
+    return { ok: false, revoked: failure.revoked, message: failure.message };
   }
   if (targetRefRes.status !== 404) {
-    return { ok: false, message: `Unable to verify initialized GitHub branch '${targetBranch}' (${targetRefRes.status}).` };
+    const body = await targetRefRes.text().catch(() => "");
+    const failure = classifyGithubHttpFailure(targetRefRes.status, "branch", targetRefRes.headers, body);
+    return { ok: false, revoked: failure.revoked, message: failure.message };
   }
 
   const createRefRes = await fetch(
@@ -393,13 +397,12 @@ async function initializeEmptyGithubRepository(
     }
   );
   if (!createRefRes.ok) {
-    const revoked = createRefRes.status === 401;
+    const body = await createRefRes.text().catch(() => "");
+    const failure = classifyGithubHttpFailure(createRefRes.status, "branch", createRefRes.headers, body);
     return {
       ok: false,
-      revoked,
-      message: revoked
-        ? "GitHub token was revoked or expired. Please reconnect in Settings."
-        : `Unable to create GitHub branch '${targetBranch}' after initialization (${createRefRes.status}).`
+      revoked: failure.revoked,
+      message: failure.message
     };
   }
   return { ok: true };
@@ -453,7 +456,8 @@ export async function batchCommitToGithub(
     );
 
     if (refRes.status === 401) {
-      return { ok: false, revoked: true, message: "GitHub token was revoked or expired. Please reconnect in Settings." };
+      const failure = classifyGithubHttpFailure(refRes.status, "branch", refRes.headers);
+      return { ok: false, revoked: failure.revoked, message: failure.message };
     }
 
     if (refRes.status === 409) {
@@ -463,7 +467,11 @@ export async function batchCommitToGithub(
     }
 
     if (!refRes.ok) {
-      return fallbackOrFail(`Unable to read GitHub branch '${targetBranch}' (${refRes.status}).`);
+      const body = await refRes.text().catch(() => "");
+      const failure = classifyGithubHttpFailure(refRes.status, "branch", refRes.headers, body);
+      return failure.retryable
+        ? fallbackOrFail(failure.message)
+        : { ok: false, revoked: failure.revoked, message: failure.message };
     }
 
     const refData = await refRes.json();
@@ -478,7 +486,11 @@ export async function batchCommitToGithub(
       { headers }
     );
     if (!commitObjRes.ok) {
-      return fallbackOrFail(`Unable to read the latest GitHub commit (${commitObjRes.status}).`);
+      const body = await commitObjRes.text().catch(() => "");
+      const failure = classifyGithubHttpFailure(commitObjRes.status, "commit", commitObjRes.headers, body);
+      return failure.retryable
+        ? fallbackOrFail(failure.message)
+        : { ok: false, revoked: failure.revoked, message: failure.message };
     }
     const commitObjData = await commitObjRes.json();
     const baseTreeSha: string = commitObjData.tree?.sha;
@@ -512,8 +524,10 @@ export async function batchCommitToGithub(
 
     if (!treeRes.ok) {
       const retryableWithSmallerBatch = treeRes.status === 413 || treeRes.status === 422
+      const body = await treeRes.text().catch(() => "");
+      const failure = classifyGithubHttpFailure(treeRes.status, "tree", treeRes.headers, body);
       return fallbackOrFail(
-        `GitHub rejected the tree batch (${treeRes.status}).`,
+        failure.message,
         retryableWithSmallerBatch
       );
     }
@@ -540,7 +554,11 @@ export async function batchCommitToGithub(
     );
 
     if (!commitRes.ok) {
-      return fallbackOrFail(`Unable to create the GitHub commit (${commitRes.status}).`);
+      const body = await commitRes.text().catch(() => "");
+      const failure = classifyGithubHttpFailure(commitRes.status, "commit", commitRes.headers, body);
+      return failure.retryable
+        ? fallbackOrFail(failure.message)
+        : { ok: false, revoked: failure.revoked, message: failure.message };
     }
 
     const commitData = await commitRes.json();
@@ -558,7 +576,8 @@ export async function batchCommitToGithub(
 
     if (!updateRes.ok) {
       const errText = await updateRes.text().catch(() => "");
-      const isRevoked = updateRes.status === 401;
+      const failure = classifyGithubHttpFailure(updateRes.status, "branch", updateRes.headers, errText);
+      const isRevoked = failure.revoked;
       const refMoved = updateRes.status === 409 || (updateRes.status === 422 && /not a fast forward/i.test(errText));
       if (refMoved) {
         // Never force a branch ref. If another writer advanced the branch,
@@ -578,11 +597,13 @@ export async function batchCommitToGithub(
         );
         if (mergeRes.ok) return { ok: true };
         if (mergeRes.status === 401) {
-          return { ok: false, revoked: true, message: "GitHub token was revoked or expired. Please reconnect in Settings." };
+          const mergeFailure = classifyGithubHttpFailure(mergeRes.status, "merge", mergeRes.headers);
+          return { ok: false, revoked: mergeFailure.revoked, message: mergeFailure.message };
         }
         if (mergeRes.status !== 409 && mergeRes.status !== 422) {
           const mergeError = await mergeRes.text().catch(() => "");
-          return { ok: false, message: `GitHub could not safely merge the concurrent export (${mergeRes.status}): ${mergeError}` };
+          const mergeFailure = classifyGithubHttpFailure(mergeRes.status, "merge", mergeRes.headers, mergeError);
+          return { ok: false, revoked: mergeFailure.revoked, message: mergeFailure.message };
         }
       }
       const maxRefUpdateRetries = 6;
@@ -604,23 +625,23 @@ export async function batchCommitToGithub(
       return {
         ok: false,
         revoked: isRevoked,
-        message: isRevoked
-          ? "GitHub token was revoked or expired. Please reconnect in Settings."
-          : refMoved
+        message: refMoved
             ? `GitHub branch '${targetBranch}' could not be advanced after ${maxRefUpdateRetries} conflict retries.`
-          : `Failed to update branch ref (${updateRes.status}): ${errText}`
+            : failure.message
       };
     }
 
     return { ok: true };
   } catch (error: any) {
     if (options.allowSequentialFallback === false) {
-      return { ok: false, message: error.message || "Failed to commit GitHub tree batch" };
+      const failure = githubNetworkFailure("committing a GitHub batch");
+      return { ok: false, revoked: failure.revoked, message: failure.message };
     }
     try {
       return await sequentialFallback(pat, repoPath, writes, branch);
     } catch (fallbackErr: any) {
-      return { ok: false, message: fallbackErr.message || "Failed to commit to GitHub" };
+      const failure = githubNetworkFailure("committing a GitHub batch");
+      return { ok: false, revoked: failure.revoked, message: failure.message };
     }
   }
 }

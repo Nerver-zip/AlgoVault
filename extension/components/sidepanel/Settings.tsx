@@ -139,6 +139,10 @@ export const Settings = () => {
             setAuthError("GitHub token was revoked or expired. Please connect your account again.");
             return;
           }
+          if (!res.ok) {
+            setAuthError(res.error || "GitHub profile validation failed. The saved connection was not cleared.");
+            return;
+          }
           if (res.ok && res.user) {
             setGithubUser(res.user);
             persistGithubUser(res.user);
@@ -148,6 +152,11 @@ export const Settings = () => {
         fetchUserGithubRepos(token).then((res) => {
           if (res.revoked) {
             setAuthError("GitHub token was revoked or expired. Please connect your account again.");
+            setLoadingRepos(false);
+            return;
+          }
+          if (!res.ok) {
+            setAuthError(res.error || "GitHub repository validation failed. The saved connection was not cleared.");
             setLoadingRepos(false);
             return;
           }
@@ -408,29 +417,42 @@ export const Settings = () => {
       return;
     }
     setAuthError(null);
-    const auth = await authenticateGithubToken(manualToken);
-    await setJwtToken(auth.token);
-    await persistGithubPat(manualToken);
-    await persistGithubRepo(githubRepo.trim());
-    await persistGithubBranch(githubBranch.trim());
-    await persistGithubBasePath(normalizedBasePath.value);
-    setGithubBasePath(normalizedBasePath.value);
-    
-    if (manualToken) {
+    try {
+      const auth = await authenticateGithubToken(manualToken);
       const profileRes = await fetchUserGithubProfile(manualToken);
-      if (profileRes.ok && profileRes.user) {
-        setGithubUser(profileRes.user);
-        await persistGithubUser(profileRes.user);
-      } else if (profileRes.revoked) {
-        setAuthError("Personal Access Token is invalid, revoked, or expired.");
+      if (!profileRes.ok || !profileRes.user) {
+        if (profileRes.revoked) {
+          setAuthError("Personal Access Token is invalid, revoked, or expired.");
+        } else {
+          setAuthError(profileRes.error || "GitHub profile validation failed. The token was not saved.");
+        }
         return;
       }
+      await setJwtToken(auth.token);
+      await persistGithubPat(manualToken);
+      await persistGithubRepo(githubRepo.trim());
+      await persistGithubBranch(githubBranch.trim());
+      await persistGithubBasePath(normalizedBasePath.value);
+      setGithubBasePath(normalizedBasePath.value);
+      setGithubUser(profileRes.user);
+      await persistGithubUser(profileRes.user);
+
       const reposRes = await fetchUserGithubRepos(manualToken);
-      if (reposRes.ok) {
-        setGithubRepos(reposRes.repos);
+      if (!reposRes.ok) {
+        setAuthError(reposRes.error || "GitHub repository validation failed. The token was saved, but repository access needs attention.");
+        return;
       }
+      setGithubRepos(reposRes.repos);
+    } catch (error: any) {
+      setAuthError(error?.message || "GitHub credential verification failed. The token was not saved.");
+      return;
     }
 
+    /*
+      The token is persisted only after both the server session and direct
+      GitHub profile validation succeed. A transient backend error therefore
+      cannot turn a valid existing connection into a disconnected state.
+    */
     setGithubSaved(true);
     setTimeout(() => setGithubSaved(false), 2000);
   };
