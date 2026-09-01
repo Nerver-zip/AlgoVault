@@ -2,6 +2,7 @@ import { BACKEND_URL } from "../constants"
 import { getJwtToken, setJwtToken, clearJwtToken, getGithubPat } from "../storage"
 import type { ActiveSession, DashboardData, PredictionResult, RevisionQueueItem, SessionData, WeaknessSnapshot } from "../types"
 import { BackendAuthError, backendAuthMessage, type BackendAuthFailureKind } from "../backend-auth"
+import { normalizeGithubCredential } from "../github-status"
 
 export const getGithubOAuthState = async (): Promise<string> => {
   const res = await fetch(`${BACKEND_URL}/api/auth/github-state`)
@@ -25,6 +26,7 @@ export const exchangeGithubCode = async (code: string, state: string, codeVerifi
 }
 
 export const authenticateGithubToken = async (token: string) => {
+  token = normalizeGithubCredential(token)
   try {
     const res = await fetch(`${BACKEND_URL}/api/auth/github-token`, {
       method: "POST",
@@ -50,6 +52,7 @@ export const authenticateGithubToken = async (token: string) => {
 
 async function validateSavedGithubCredential(token: string): Promise<"valid" | "invalid" | "unknown"> {
   try {
+    token = normalizeGithubCredential(token)
     const res = await fetch("https://api.github.com/user", {
       headers: {
         Authorization: `token ${token}`,

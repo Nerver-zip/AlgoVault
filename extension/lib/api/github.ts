@@ -1,7 +1,7 @@
 import { exchangeGithubCode, getGithubOAuthState } from "./backend";
 import { getGithubAutoSync } from "../storage";
 import { encodeGithubContentPath } from "../github-path";
-import { classifyGithubHttpFailure, githubNetworkFailure } from "../github-status";
+import { classifyGithubHttpFailure, githubNetworkFailure, normalizeGithubCredential } from "../github-status";
 
 // Client IDs identify an OAuth app and are public by design. The client
 // secret is deliberately backend-only and must never be bundled here.
@@ -65,6 +65,7 @@ export interface GithubReposResult {
  */
 export async function fetchUserGithubProfile(token: string): Promise<GithubProfileResult> {
   try {
+    token = normalizeGithubCredential(token)
     const res = await fetch("https://api.github.com/user", {
       headers: {
         Authorization: `token ${token}`,
@@ -89,6 +90,7 @@ export async function fetchUserGithubProfile(token: string): Promise<GithubProfi
  */
 export async function fetchUserGithubRepos(token: string): Promise<GithubReposResult> {
   try {
+    token = normalizeGithubCredential(token)
     const res = await fetch("https://api.github.com/user/repos?per_page=100&sort=updated&type=all", {
       headers: {
         Authorization: `token ${token}`,
@@ -130,6 +132,7 @@ export async function commitToGithub(
   branch?: string
 ): Promise<{ ok: boolean; message?: string; alreadySynced?: boolean; revoked?: boolean }> {
   try {
+    pat = normalizeGithubCredential(pat)
     const isAutoSync = await getGithubAutoSync();
     if (!isAutoSync) {
       console.log("[AlgoVault] commitToGithub aborted: Auto-sync is disabled.");
@@ -281,6 +284,7 @@ export async function getGithubTreePaths(
   branch?: string
 ): Promise<GithubTreePathsResult> {
   try {
+    pat = normalizeGithubCredential(pat)
     const cleanRepo = repoPath.trim()
       .replace(/^https:\/\/github\.com\//, "")
       .replace(/\.git$/, "")
@@ -425,6 +429,8 @@ export async function batchCommitToGithub(
   options: BatchCommitOptions = {}
 ): Promise<BatchCommitResult> {
   if (!writes.length) return { ok: true }
+
+  pat = normalizeGithubCredential(pat)
 
   const cleanRepo = repoPath.trim()
     .replace(/^https:\/\/github\.com\//, "")

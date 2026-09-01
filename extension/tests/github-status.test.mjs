@@ -1,6 +1,11 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { classifyGithubHttpFailure, githubNetworkFailure } from "../lib/github-status.ts"
+import { classifyGithubHttpFailure, githubNetworkFailure, normalizeGithubCredential } from "../lib/github-status.ts"
+
+test("GitHub credentials are normalized before API validation", () => {
+  assert.equal(normalizeGithubCredential('  "gho_example"  '), "gho_example")
+  assert.equal(normalizeGithubCredential("ghp_example"), "ghp_example")
+})
 
 test("GitHub classifies invalid credentials separately from permissions and rate limits", () => {
   const invalid = classifyGithubHttpFailure(401, "profile")

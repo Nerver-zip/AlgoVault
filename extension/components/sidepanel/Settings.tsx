@@ -33,6 +33,7 @@ import {
 import { COMMUNITY_CONFIG } from "../../lib/community"
 import { DEFAULT_GITHUB_BASE_PATH, normalizeGithubBasePath } from "../../lib/github-path"
 import { normalizeSyncStatusForDisplay } from "../../lib/sync-status"
+import { normalizeGithubCredential } from "../../lib/github-status"
 
 interface SyncStatus {
   message?: string;
@@ -133,9 +134,10 @@ export const Settings = () => {
     // Load token and fetch repos/profile if present
     getGithubPat().then((token) => {
       if (token) {
-        setGithubPat(token);
+        const normalizedToken = normalizeGithubCredential(token)
+        setGithubPat(normalizedToken);
         // Refresh GitHub profile & repos, validate token validity
-        fetchUserGithubProfile(token).then((res) => {
+        fetchUserGithubProfile(normalizedToken).then((res) => {
           if (res.revoked) {
             setAuthError("GitHub token was revoked or expired. Please connect your account again.");
             return;
@@ -150,7 +152,7 @@ export const Settings = () => {
           }
         });
         setLoadingRepos(true);
-        fetchUserGithubRepos(token).then((res) => {
+        fetchUserGithubRepos(normalizedToken).then((res) => {
           if (res.revoked) {
             setAuthError("GitHub token was revoked or expired. Please connect your account again.");
             setLoadingRepos(false);
@@ -422,7 +424,8 @@ export const Settings = () => {
     setAuthError(null);
     try {
       const auth = await authenticateGithubToken(manualToken);
-      const profileRes = await fetchUserGithubProfile(manualToken);
+      const normalizedToken = normalizeGithubCredential(manualToken);
+      const profileRes = await fetchUserGithubProfile(normalizedToken);
       if (!profileRes.ok || !profileRes.user) {
         if (profileRes.revoked) {
           setAuthError("Personal Access Token is invalid, revoked, or expired.");
@@ -432,7 +435,7 @@ export const Settings = () => {
         return;
       }
       await setJwtToken(auth.token);
-      await persistGithubPat(manualToken);
+      await persistGithubPat(normalizedToken);
       await persistGithubRepo(githubRepo.trim());
       await persistGithubBranch(githubBranch.trim());
       await persistGithubBasePath(normalizedBasePath.value);
@@ -440,7 +443,7 @@ export const Settings = () => {
       setGithubUser(profileRes.user);
       await persistGithubUser(profileRes.user);
 
-      const reposRes = await fetchUserGithubRepos(manualToken);
+      const reposRes = await fetchUserGithubRepos(normalizedToken);
       if (!reposRes.ok) {
         setAuthError(reposRes.error || "GitHub repository validation failed. The token was saved, but repository access needs attention.");
         return;

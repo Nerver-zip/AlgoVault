@@ -16,6 +16,14 @@ export interface GithubFailure {
   retryable: boolean
   message: string
 }
+
+export function normalizeGithubCredential(value: string): string {
+  const trimmed = value.trim()
+  return trimmed.startsWith('"') && trimmed.endsWith('"')
+    ? trimmed.slice(1, -1).trim()
+    : trimmed
+}
+
 function headerValue(headers: Headers | Record<string, string> | undefined, name: string): string {
   if (!headers) return ""
   if (typeof (headers as Headers).get === "function") return (headers as Headers).get(name) || ""
