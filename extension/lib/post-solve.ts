@@ -7,6 +7,8 @@ export interface PostSolveReport {
   helpType: PostSolveHelpType
   selectedAt: number
   submissionId?: string
+  githubSyncedAt?: number
+  backendSyncedAt?: number
 }
 
 export function normalizePostSolveHelpType(value: unknown): PostSolveHelpType | null {

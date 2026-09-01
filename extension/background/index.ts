@@ -35,6 +35,8 @@ function safeBroadcast(message: any) {
 let isSyncing = false;
 let syncAbortController: AbortController | null = null;
 let githubWriteQueue: Promise<void> = Promise.resolve()
+const postSolveGithubInFlight = new Set<string>()
+const postSolveBackendInFlight = new Set<string>()
 
 const ACTIVE_SESSION_KEY = "algovault.session.active"
 const LOGS_INDEX_KEY = "algovault.logs.index"
@@ -602,12 +604,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // the user selects Hint/Solo before the initial GitHub artifact exists.
     storage.set(postSolveReportStorageKey(titleSlug), report)
       .then(() => {
-        void updateGithubHelpReport(report).catch((err) => {
-          console.warn("GitHub help report update failed", err?.message || "unknown error")
-        })
-        void sendSelfReport({ titleSlug: report.titleSlug, helpType: report.helpType }).catch((err) => {
-          console.warn("Backend self report failed", err?.message || "unknown error")
-        })
+        queueGithubHelpReport(report)
+        queueBackendPostSolveReport(report)
         sendResponse({ ok: true, persisted: true })
       })
       .catch((err) => sendResponse({ ok: false, error: err?.message || "Could not save post-solve report." }))
@@ -809,10 +807,10 @@ async function getPostSolveReport(titleSlug: string, submissionId?: string): Pro
   return helpType ? { ...report, helpType } : null
 }
 
-async function syncAcceptedSubmissionToGithub(payload: any, helpType: PostSolveHelpType | "PENDING_SELF_REPORT" = "PENDING_SELF_REPORT", sessionData?: any) {
-  if (!payload?.titleSlug) return
+async function syncAcceptedSubmissionToGithub(payload: any, helpType: PostSolveHelpType | "PENDING_SELF_REPORT" = "PENDING_SELF_REPORT", sessionData?: any): Promise<boolean> {
+  if (!payload?.titleSlug) return false
   const isAutoSyncEnabled = await getGithubAutoSync()
-  if (!isAutoSyncEnabled) return
+  if (!isAutoSyncEnabled) return false
 
   const savedReport = await getPostSolveReport(payload.titleSlug, payload.submissionId)
   const effectiveHelpType = savedReport?.helpType || helpType
@@ -828,7 +826,7 @@ async function syncAcceptedSubmissionToGithub(payload: any, helpType: PostSolveH
       timestamp: Date.now(),
       problem: payload.title || payload.titleSlug
     })
-    return
+    return false
   }
 
   pat = stripWrappingQuotes(pat)
@@ -871,7 +869,7 @@ async function syncAcceptedSubmissionToGithub(payload: any, helpType: PostSolveH
       problem: payload.title || payload.titleSlug,
       path: artifact.folder
     })
-    return
+    return false
   }
 
   await storage.set("algovault.gitSyncStatus", {
@@ -881,6 +879,7 @@ async function syncAcceptedSubmissionToGithub(payload: any, helpType: PostSolveH
     problem: payload.title || payload.titleSlug,
     path: artifact.folder
   })
+  return true
 }
 
 async function updateGithubHelpReport(report: any) {
@@ -897,9 +896,50 @@ async function updateGithubHelpReport(report: any) {
     artifact = await storage.get<any>(`algovault.gitSolve.${report.titleSlug}`)
   }
   if (!artifact?.payload) return
-  await syncAcceptedSubmissionToGithub(artifact.payload, helpType, {
+  const synced = await syncAcceptedSubmissionToGithub(artifact.payload, helpType, {
     focusSeconds: artifact.metadata?.focusSeconds
   })
+  if (synced) await markPostSolveReportSynced(report, "githubSyncedAt")
+}
+
+async function markPostSolveReportSynced(report: PostSolveReport, field: "githubSyncedAt" | "backendSyncedAt") {
+  const key = postSolveReportStorageKey(report.titleSlug)
+  const current = await storage.get<PostSolveReport>(key)
+  if (!current || current.selectedAt !== report.selectedAt || !matchesPostSolveSubmission(current, report.submissionId)) return
+  await storage.set(key, { ...current, [field]: Date.now() })
+}
+
+function queueGithubHelpReport(report: PostSolveReport) {
+  const key = postSolveReportStorageKey(report.titleSlug)
+  if (postSolveGithubInFlight.has(key)) return
+  postSolveGithubInFlight.add(key)
+  void updateGithubHelpReport(report)
+    .catch((err) => console.warn("GitHub help report update failed", err?.message || "unknown error"))
+    .finally(() => postSolveGithubInFlight.delete(key))
+}
+
+function queueBackendPostSolveReport(report: PostSolveReport) {
+  const key = postSolveReportStorageKey(report.titleSlug)
+  if (postSolveBackendInFlight.has(key)) return
+  postSolveBackendInFlight.add(key)
+  void (async () => {
+    if (report.backendSyncedAt) return
+    await sendSelfReport({ titleSlug: report.titleSlug, helpType: report.helpType })
+    await markPostSolveReportSynced(report, "backendSyncedAt")
+  })()
+    .catch((err) => console.warn("Backend self report failed", err?.message || "unknown error"))
+    .finally(() => postSolveBackendInFlight.delete(key))
+}
+
+async function replayPendingPostSolveReports() {
+  const allData = await chrome.storage.local.get(null)
+  for (const [key, value] of Object.entries(allData)) {
+    if (!key.startsWith("algovault.postSolveReport.") || !value || typeof value !== "object") continue
+    const report = value as PostSolveReport
+    if (!report.titleSlug || !normalizePostSolveHelpType(report.helpType)) continue
+    if (!report.githubSyncedAt) queueGithubHelpReport(report)
+    if (!report.backendSyncedAt) queueBackendPostSolveReport(report)
+  }
 }
 
 function githubWritesForArtifact(artifact: any) {
@@ -1652,3 +1692,10 @@ async function getSingleProblemRating(slug: string) {
   }
   return zerotracInMemoryMap ? zerotracInMemoryMap.get(slug.toLowerCase()) || null : null
 }
+
+// Reports are durable local queue entries. Replaying them when the service
+// worker is started closes the gap between a successful click and a worker
+// restart while GitHub/backend work is still in flight.
+void replayPendingPostSolveReports().catch((err) => {
+  console.warn("Pending post-solve report replay failed", err?.message || "unknown error")
+})
