@@ -65,10 +65,6 @@ export async function setUsername(username: string): Promise<void> {
     if (logBucketKeys.length > 0) {
       await chrome.storage.local.remove(logBucketKeys)
     }
-    const postSolveReportKeys = Object.keys(allData).filter(k => k.startsWith("algovault.postSolveReport."))
-    if (postSolveReportKeys.length > 0) {
-      await chrome.storage.local.remove(postSolveReportKeys)
-    }
   }
   await setTyped(STORAGE_KEYS.USERNAME, username)
 }

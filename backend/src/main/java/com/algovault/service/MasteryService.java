@@ -168,12 +168,8 @@ public class MasteryService {
      * recommends 10-15 games per period). Gap months between activity trigger
      * empty rating periods to naturally increase RD (uncertainty).
      *
-     * Score gradients (fairer than before):
-     *   1st-attempt AC, no help:        1.0  (full win)
-     *   Multi-attempt AC, no help:      0.65 (good, but cost retries)
-     *   Solved with hint:               0.5  (partial credit)
-     *   Solved with editorial/external: 0.25 (learned, but not independent)
-     *   Not solved:                     0.0  (loss)
+     * Score gradients account for first-attempt success and retries while
+     * leaving subjective post-solve self-reports out of the rating.
      */
     private TagRatingResult computeTagRating(
             User user,
@@ -210,16 +206,10 @@ public class MasteryService {
                     lastSolvedAt = accepted.getSubmittedAt();
                 }
 
-                // Fairer score gradients
+                // Account for first-attempt success and retries.
                 score = "Accepted".equals(first.getVerdict()) ? 1.0 : 0.65;
                 ProblemOpenEvent event = latestEventMap.get(first.getProblem().getId());
                 if (event != null) {
-                    String help = event.getSelfReportedHelp();
-                    if ("EDITORIAL".equals(help) || "EXTERNAL".equals(help)) {
-                        score = 0.25; // Was 0.0 — too harsh, user still solved it
-                    } else if ("HINT".equals(help)) {
-                        score = Math.min(score, 0.5);
-                    }
                     if (event.getFocusSeconds() != null && event.getFocusSeconds() > 0) {
                         totalSolveMinutes += event.getFocusSeconds() / 60.0;
                         timedSolves++;
@@ -369,4 +359,3 @@ public class MasteryService {
         }
     }
 }
-

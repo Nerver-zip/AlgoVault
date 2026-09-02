@@ -354,7 +354,7 @@ export const Mastery = () => {
                     <CheckCircle2 size={11} /> 1st Try AC Precision
                   </span>
                   <p className="text-zinc-400 leading-relaxed text-[9px]">
-                    Percentage of problems solved on your first attempt without TLE, WA, or editorial help.
+                    Percentage of problems solved on your first attempt without TLE or WA.
                   </p>
                 </div>
               </div>

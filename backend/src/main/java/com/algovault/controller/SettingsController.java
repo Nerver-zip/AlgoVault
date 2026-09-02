@@ -40,12 +40,11 @@ public class SettingsController {
             String key = entry.getKey();
             Object value = entry.getValue();
             if ("hideAcceptanceRate".equals(key) || "darkMode".equals(key) || 
-                "dailyPotdEnabled".equals(key) || "reviewNotifications".equals(key) ||
-                "celebrationOverlay".equals(key) || "celebrationSound".equals(key)) {
+                "dailyPotdEnabled".equals(key) || "reviewNotifications".equals(key)) {
                 if (value != null && !(value instanceof Boolean)) {
                     return ResponseEntity.badRequest().build();
                 }
-            } else if ("celebrationTheme".equals(key) || "sessionMode".equals(key)) {
+            } else if ("sessionMode".equals(key)) {
                 if (value != null && (!(value instanceof String) || ((String) value).length() > 50)) {
                     return ResponseEntity.badRequest().build();
                 }

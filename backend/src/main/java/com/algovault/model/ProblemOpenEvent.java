@@ -36,8 +36,6 @@ public class ProblemOpenEvent {
     private Integer pasteCount;
     @Column(name = "focus_score")
     private Integer focusScore;
-    @Column(name = "self_reported_help")
-    private String selfReportedHelp;
     private Boolean solved;
     @Column(name = "attempts_during_session")
     private Integer attemptsDuringSession;

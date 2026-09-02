@@ -218,13 +218,6 @@ export const sendSubmissionResult = async (payload: Record<string, unknown>): Pr
   })
 }
 
-export const sendSelfReport = async (payload: Record<string, any>) => {
-  return backendFetch("/api/sessions/self-report", {
-    method: "POST",
-    body: JSON.stringify(payload)
-  })
-}
-
 export const fetchEntrantHubHistoryBackend = async (username: string, region: string): Promise<any> => {
   return backendFetch(`/api/entranthub/history?username=${encodeURIComponent(username)}&region=${encodeURIComponent(region)}`)
 }

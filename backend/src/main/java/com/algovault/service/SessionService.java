@@ -274,26 +274,6 @@ public class SessionService {
         return session == null ? null : toResponse(session);
     }
 
-    @Transactional
-    @Caching(evict = {
-        @CacheEvict(value = "dashboard", key = "#user.id"),
-        @CacheEvict(value = "heatmap", key = "#user.id"),
-        @CacheEvict(value = "mastery", key = "#user.id"),
-        @CacheEvict(value = "potd", key = "#user.id"),
-        @CacheEvict(value = "contests", key = "#user.id"),
-        @CacheEvict(value = "weakness", key = "#user.id"),
-        @CacheEvict(value = "predictions", key = "#user.id + '-' + #request.titleSlug")
-    })
-    public void recordSelfReport(User user, SessionRequests.SelfReportRequest request) {
-        if (request.getTitleSlug() == null) return;
-        Problem problem = problemRepository.findByTitleSlug(request.getTitleSlug()).orElse(null);
-        if (problem == null) return;
-        ProblemOpenEvent event = openEvent(user, problem, null);
-        event.setSelfReportedHelp(Optional.ofNullable(request.getHelpType()).orElse("NONE"));
-        problemOpenEventRepository.save(event);
-        analyticsService.updateIncremental(user.getId(), event);
-    }
-
     @Transactional(readOnly = true)
     public SessionResponse getCurrent(User user) {
         return sessionRepository.findFirstByUserIdAndEndedAtIsNullOrderByStartedAtDesc(user.getId())
@@ -335,7 +315,6 @@ public class SessionService {
                 .focusScore(100)
                 .solved(false)
                 .attemptsDuringSession(0)
-                .selfReportedHelp("NONE")
                 .build()));
     }
 

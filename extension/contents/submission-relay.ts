@@ -1,6 +1,5 @@
 import type { PlasmoCSConfig } from "plasmo"
 import { getLeetCodeProblemSlug } from "../lib/leetcode-url"
-import { normalizePostSolveHelpType } from "../lib/post-solve"
 
 export const config: PlasmoCSConfig = {
   matches: ["https://leetcode.com/problems/*", "https://leetcode.com/contest/*/problems/*"],
@@ -86,106 +85,6 @@ function verdictFromCode(statusCode?: any, fallback?: string) {
   }
 }
 
-function showPostSolveDialog(titleSlug: string, submissionId?: string) {
-  if (document.getElementById("algovault-post-solve")) return
-
-  const wrapper = document.createElement("div")
-  wrapper.id = "algovault-post-solve"
-  wrapper.style.cssText = [
-    "position:fixed",
-    "right:24px",
-    "bottom:92px",
-    "z-index:2147483647",
-    "pointer-events:auto",
-    "background:#111827",
-    "color:#f9fafb",
-    "border:1px solid rgba(255, 255, 255, 0.12)",
-    "box-shadow:0 20px 40px rgba(0, 0, 0, 0.6), inset 0 1px 1px rgba(255,255,255,0.1)",
-    "border-radius:14px",
-    "padding:16px",
-    "font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif",
-    "width:270px",
-    "transition:all 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
-    "opacity:0",
-    "transform:scale(0.95) translateZ(0)",
-    "will-change:opacity, transform"
-  ].join(";")
-
-  wrapper.innerHTML = `
-    <div style="font-weight:700;font-size:14px;margin-bottom:12px;color:#f3f4f6;display:flex;align-items:center;gap:6px;">
-      <span style="font-size:16px;">🏆</span> Problem Solved! How clean was it?
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-      <button data-help="NONE" style="border:1px solid rgba(255,255,255,0.06);border-radius:8px;background:rgba(31, 41, 55, 0.75);color:#e5e7eb;padding:10px 8px;font-weight:600;font-size:12px;cursor:pointer;transition:all 0.2s;outline:none;">Solo</button>
-      <button data-help="HINT" style="border:1px solid rgba(255,255,255,0.06);border-radius:8px;background:rgba(31, 41, 55, 0.75);color:#e5e7eb;padding:10px 8px;font-weight:600;font-size:12px;cursor:pointer;transition:all 0.2s;outline:none;">Hint</button>
-      <button data-help="EDITORIAL" style="border:1px solid rgba(255,255,255,0.06);border-radius:8px;background:rgba(31, 41, 55, 0.75);color:#e5e7eb;padding:10px 8px;font-weight:600;font-size:12px;cursor:pointer;transition:all 0.2s;outline:none;">Editorial</button>
-      <button data-help="EXTERNAL" style="border:1px solid rgba(255,255,255,0.06);border-radius:8px;background:rgba(31, 41, 55, 0.75);color:#e5e7eb;padding:10px 8px;font-weight:600;font-size:12px;cursor:pointer;transition:all 0.2s;outline:none;">External</button>
-    </div>
-  `
-
-  const buttonColors: Record<string, string> = {
-    NONE: "#10b981",       // emerald green
-    HINT: "#f59e0b",       // amber orange
-    EDITORIAL: "#3b82f6",  // cobalt blue
-    EXTERNAL: "#8b5cf6"    // royal purple
-  }
-
-  wrapper.querySelectorAll("button").forEach((button) => {
-    const el = button as HTMLButtonElement
-    const helpType = el.dataset.help || "NONE"
-    const accentColor = buttonColors[helpType] || "#3b82f6"
-
-    el.addEventListener("mouseenter", () => {
-      el.style.background = accentColor
-      el.style.borderColor = accentColor
-      el.style.color = "#ffffff"
-      el.style.transform = "translateY(-1px)"
-      el.style.boxShadow = `0 6px 14px ${accentColor}4d`
-    })
-
-    el.addEventListener("mouseleave", () => {
-      el.style.background = "rgba(31, 41, 55, 0.75)"
-      el.style.borderColor = "rgba(255,255,255,0.06)"
-      el.style.color = "#e5e7eb"
-      el.style.transform = "translateY(0)"
-      el.style.boxShadow = "none"
-    })
-
-    let reportSubmitted = false
-    el.addEventListener("click", (e) => {
-      e.stopPropagation()
-      if (reportSubmitted) return
-      const normalizedHelpType = normalizePostSolveHelpType(helpType)
-      if (!normalizedHelpType) return
-      reportSubmitted = true
-      wrapper.querySelectorAll("button").forEach((candidate) => {
-        (candidate as HTMLButtonElement).disabled = true
-        candidate.setAttribute("aria-disabled", "true")
-      })
-      el.textContent = "Saving..."
-      chrome.runtime.sendMessage({
-        action: "post_solve_report",
-        payload: { titleSlug, helpType: normalizedHelpType, submissionId }
-      }, () => {
-        // Reading lastError prevents Chrome from reporting an unhandled
-        // rejected message when the service worker is restarting.
-        void chrome.runtime.lastError
-        wrapper.style.opacity = "0"
-        wrapper.style.transform = "scale(0.95)"
-        setTimeout(() => wrapper.remove(), 300)
-      })
-    })
-  })
-
-  document.body.appendChild(wrapper)
-
-  // Trigger entry animation
-  requestAnimationFrame(() => {
-    wrapper.style.opacity = "1"
-    wrapper.style.transform = "scale(1)"
-  })
-}
-
 // Listen for postMessage from MAIN world (CustomEvents do NOT cross MAIN→ISOLATED boundary)
 window.addEventListener("message", ((event: MessageEvent) => {
   if (event.origin !== window.location.origin || event.source !== window) return
@@ -259,9 +158,8 @@ window.addEventListener("message", ((event: MessageEvent) => {
   const isAccepted = statusCode === 10 || payload.statusDisplay === "Accepted"
 
   if (isAccepted) {
-    // Yield to the browser before doing any more work.
-    // This prevents "Page Unresponsive" by letting LeetCode's own AC
-    // rendering complete first before we layer on our UI.
+    // Yield to the browser before finishing the session and updating the
+    // solved cache, so LeetCode can complete its own AC rendering first.
     setTimeout(() => {
       chrome.runtime.sendMessage({ action: "session_finish_v2", language: payload.language })
       const confirmedNonce = expectedNonce || (window as any).__ALGOVAULT_ISOLATED_NONCE__
@@ -272,7 +170,6 @@ window.addEventListener("message", ((event: MessageEvent) => {
         slugs.add(slug)
         chrome.storage.local.set({ "algovault.solvedSlugs": { ...cached, fetchedAt: Date.now(), slugs: Array.from(slugs) } })
       })
-      showPostSolveDialog(slug, payload.submissionId)
     }, 150)
   }
 }))

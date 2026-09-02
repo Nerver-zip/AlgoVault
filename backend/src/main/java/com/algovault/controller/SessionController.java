@@ -50,13 +50,6 @@ public class SessionController {
         return ResponseEntity.ok(sessionService.recordSubmission(user, request));
     }
 
-    @PostMapping("/self-report")
-    public ResponseEntity<Void> selfReport(HttpServletRequest servletRequest, @RequestBody @jakarta.validation.Valid SessionRequests.SelfReportRequest request) {
-        User user = userContextService.resolveUser(servletRequest);
-        sessionService.recordSelfReport(user, request);
-        return ResponseEntity.ok().build();
-    }
-
     @GetMapping("/current")
     public ResponseEntity<SessionResponse> current(HttpServletRequest servletRequest) {
         User user = userContextService.resolveUser(servletRequest);

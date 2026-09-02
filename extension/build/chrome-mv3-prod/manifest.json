@@ -127,16 +127,6 @@
         "profile-overlay.2f269a27.js"
       ],
       "css": []
-    },
-    {
-      "matches": [
-        "https://leetcode.com/problems/*",
-        "https://leetcode.com/contest/*/problems/*"
-      ],
-      "js": [
-        "solve-celebration.e2d6314d.js"
-      ],
-      "css": []
     }
   ],
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlD5R+fHIX281LUAUIDA82m5GQp63wYC2nXksTDu/zcNPQKa3/JM7Vk11BIrj9/A1yq82Gh+AlrR5Cehax5yUiT7ZiH9BuEBvoHltDbiiqOH271czTz+nNLe39CEDNkxlEUtkc/2dZCRkNJqihZQIqfeclPEq8RNBmA2darv0RZFbecNMfYCc6p9eu9sWKP+uVtBpTbsL50kzHUxl03r4gJyeHmJeb1O6HKZJY3vIT556BL3ZNbAPqgszN1cdjZRsStDFSMp2ceTC1+Yqvh97lh+WUjw9IrKIrFeE3d3Jwjow8sZrxA3GFpm3IWnvPk4JU1aDuGz0CVLBqPOjZ27vfQIDAQAB",

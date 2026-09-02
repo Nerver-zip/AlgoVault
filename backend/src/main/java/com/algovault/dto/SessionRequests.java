@@ -102,13 +102,4 @@ public class SessionRequests {
         private String heartbeatEpoch;
     }
 
-    @Data
-    public static class SelfReportRequest {
-        @NotBlank
-        @Size(max = 200)
-        private String titleSlug;
-        @NotBlank
-        @Size(max = 50)
-        private String helpType;
-    }
 }

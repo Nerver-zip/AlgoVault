@@ -101,8 +101,6 @@ clear the saved connection. If an older generic "connect GitHub" error is alread
 stored in the sync card, the UI rewrites it to an actionable retry message when a
 GitHub credential is still saved.
 
-After an accepted submission, choose **Solo**, **Hint**, **Editorial**, or
-**External** once. The choice is persisted locally before network sync, so a
-service-worker restart or a temporary GitHub/backend failure does not lose the
-method. The exported `metadata.json` for the matching submission records the
-selected method after the queued update completes.
+Accepted submissions are recorded and exported automatically; there is no
+post-solve method-selection step. AlgoVault also no longer displays celebration
+cards, plays submission sounds, or stores GTA/Minecraft celebration settings.

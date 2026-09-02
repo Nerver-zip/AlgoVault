@@ -18,7 +18,7 @@ const hideForbiddenTabs = () => {
   const tablistChildren = document.querySelectorAll('[role="tablist"] > *, [role="tablist"] [role="tab"], [role="tablist"] a, [role="tablist"] button');
   tablistChildren.forEach((child) => {
     // Never touch our own injected buttons or dialogs
-    if (child.id?.includes("av-") || child.closest("#algovault-post-solve, plasmo-csui")) return;
+    if (child.id?.includes("av-") || child.closest("plasmo-csui")) return;
     const text = child.textContent?.trim() || "";
     if (text.includes("Editorial") || text.includes("Solutions") || text.includes("Discussion") || text.includes("Discuss")) {
       (child as HTMLElement).style.setProperty("display", "none", "important");
@@ -847,7 +847,7 @@ const observer = new MutationObserver((mutations) => {
     const target = m.target as HTMLElement | null;
     if (!target) return true;
     return target.closest?.(
-      '.monaco-editor, .view-lines, .CodeMirror, plasmo-csui, #algovault-post-solve, #av-company-modal, #av-start-zenith-btn'
+      '.monaco-editor, .view-lines, .CodeMirror, plasmo-csui, #av-company-modal, #av-start-zenith-btn'
     ) !== null;
   });
   if (isInternal) return;
