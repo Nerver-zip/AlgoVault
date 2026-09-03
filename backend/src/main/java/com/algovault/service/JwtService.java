@@ -24,7 +24,7 @@ public class JwtService {
     @Value("${jwt.secret}")
     private String secret;
 
-    @Value("${jwt.expiration}") // one hour by default; bounded below
+    @Value("${jwt.expiration}") // deployment-configured; bounded below
     private long expiration;
 
     @Value("${jwt.issuer}")

@@ -30,7 +30,8 @@
     "sidePanel",
     "cookies",
     "unlimitedStorage",
-    "identity"
+    "identity",
+    "alarms"
   ],
   "content_scripts": [
     {
@@ -101,16 +102,6 @@
     },
     {
       "matches": [
-        "https://leetcode.com/problems/*",
-        "https://leetcode.com/contest/*/problems/*"
-      ],
-      "js": [
-        "floating-button.124de113.js"
-      ],
-      "css": []
-    },
-    {
-      "matches": [
         "https://leetcode.com/problemset/*",
         "https://leetcode.com/tag/*"
       ],
@@ -125,6 +116,16 @@
       ],
       "js": [
         "profile-overlay.2f269a27.js"
+      ],
+      "css": []
+    },
+    {
+      "matches": [
+        "https://leetcode.com/problems/*",
+        "https://leetcode.com/contest/*/problems/*"
+      ],
+      "js": [
+        "floating-button.124de113.js"
       ],
       "css": []
     }
@@ -150,19 +151,10 @@
     },
     {
       "matches": [
-        "https://leetcode.com/*",
         "https://leetcode.com/*"
       ],
       "resources": [
-        "floating-button.95bad065.css"
-      ]
-    },
-    {
-      "matches": [
-        "https://leetcode.com/*"
-      ],
-      "resources": [
-        "floating-button.95bad065.css"
+        "profile-overlay.95bad065.css"
       ]
     },
     {
@@ -171,7 +163,7 @@
         "https://leetcode.com/*"
       ],
       "resources": [
-        "floating-button.95bad065.css"
+        "profile-overlay.95bad065.css"
       ]
     }
   ]

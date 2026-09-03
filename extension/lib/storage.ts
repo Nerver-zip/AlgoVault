@@ -2,6 +2,7 @@ import { Storage } from "@plasmohq/storage"
 
 import { STORAGE_KEYS } from "./constants"
 import { DEFAULT_GITHUB_BASE_PATH, requireGithubBasePath } from "./github-path"
+import { GITHUB_AUTH_KEYS_TO_CLEAR } from "./github-storage-policy"
 import type {
   ContestResult,
   DashboardData,
@@ -364,12 +365,10 @@ export async function setGithubAutoSync(enabled: boolean): Promise<void> {
 }
 
 export async function clearGithubAuth(): Promise<void> {
-  await storage.remove(STORAGE_KEYS.GITHUB_PAT)
-  await storage.remove(STORAGE_KEYS.GITHUB_USER)
-  await storage.remove(STORAGE_KEYS.GITHUB_REPO)
-  await storage.remove(STORAGE_KEYS.GITHUB_BRANCH)
-  await storage.remove(STORAGE_KEYS.GITHUB_BASE_PATH)
-  await storage.remove("algovault.gitSyncStatus")
+  // The destination is configuration, not authentication. Keep it intact so
+  // reconnecting GitHub can never silently fall back to another repository or
+  // path selected by the account's first repository.
+  await Promise.all(GITHUB_AUTH_KEYS_TO_CLEAR.map((key) => storage.remove(key)))
 }
 
 // ─── Export the raw storage instance ──────────────────────────────

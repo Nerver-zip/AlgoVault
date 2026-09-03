@@ -150,3 +150,38 @@ test("Storage Persistence: GitHub repo and configuration keys persist across Lee
   assert.equal(dropdownOptions[0].full_name, "nerver/my-leetcode-solutions");
   assert.equal(dropdownOptions[0].custom, true);
 });
+
+test("GitHub disconnect clears credentials but preserves the configured destination", async () => {
+  storageStore.clear();
+  await chrome.storage.local.set({
+    "algovault.github.pat": "ghp_valid_token_123",
+    "algovault.github.user": { login: "nerver" },
+    "algovault.github.repo": "nerver/my-leetcode-solutions",
+    "algovault.github.branch": "main",
+    "algovault.github.basePath": "leetcode-solutions",
+    "algovault.gitSyncStatus": { success: false }
+  });
+
+  const { GITHUB_AUTH_KEYS_TO_CLEAR, GITHUB_DESTINATION_KEYS_TO_PRESERVE } =
+    await import("../lib/github-storage-policy.ts");
+
+  for (const key of GITHUB_AUTH_KEYS_TO_CLEAR) await chrome.storage.local.remove(key);
+  const stored = await chrome.storage.local.get(null);
+
+  assert.deepEqual(GITHUB_AUTH_KEYS_TO_CLEAR, [
+    "algovault.github.pat",
+    "algovault.github.user",
+    "algovault.gitSyncStatus"
+  ]);
+  assert.deepEqual(GITHUB_DESTINATION_KEYS_TO_PRESERVE, [
+    "algovault.github.repo",
+    "algovault.github.branch",
+    "algovault.github.basePath"
+  ]);
+  assert.equal(stored["algovault.github.pat"], undefined);
+  assert.equal(stored["algovault.github.user"], undefined);
+  assert.equal(stored["algovault.gitSyncStatus"], undefined);
+  assert.equal(stored["algovault.github.repo"], "nerver/my-leetcode-solutions");
+  assert.equal(stored["algovault.github.branch"], "main");
+  assert.equal(stored["algovault.github.basePath"], "leetcode-solutions");
+});

@@ -399,6 +399,11 @@ mvnw.cmd spring-boot:run
 ```
 *Flyway migrations automatically execute schema scripts (`V1` to `V18`). The analytical engine is live at `http://localhost:8080`.*
 
+The extension renews its short-lived AlgoVault JWT automatically from the saved
+GitHub credential before expiry. Keep `JWT_SECRET` stable across backend
+recreates; changing it invalidates existing sessions. A revoked GitHub token
+still requires a new GitHub authorization.
+
 ---
 
 ### Step 3: Build the Manifest V3 Chrome Extension
@@ -465,5 +470,4 @@ npm run build
 <div align="center">
   <b>Built for competitive coders striving for Knight, Guardian, & Grandmaster ranks. ⚔️</b>
 </div>
-
 

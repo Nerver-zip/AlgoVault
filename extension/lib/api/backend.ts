@@ -3,6 +3,12 @@ import { getJwtToken, setJwtToken, clearJwtToken, getGithubPat } from "../storag
 import type { ActiveSession, DashboardData, PredictionResult, RevisionQueueItem, SessionData, WeaknessSnapshot } from "../types"
 import { BackendAuthError, backendAuthMessage, type BackendAuthFailureKind } from "../backend-auth"
 import { normalizeGithubCredential } from "../github-status"
+import { isJwtExpired, shouldRefreshJwt } from "../jwt"
+
+const JWT_REFRESH_SKEW_MS = 10 * 60 * 1000
+
+type SilentRefreshResult = { token: string | null; failure?: BackendAuthFailureKind }
+let refreshInFlight: Promise<SilentRefreshResult> | null = null
 
 export const getGithubOAuthState = async (): Promise<string> => {
   const res = await fetch(`${BACKEND_URL}/api/auth/github-state`)
@@ -67,7 +73,15 @@ async function validateSavedGithubCredential(token: string): Promise<"valid" | "
   }
 }
 
-async function trySilentRefresh(): Promise<{ token: string | null; failure?: BackendAuthFailureKind }> {
+async function trySilentRefresh(force = false): Promise<SilentRefreshResult> {
+  const currentJwt = await getJwtToken()
+  if (!force && currentJwt && !shouldRefreshJwt(currentJwt, Date.now(), JWT_REFRESH_SKEW_MS)) {
+    return { token: currentJwt }
+  }
+
+  if (refreshInFlight) return refreshInFlight
+
+  refreshInFlight = (async () => {
   const pat = await getGithubPat()
   if (!pat) return { token: null, failure: "GITHUB_NOT_CONNECTED" }
   try {
@@ -89,16 +103,35 @@ async function trySilentRefresh(): Promise<{ token: string | null; failure?: Bac
     if (error instanceof BackendAuthError) return { token: null, failure: error.kind }
   }
   return { token: null, failure: "CLOUD_SESSION_UNAVAILABLE" }
+  })()
+
+  try {
+    return await refreshInFlight
+  } finally {
+    refreshInFlight = null
+  }
+}
+
+/**
+ * Refresh the AlgoVault session before it expires. GitHub remains the saved
+ * credential; the backend mints a new short-lived JWT from it.
+ */
+export const refreshBackendSessionIfNeeded = async (): Promise<SilentRefreshResult> => {
+  return trySilentRefresh(false)
 }
 
 // Every API request requires the JWT issued after server-verified GitHub OAuth.
 async function backendFetch<T = any>(path: string, init: RequestInit = {}): Promise<T> {
   let jwt = await getJwtToken()
   let refreshFailure: BackendAuthFailureKind | undefined
-  if (!jwt) {
-    const refreshed = await trySilentRefresh()
+  if (!jwt || shouldRefreshJwt(jwt, Date.now(), JWT_REFRESH_SKEW_MS)) {
+    const previousJwt = jwt
+    const refreshed = await trySilentRefresh(Boolean(previousJwt))
     jwt = refreshed.token
     refreshFailure = refreshed.failure
+    // A transient refresh outage should not interrupt a JWT that is still
+    // valid. The next request/401 path will retry the refresh automatically.
+    if (!jwt && previousJwt && !isJwtExpired(previousJwt)) jwt = previousJwt
   }
 
   const headers = new Headers(init.headers)
@@ -126,7 +159,7 @@ async function backendFetch<T = any>(path: string, init: RequestInit = {}): Prom
 
   if (res.status === 401) {
     // Attempt one automatic token refresh and retry
-    const refreshed = await trySilentRefresh()
+    const refreshed = await trySilentRefresh(true)
     const freshJwt = refreshed.token
     if (freshJwt) {
       const retryHeaders = new Headers(init.headers)

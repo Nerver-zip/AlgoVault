@@ -11,7 +11,8 @@ import {
   syncLeetcode,
 
   fetchZerotracRatingsBackend,
-  addToVault
+  addToVault,
+  refreshBackendSessionIfNeeded
 } from "../lib/api/backend"
 import { createSession, transitionSession } from "../lib/session-engine/EngineKernel"
 import { normalizeZerotracPayload } from "../lib/zerotrac"
@@ -36,6 +37,17 @@ let githubWriteQueue: Promise<void> = Promise.resolve()
 
 const ACTIVE_SESSION_KEY = "algovault.session.active"
 const LOGS_INDEX_KEY = "algovault.logs.index"
+const BACKEND_AUTH_REFRESH_ALARM = "algovault.backend-auth-refresh"
+
+// MV3 service workers can sleep for long periods. A lightweight alarm wakes
+// the worker and renews the backend JWT before its `exp` claim is reached.
+if (chrome.alarms) {
+  chrome.alarms.create(BACKEND_AUTH_REFRESH_ALARM, { periodInMinutes: 5 })
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name !== BACKEND_AUTH_REFRESH_ALARM) return
+    refreshBackendSessionIfNeeded().catch(() => undefined)
+  })
+}
 
 // ─── APSE v2 BACKGROUND COORDINATOR ─────────────────────────────────
 

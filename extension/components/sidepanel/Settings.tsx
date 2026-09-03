@@ -179,7 +179,6 @@ export const Settings = () => {
         if (!newPat) {
           setGithubPat('');
           setGithubUser(null);
-          setGithubRepo('');
           setGithubRepos([]);
         } else {
           setGithubPat(newPat);
@@ -198,6 +197,14 @@ export const Settings = () => {
         const newBranch = changes["algovault.github.branch"].newValue;
         if (newBranch !== undefined) {
           setGithubBranch(newBranch || 'main');
+        }
+      }
+      if (changes["algovault.github.basePath"]) {
+        const newBasePath = changes["algovault.github.basePath"].newValue;
+        if (newBasePath !== undefined) {
+          const normalized = normalizeGithubBasePath(newBasePath);
+          setGithubBasePath(normalized.value);
+          setGithubBasePathError(normalized.error);
         }
       }
     };
@@ -308,8 +315,18 @@ export const Settings = () => {
         }
         setLoadingRepos(false);
 
-        // Auto-select first repo only if none selected or stored yet
-        const existingStoredRepo = await getGithubRepo();
+        // Reload the persisted destination after reconnecting. Authentication
+        // must not reset where accepted solutions are written.
+        const [existingStoredRepo, existingStoredBranch, existingStoredBasePath] = await Promise.all([
+          getGithubRepo(),
+          getGithubBranch(),
+          getGithubBasePath()
+        ])
+        if (existingStoredRepo) setGithubRepo(existingStoredRepo)
+        if (existingStoredBranch) setGithubBranch(existingStoredBranch)
+        setGithubBasePath(existingStoredBasePath)
+
+        // Auto-select the first repo only for a genuinely new setup.
         if (!existingStoredRepo && !githubRepo && reposRes.ok && reposRes.repos.length > 0) {
           setGithubRepo(reposRes.repos[0].full_name);
           await persistGithubRepo(reposRes.repos[0].full_name);
@@ -332,10 +349,6 @@ export const Settings = () => {
     await clearGithubAuth();
     setGithubPat('');
     setGithubUser(null);
-    setGithubRepo('');
-    setGithubBranch('main');
-    setGithubBasePath(DEFAULT_GITHUB_BASE_PATH);
-    setGithubBasePathError(null);
     setGithubRepos([]);
     setGitSyncStatus(null);
   };

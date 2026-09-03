@@ -56,7 +56,8 @@
       "storage",
       "cookies",
       "unlimitedStorage",
-      "identity"
+      "identity",
+      "alarms"
     ],
     "host_permissions": [
       "https://leetcode.com/*",
