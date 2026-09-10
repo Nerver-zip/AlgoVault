@@ -5,7 +5,9 @@ export const ALGOVAULT_UPSTREAM_URL = "https://github.com/Somnath0707/AlgoVault"
 
 interface DashboardOptions {
   basePath: string
-  archivedCount: number
+  archivedProblemCount: number
+  archivedSolutionCount: number
+  languageCounts?: Record<string, number>
   username?: string
 }
 
@@ -40,13 +42,24 @@ export function buildGithubDashboardReadme(problems: any[], options: DashboardOp
   const easy = countDifficulty(uniqueProblems, "EASY")
   const medium = countDifficulty(uniqueProblems, "MEDIUM")
   const hard = countDifficulty(uniqueProblems, "HARD")
-  const archived = Math.min(Math.max(0, options.archivedCount), total)
+  const archivedProblems = Math.min(Math.max(0, options.archivedProblemCount), total)
+  const archivedSolutions = Math.max(0, options.archivedSolutionCount)
   const basePath = requireGithubBasePath(options.basePath)
   const browsePath = basePath.split("/").map(encodeURIComponent).join("/")
   const profileUrl = options.username
     ? `https://leetcode.com/u/${encodeURIComponent(options.username)}/`
     : "https://leetcode.com/"
   const latest = latestAcceptedDate(uniqueProblems)
+  const languageRows = Object.entries(options.languageCounts || {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([language, count]) => {
+      const encodedLanguage = encodeURIComponent(language)
+      const links = ["easy", "medium", "hard"]
+        .map((difficulty) => `[${difficulty}](./${browsePath}/${difficulty}/${encodedLanguage}/)`)
+        .join(" · ")
+      return `| ${language} | **${count}** | ${links} |`
+    })
+    .join("\n") || "| No exported languages yet | **0** | — |"
 
   return `<div align="center">
 
@@ -55,7 +68,8 @@ export function buildGithubDashboardReadme(problems: any[], options: DashboardOp
 ### A living, searchable record of accepted solutions
 
 ${badge("Solved on LeetCode", total, "22c55e")}
-${badge("Archived", archived, "3b82f6")}
+${badge("Archived problems", archivedProblems, "3b82f6")}
+${badge("Language solutions", archivedSolutions, "8b5cf6")}
 ${badge("Auto Sync", "AlgoVault", "d97706")}
 
 _Source code, problem notes, measured runtime and memory, and estimated Big-O — organized automatically._
@@ -75,6 +89,14 @@ _Source code, problem notes, measured runtime and memory, and estimated Big-O �
 | 🔴 Hard | **${hard}** | \`${progressBar(hard, total)}\` |
 | **Total** | **${total}** | Last accepted activity: **${latest}** |
 
+## Archive coverage
+
+| Language | Accepted solutions | Browse by difficulty |
+|:--|--:|:--|
+${languageRows}
+
+**${archivedProblems} unique problem${archivedProblems === 1 ? "" : "s"}** and **${archivedSolutions} language-specific solution${archivedSolutions === 1 ? "" : "s"}** are archived. A problem solved in two languages counts once as a problem and twice as a solution.
+
 ## What is inside
 
 Every archived problem has its own directory under [\`${basePath}/\`](./${browsePath}/):
@@ -84,15 +106,16 @@ ${basePath}/
 ├── easy/
 ├── medium/
 └── hard/
-    └── <problem-id>-<problem-slug>/
-        ├── solution.<language>
-        ├── README.md
-        └── metadata.json
+    └── <language>/
+        └── <problem-id>-<problem-slug>/
+            ├── solution.<extension>
+            ├── README.md
+            └── metadata.json
 \`\`\`
 
 Each entry includes:
 
-- the accepted source code and language;
+- the newest accepted source code for that problem and language;
 - the problem statement and direct LeetCode link;
 - runtime and memory measured by LeetCode;
 - an estimated time and space complexity summary;

@@ -29,9 +29,6 @@ public class CorsConfig {
                     }
                 }
                 
-                // Allow explicit companion Chrome Extension origin
-                origins.add("chrome-extension://nglebofiomebgndkkdecnmolafjdphhf");
-
                 registry.addMapping("/api/**")
                         .allowedOriginPatterns(origins.toArray(new String[0]))
                         .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")

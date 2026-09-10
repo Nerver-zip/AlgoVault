@@ -331,12 +331,15 @@ flowchart TB
   ```text
   Somnath0707/DSA/
   ├── LeetCode/
-  │   ├── 0042-trapping-rain-water/
-  │   │   ├── README.md               <-- Problem description, tags, ZeroTrac Elo
-  │   │   ├── Solution.java           <-- Accepted code submission
-  │   │   └── metadata.json           <-- Runtime (1ms), Memory (44MB), Solved Timestamp
+  │   ├── hard/
+  │   │   ├── java/
+  │   │   │   ├── 42-trapping-rain-water/
+  │   │   │   │   ├── README.md       <-- Problem description, tags, ZeroTrac Elo
+  │   │   │   │   ├── solution.java   <-- Newest accepted Java submission
+  │   │   │   │   └── metadata.json   <-- Runtime, memory, language and timestamp
   ```
-* **Instant Token Invalidation**: Validates token health against GitHub's API on every load. If a token is revoked or expired, AlgoVault instantly purges the stale cache and renders the clean disconnected state.
+* **Language-Safe Archive**: The same problem can coexist in C++, Java, JavaScript, TypeScript, Python, Python3, and other supported languages without one submission overwriting another. Legacy directories are preserved during the resumable backfill.
+* **Automatic Credential Renewal**: OAuth credentials are refreshed before expiration. A credential is treated as revoked only when GitHub explicitly rejects it with HTTP 401; network, permission, and rate-limit failures preserve the configured destination and remain retryable.
 
 ---
 
@@ -389,6 +392,10 @@ docker ps
 
 ### Step 2: Start the Spring Boot Analytics Engine
 ```bash
+# From the repository root, create .env from .env.example first. Set
+# CORS_ALLOWED_ORIGINS to the exact chrome-extension:// origin of the loaded
+# extension. Keep JWT_SECRET stable across backend recreates.
+
 cd backend
 
 # On macOS/Linux:
@@ -397,12 +404,13 @@ cd backend
 # On Windows (cmd/PowerShell):
 mvnw.cmd spring-boot:run
 ```
-*Flyway migrations automatically execute schema scripts (`V1` to `V18`). The analytical engine is live at `http://localhost:8080`.*
+*Flyway migrations automatically execute schema scripts (`V1` to `V24`). The Docker Compose backend listens on host port `8081` and remains bound to loopback; expose it through your own HTTPS reverse proxy when the extension runs on another machine.*
 
 The extension renews its short-lived AlgoVault JWT automatically from the saved
-GitHub credential before expiry. Keep `JWT_SECRET` stable across backend
-recreates; changing it invalidates existing sessions. A revoked GitHub token
-still requires a new GitHub authorization.
+GitHub credential before expiry, and rotates expiring GitHub OAuth credentials
+when GitHub provides a refresh token. Repository, branch, and base-folder
+settings are independent of authentication and survive reconnects. A
+credential actually revoked by GitHub still requires a new authorization.
 
 ---
 
@@ -470,4 +478,3 @@ npm run build
 <div align="center">
   <b>Built for competitive coders striving for Knight, Guardian, & Grandmaster ranks. ⚔️</b>
 </div>
-

@@ -170,6 +170,9 @@ test("GitHub disconnect clears credentials but preserves the configured destinat
 
   assert.deepEqual(GITHUB_AUTH_KEYS_TO_CLEAR, [
     "algovault.github.pat",
+    "algovault.github.refreshToken",
+    "algovault.github.tokenExpiresAt",
+    "algovault.github.refreshTokenExpiresAt",
     "algovault.github.user",
     "algovault.gitSyncStatus"
   ]);

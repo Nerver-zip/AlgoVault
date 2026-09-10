@@ -10,6 +10,7 @@ test("backend auth messages do not conflate a saved GitHub credential with a mis
   assert.doesNotMatch(error.message, /Connect GitHub in Settings before using cloud features/i)
   assert.match(backendAuthMessage("GITHUB_NOT_CONNECTED"), /not connected/i)
   assert.match(backendAuthMessage("GITHUB_TOKEN_REJECTED"), /rejected/i)
+  assert.match(backendAuthMessage("GITHUB_REAUTH_REQUIRED"), /reconnect/i)
 })
 
 function tokenWithExpiry(exp) {

@@ -33,18 +33,9 @@ function currentTitle() {
   return heading?.replace(/^\d+\.\s*/, "").trim() || currentSlug() || "Problem"
 }
 
-function editorCodeFallback() {
-  const textarea = document.querySelector<HTMLTextAreaElement>("textarea.inputarea")
-  if (textarea?.value?.trim()) return textarea.value
-  const lines = Array.from(document.querySelectorAll<HTMLElement>(".view-lines .view-line"))
-    .map((line) => line.innerText)
-    .filter(Boolean)
-  return lines.length ? lines.join("\n") : undefined
-}
-
 function languageFallback() {
   const selected = document.querySelector<HTMLElement>("[data-cy='lang-select'], button[id*='headlessui-listbox-button']")
-  return selected?.innerText?.trim() || undefined
+  return selected?.textContent?.trim() || undefined
 }
 
 function parseRuntimeMs(runtime?: string) {
@@ -132,8 +123,9 @@ window.addEventListener("message", ((event: MessageEvent) => {
   const runtimeMs = parseRuntimeMs(detail.runtime)
   const memoryKb = parseMemoryKb(detail.memory)
 
-  // Use code from the interceptor's captured payload; skip expensive DOM fallback
-  // editorCodeFallback() scans every .view-line with innerText which forces reflow
+  // Use only the code captured from the submit request. Reading Monaco's rendered
+  // lines here forces layout during LeetCode's Accepted rerender and can freeze
+  // the page for large solutions.
   const code = detail.code || undefined
 
   const payload: SubmissionPayload = {
@@ -148,7 +140,7 @@ window.addEventListener("message", ((event: MessageEvent) => {
     totalCorrect: detail.totalCorrect,
     totalTestcases: detail.totalTestcases,
     submittedAt: new Date().toISOString(),
-    code: code || editorCodeFallback(),
+    code,
     codeLang: detail.codeLang || detail.lang || languageFallback()
   }
 

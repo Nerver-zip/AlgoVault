@@ -1,6 +1,7 @@
 export type BackendAuthFailureKind =
   | "GITHUB_NOT_CONNECTED"
   | "GITHUB_TOKEN_REJECTED"
+  | "GITHUB_REAUTH_REQUIRED"
   | "CLOUD_SESSION_UNAVAILABLE"
   | "CLOUD_SESSION_EXPIRED"
 
@@ -23,6 +24,8 @@ export function backendAuthMessage(kind: BackendAuthFailureKind): string {
       return "GitHub is not connected. Connect your account in Settings before using cloud features."
     case "GITHUB_TOKEN_REJECTED":
       return "GitHub rejected the saved credential. Validate GitHub in Settings before reconnecting."
+    case "GITHUB_REAUTH_REQUIRED":
+      return "The GitHub refresh authorization expired. Reconnect GitHub once; the saved repository destination will be preserved."
     case "CLOUD_SESSION_EXPIRED":
       return "The AlgoVault cloud session expired, but the GitHub connection is still saved. Reconnect the cloud session in Settings."
     case "CLOUD_SESSION_UNAVAILABLE":

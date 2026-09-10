@@ -841,7 +841,36 @@ const injectAlgoVaultOverlay = () => {
 }
 
 let observerTimeout: number | null = null;
+let acceptedRerenderPauseUntil = 0;
+let acceptedRerenderResumeTimer: number | null = null;
+
+function pauseOverlayDuringAcceptedRerender() {
+  const delayMs = 3000;
+  acceptedRerenderPauseUntil = performance.now() + delayMs;
+  if (acceptedRerenderResumeTimer !== null) {
+    clearTimeout(acceptedRerenderResumeTimer);
+  }
+  acceptedRerenderResumeTimer = window.setTimeout(() => {
+    acceptedRerenderResumeTimer = null;
+    injectAlgoVaultOverlay();
+    hideForbiddenTabs();
+    injectIntentionalRevealButton();
+  }, delayMs);
+}
+
+// LeetCode performs a large DOM rerender immediately after Accepted. Avoid
+// competing with that render; overlays are repaired once the critical window
+// has passed.
+window.addEventListener("message", (event: MessageEvent) => {
+  if (event.origin !== window.location.origin || event.source !== window) return;
+  if (event.data?.type === "AV_SUBMISSION_RESULT") {
+    pauseOverlayDuringAcceptedRerender();
+  }
+});
+
 const observer = new MutationObserver((mutations) => {
+  if (performance.now() < acceptedRerenderPauseUntil) return;
+
   // Ignore mutations strictly from internal extension UI elements, modals, and Monaco code editor
   const isInternal = mutations.every((m) => {
     const target = m.target as HTMLElement | null;
@@ -884,6 +913,7 @@ observer.observe(document.body, { childList: true, subtree: true });
 
 window.addEventListener("beforeunload", () => {
   if (observerTimeout) clearTimeout(observerTimeout);
+  if (acceptedRerenderResumeTimer !== null) clearTimeout(acceptedRerenderResumeTimer);
   observer.disconnect();
 });
 

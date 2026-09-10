@@ -1,8 +1,8 @@
-import { fetchUserProfile, fetchSolvedProblems, fetchAllSubmissions, fetchSubmissionDetails, fetchSubmissionDetailsBatch, fetchProblemSubmissionPages, fetchContestHistory, fetchProblemMetadata, fetchUserStatus, fetchContestQuestions, fetchReplayEvents, fetchUpcomingContests, fetchPastContests, LeetCodeApiError, type ProblemSubmissionRequest } from "../lib/api/leetcode"
-import { getUserSettings, getUsername, setLastSync, setUsername, storage, getGithubPat, getGithubRepo, getGithubBranch, getGithubBasePath, getGithubAutoSync, setGithubAutoSync, getZerotracData, getZerotracLastFetched, setZerotracData, clearGithubAuth, clearJwtToken } from "../lib/storage"
-import { commitToGithub, batchCommitToGithub, getExtensionForLanguage, getGithubTreePaths } from "../lib/api/github"
+import { fetchUserProfile, fetchSolvedProblems, fetchAllSubmissions, fetchSubmissionDetails, fetchSubmissionDetailsBatch, fetchSubmissionLanguagesBatch, fetchProblemSubmissionPages, fetchContestHistory, fetchProblemMetadata, fetchUserStatus, fetchContestQuestions, fetchReplayEvents, fetchUpcomingContests, fetchPastContests, LeetCodeApiError, type ProblemSubmissionRequest } from "../lib/api/leetcode"
+import { getUserSettings, getUsername, setLastSync, setUsername, storage, getGithubRepo, getGithubBranch, getGithubBasePath, getGithubAutoSync, setGithubAutoSync, getZerotracData, getZerotracLastFetched, setZerotracData, clearGithubAuth, clearJwtToken } from "../lib/storage"
+import { commitToGithub, batchCommitToGithub, getGithubTreePaths, getGithubApiToken } from "../lib/api/github"
 import { analyzeComplexity } from "../lib/complexity"
-import { joinGithubPath } from "../lib/github-path"
+import { githubProblemFolder } from "../lib/github-artifact-path"
 import { type LeetCodeRegion } from "../lib/api/entranthub"
 import {
   fetchPrediction,
@@ -20,8 +20,23 @@ import { PROBLEM_SLUG_TO_COMPANIES } from "../lib/company-data"
 import { STORAGE_KEYS } from "../lib/constants"
 import { partitionGithubArtifacts } from "../lib/github-batching"
 import { acceptedProblemCount, requireCompleteSolvedProblemList, SOLVED_PROBLEM_CACHE_SOURCE } from "../lib/leetcode-history"
-import { findProblemsMissingFromGithub } from "../lib/github-reconciliation"
 import { buildGithubDashboardReadme } from "../lib/github-dashboard"
+import { githubSolutionKey, resolveGithubLanguage, selectLatestAcceptedByLanguage } from "../lib/github-language"
+import {
+  GITHUB_EXPORT_SCHEMA_VERSION,
+  applyCommittedRecords,
+  githubExportTarget,
+  normalizeGithubExportIndex,
+  shouldExportRecord,
+  summarizeGithubExports,
+  type GithubExportRecordV2
+} from "../lib/github-export-state"
+import { findGithubOnlySolutionFolders, hasCompleteGithubArtifactSet } from "../lib/github-reconciliation"
+import {
+  mergeAcceptedScanPage,
+  newProblemLanguageScanCheckpoint,
+  normalizeGithubLanguageScanState
+} from "../lib/github-language-scan"
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => console.error(error))
 
@@ -459,7 +474,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       storage.remove("algovault.latestSyncedSubmissionTimestamp"),
       storage.remove("algovault.solvedSlugs"),
       storage.remove("algovault.syncHasMore"),
-      storage.remove("algovault.lastSync")
+      storage.remove("algovault.lastSync"),
+      storage.remove(STORAGE_KEYS.GITHUB_LANGUAGE_SCAN),
+      storage.remove(STORAGE_KEYS.GITHUB_LANGUAGE_MIGRATION)
     ]).then(() => {
       chrome.storage.local.set({ syncStatus: { status: "INFO", message: "Sync cache reset. Ready for clean full sync.", count: 0, subCount: 0 } })
       sendResponse({ ok: true })
@@ -621,13 +638,6 @@ function stripWrappingQuotes(value: string) {
   return trimmed.startsWith('"') && trimmed.endsWith('"') ? trimmed.slice(1, -1) : trimmed
 }
 
-function slugPathSegment(value: string) {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "unknown"
-}
-
 function markdownLanguage(language?: string) {
   const raw = (language || "").toLowerCase()
   if (raw.includes("c++") || raw.includes("cpp")) return "cpp"
@@ -647,24 +657,12 @@ function formatMs(runtimeMs?: number) {
   return runtimeMs != null ? `${runtimeMs} ms` : "N/A"
 }
 
-const GITHUB_EXPORT_INDEX_KEY = STORAGE_KEYS.GITHUB_EXPORT_INDEX
-
-interface GithubExportRecord {
-  submissionId: string | null
-  timestamp: number
-  path: string
-}
-
-type GithubExportIndex = Record<string, Record<string, GithubExportRecord>>
+const GITHUB_EXPORT_INDEX_KEY = STORAGE_KEYS.GITHUB_EXPORT_INDEX_V2
 
 function withGithubWriteLock<T>(task: () => Promise<T>): Promise<T> {
   const run = githubWriteQueue.then(task, task)
   githubWriteQueue = run.then(() => undefined, () => undefined)
   return run
-}
-
-function githubExportTarget(repo: string, branch: string | undefined, basePath: string) {
-  return `${repo.trim().toLowerCase()}|${branch || "default"}|${basePath}`
 }
 
 function submissionTimestamp(payload: any) {
@@ -674,16 +672,16 @@ function submissionTimestamp(payload: any) {
   return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0
 }
 
-async function markGithubExported(repo: string, branch: string | undefined, basePath: string, artifact: any) {
-  const index = (await storage.get<GithubExportIndex>(GITHUB_EXPORT_INDEX_KEY)) || {}
-  const target = githubExportTarget(repo, branch, basePath)
-  index[target] ||= {}
-  index[target][artifact.payload.titleSlug] = {
+function exportRecordForArtifact(artifact: any): GithubExportRecordV2 {
+  return {
+    schemaVersion: GITHUB_EXPORT_SCHEMA_VERSION,
+    titleSlug: artifact.payload.titleSlug,
+    languageId: artifact.language.id,
+    originalLanguage: artifact.originalLanguage,
     submissionId: artifact.payload.submissionId ? String(artifact.payload.submissionId) : null,
     timestamp: submissionTimestamp(artifact.payload),
     path: artifact.folder
   }
-  await storage.set(GITHUB_EXPORT_INDEX_KEY, index)
 }
 
 function parseRuntimeMs(value: unknown): number | undefined {
@@ -703,24 +701,37 @@ function parseMemoryKb(value: unknown): number | undefined {
   return Math.round(amount)
 }
 
+async function fetchSubmissionDataInBatches(
+  submissionIds: number[],
+  fetchBatch: (ids: number[]) => Promise<any[]>,
+  signal?: AbortSignal
+) {
+  const details: any[] = []
+  for (let index = 0; index < submissionIds.length; index += 8) {
+    if (signal?.aborted) throw new Error("Sync stopped by user")
+    details.push(...await fetchBatch(submissionIds.slice(index, index + 8)))
+    if (index + 8 < submissionIds.length) await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+  return details
+}
+
 async function buildGithubArtifact(payload: any, sessionData?: any, providedMeta?: any) {
+  const originalLanguage = payload.codeLang || payload.language || payload.lang
+  const language = resolveGithubLanguage(originalLanguage)
+  if (!language) return null
   const metaList = providedMeta ? [] : await fetchProblemMetadata([payload.titleSlug]).catch(() => [])
   const meta: any = providedMeta || (metaList && metaList.length ? metaList[0] : null)
   const qId = meta?.frontendQuestionId ? String(meta.frontendQuestionId) : ""
   const qTitle = meta?.title || payload.title || payload.titleSlug
   const difficulty = meta?.difficulty || "Unknown"
-  const difficultyFolder = slugPathSegment(difficulty)
-  const idPrefix = qId ? `${qId}-` : ""
   const basePath = await getGithubBasePath()
-  const folder = joinGithubPath(basePath, difficultyFolder, `${idPrefix}${payload.titleSlug}`)
-  const language = payload.codeLang || payload.language || "Unknown"
-  const ext = payload.code ? getExtensionForLanguage(language) : "missing.txt"
-  const codePath = `${folder}/solution.${ext}`
+  const folder = githubProblemFolder(basePath, difficulty, language.id, payload.titleSlug, qId)
+  const codePath = `${folder}/solution.${language.extension}`
   const tags = Array.isArray(meta?.topicTags) ? meta.topicTags.map((tag: any) => tag.name).filter(Boolean) : []
   const timeSpentSeconds = typeof sessionData?.focusSeconds === "number"
     ? sessionData.focusSeconds
     : typeof payload.focusSeconds === "number" ? payload.focusSeconds : null
-  const complexity = analyzeComplexity(payload.code, language)
+  const complexity = analyzeComplexity(payload.code, originalLanguage)
 
   const metadata = {
     title: qTitle,
@@ -729,7 +740,9 @@ async function buildGithubArtifact(payload: any, sessionData?: any, providedMeta
     leetcodeUrl: `https://leetcode.com/problems/${payload.titleSlug}/`,
     difficulty,
     topics: tags,
-    language,
+    language: originalLanguage,
+    normalizedLanguage: language.id,
+    exportSchemaVersion: GITHUB_EXPORT_SCHEMA_VERSION,
     verdict: payload.statusDisplay,
     submissionId: payload.submissionId || null,
     submittedAt: payload.submittedAt,
@@ -758,7 +771,9 @@ async function buildGithubArtifact(payload: any, sessionData?: any, providedMeta
     codeContent,
     readme,
     metadata,
-    payload
+    payload,
+    language,
+    originalLanguage
   }
 }
 
@@ -767,10 +782,33 @@ async function syncAcceptedSubmissionToGithub(payload: any, sessionData?: any): 
   const isAutoSyncEnabled = await getGithubAutoSync()
   if (!isAutoSyncEnabled) return false
 
-  const artifact = await buildGithubArtifact(payload, sessionData)
-  await storage.set(`algovault.gitSolve.${payload.titleSlug}`, artifact)
+  let artifact = await buildGithubArtifact(payload, sessionData)
+  if (!artifact && payload.submissionId) {
+    const details = await fetchSubmissionDetails(Number(payload.submissionId)).catch(() => null)
+    if (details) {
+      payload = {
+        ...payload,
+        code: payload.code || details.code,
+        language: payload.codeLang || payload.language || details.lang?.verboseName || details.lang?.name,
+        timestamp: payload.timestamp || details.timestamp
+      }
+      artifact = await buildGithubArtifact(payload, sessionData)
+    }
+  }
+  if (!artifact) {
+    await storage.set("algovault.gitSyncStatus", {
+      success: false,
+      pending: true,
+      message: "Accepted solution is pending because LeetCode did not identify its language.",
+      timestamp: Date.now(),
+      problem: payload.title || payload.titleSlug
+    })
+    return false
+  }
+  const solutionKey = githubSolutionKey(payload.titleSlug, artifact.language.id)
+  await storage.set(`algovault.gitSolve.${solutionKey}`, artifact)
 
-  let pat = await getGithubPat()
+  let pat = await getGithubApiToken()
   let repo = await getGithubRepo()
   if (!pat || !repo) {
     await storage.set("algovault.gitSyncStatus", {
@@ -810,8 +848,18 @@ async function syncAcceptedSubmissionToGithub(payload: any, sessionData?: any): 
 
   // Single atomic commit for all 3 files (code + README + metadata)
   const result = await withGithubWriteLock(async () => {
+    const index = normalizeGithubExportIndex(await storage.get(GITHUB_EXPORT_INDEX_KEY))
+    const target = githubExportTarget(repo, branch, artifact.basePath)
+    index.targets[target] ||= {}
+    const record = exportRecordForArtifact(artifact)
+    if (!shouldExportRecord(index.targets[target][solutionKey], record)) {
+      return { ok: true, skipped: true, message: undefined }
+    }
     const commitResult = await batchCommitToGithub(pat, repo, writes, branch)
-    if (commitResult.ok) await markGithubExported(repo, branch, artifact.basePath, artifact)
+    if (commitResult.ok) {
+      index.targets[target][solutionKey] = record
+      await storage.set(GITHUB_EXPORT_INDEX_KEY, index)
+    }
     return commitResult
   })
   if (!result.ok) {
@@ -819,7 +867,7 @@ async function syncAcceptedSubmissionToGithub(payload: any, sessionData?: any): 
       success: false,
       message: result.message,
       timestamp: Date.now(),
-      problem: payload.title || payload.titleSlug,
+      problem: `${payload.title || payload.titleSlug} (${artifact.language.displayName})`,
       path: artifact.folder
     })
     return false
@@ -829,17 +877,18 @@ async function syncAcceptedSubmissionToGithub(payload: any, sessionData?: any): 
     success: true,
     message: "Success",
     timestamp: Date.now(),
-    problem: payload.title || payload.titleSlug,
+    problem: `${payload.title || payload.titleSlug} (${artifact.language.displayName})`,
     path: artifact.folder
   })
   return true
 }
 
 function githubWritesForArtifact(artifact: any) {
+  const label = `${artifact.metadata.title} (${artifact.language.displayName})`
   return [
-    { path: artifact.codePath, message: `Export ${artifact.metadata.title}`, content: artifact.codeContent },
-    { path: artifact.readmePath, message: `Export notes for ${artifact.metadata.title}`, content: artifact.readme },
-    { path: artifact.metadataPath, message: `Export metadata for ${artifact.metadata.title}`, content: JSON.stringify(artifact.metadata, null, 2) + "\n" }
+    { path: artifact.codePath, message: `Export ${label}`, content: artifact.codeContent },
+    { path: artifact.readmePath, message: `Export notes for ${label}`, content: artifact.readme },
+    { path: artifact.metadataPath, message: `Export metadata for ${label}`, content: JSON.stringify(artifact.metadata, null, 2) + "\n" }
   ]
 }
 
@@ -851,9 +900,9 @@ async function exportAcceptedHistoryToGithub(
   problemCount: number,
   submissionCount: number
 ) {
-  if (!(await getGithubAutoSync())) return 0
+  if (!(await getGithubAutoSync())) return { exported: 0, pendingLanguages: 0 }
 
-  let pat = await getGithubPat()
+  let pat = await getGithubApiToken()
   let repo = await getGithubRepo()
   if (!pat || !repo) {
     await storage.set("algovault.gitSyncStatus", {
@@ -861,7 +910,7 @@ async function exportAcceptedHistoryToGithub(
       message: "GitHub credentials are not configured; LeetCode history was synced without repository export.",
       timestamp: Date.now()
     })
-    return 0
+    return { exported: 0, pendingLanguages: 0 }
   }
 
   pat = stripWrappingQuotes(pat)
@@ -869,46 +918,81 @@ async function exportAcceptedHistoryToGithub(
   const branch = await getGithubBranch() || undefined
   const basePath = await getGithubBasePath()
   const target = githubExportTarget(repo, branch, basePath)
-  const exportIndex = (await storage.get<GithubExportIndex>(GITHUB_EXPORT_INDEX_KEY)) || {}
-  exportIndex[target] ||= {}
+  const exportIndex = normalizeGithubExportIndex(await storage.get(GITHUB_EXPORT_INDEX_KEY))
+  exportIndex.targets[target] ||= {}
 
-  const acceptedBySlug = new Map<string, any>()
-  for (const submission of rawSubmissions) {
-    const slug = submission.title_slug
-    const accepted = submission.status_display === "Accepted" || Number(submission.status) === 10
-    if (!slug || !accepted || acceptedBySlug.has(slug) || exportedThisRun.has(slug)) continue
-    const previous = exportIndex[target][slug]
-    const timestamp = Number(submission.timestamp) || 0
-    if (previous && previous.timestamp >= timestamp) {
-      exportedThisRun.add(slug)
+  let pendingLanguages = 0
+  const acceptedWithLanguage: any[] = []
+  const unknownLanguageIds = rawSubmissions
+    .filter((raw) => raw.status_display === "Accepted" || raw.statusDisplay === "Accepted" || Number(raw.status) === 10)
+    .filter((raw) => !resolveGithubLanguage(raw.lang || raw.language || raw.codeLang))
+    .map((raw) => Number(raw.id || raw.submissionId))
+    .filter((id) => Number.isSafeInteger(id) && id > 0)
+  const languageDetails = await fetchSubmissionDataInBatches(unknownLanguageIds, fetchSubmissionLanguagesBatch, signal)
+  const languageDetailsById = new Map(languageDetails.map((detail: any) => [String(detail.id), detail]))
+  for (const raw of rawSubmissions) {
+    const accepted = raw.status_display === "Accepted" || raw.statusDisplay === "Accepted" || Number(raw.status) === 10
+    const slug = raw.title_slug || raw.titleSlug
+    if (!accepted || !slug) continue
+    let originalLanguage = raw.lang || raw.language || raw.codeLang
+    if (!resolveGithubLanguage(originalLanguage)) {
+      const languageDetail: any = languageDetailsById.get(String(raw.id || raw.submissionId))
+      originalLanguage = languageDetail?.lang?.verboseName || languageDetail?.lang?.name
+    }
+    if (!resolveGithubLanguage(originalLanguage)) {
+      pendingLanguages += 1
       continue
     }
-    acceptedBySlug.set(slug, submission)
+    acceptedWithLanguage.push({
+      ...raw,
+      title_slug: slug,
+      lang: originalLanguage,
+      code: raw.code,
+      timestamp: raw.timestamp || languageDetailsById.get(String(raw.id || raw.submissionId))?.timestamp
+    })
   }
 
-  const candidates = Array.from(acceptedBySlug.values())
-  if (!candidates.length) return 0
+  const latestByPair = selectLatestAcceptedByLanguage(acceptedWithLanguage)
+  const candidates = Array.from(latestByPair.entries()).filter(([key, submission]) => {
+    const language = resolveGithubLanguage(submission.lang)
+    if (!language) return false
+    const record: GithubExportRecordV2 = {
+      schemaVersion: GITHUB_EXPORT_SCHEMA_VERSION,
+      titleSlug: submission.titleSlug,
+      languageId: language.id,
+      originalLanguage: submission.originalLanguage,
+      submissionId: submission.submissionId,
+      timestamp: submission.timestamp,
+      path: ""
+    }
+    return shouldExportRecord(exportIndex.targets[target][key], record)
+  })
+  if (!candidates.length) return { exported: 0, pendingLanguages }
 
   updateStatus("RUNNING", `Preparing ${candidates.length} accepted solution${candidates.length === 1 ? "" : "s"} for GitHub...`, problemCount, submissionCount)
   const metadataBySlug = new Map<string, any>()
   for (let index = 0; index < candidates.length; index += 30) {
     if (signal?.aborted) throw new Error("Sync stopped by user")
-    const metadata = await fetchProblemMetadata(candidates.slice(index, index + 30).map((item) => item.title_slug)).catch(() => [])
+    const metadata = await fetchProblemMetadata(candidates.slice(index, index + 30).map(([, item]) => item.titleSlug)).catch(() => [])
     metadata.forEach((item: any) => metadataBySlug.set(item.titleSlug, item))
   }
 
   const artifacts: any[] = []
+  const candidatesMissingCode = candidates
+    .map(([, submission]) => submission)
+    .filter((submission) => !submission.code)
+    .map((submission) => Number(submission.id || submission.submissionId))
+    .filter((id) => Number.isSafeInteger(id) && id > 0)
+  const candidateDetails = await fetchSubmissionDataInBatches(candidatesMissingCode, fetchSubmissionDetailsBatch, signal)
+  const candidateDetailsById = new Map(candidateDetails.map((detail: any) => [String(detail.id), detail]))
   for (let index = 0; index < candidates.length; index += 1) {
     if (signal?.aborted) throw new Error("Sync stopped by user")
-    const submission = candidates[index]
-    let details: any = null
-    if (!submission.code) {
-      details = await fetchSubmissionDetails(Number(submission.id)).catch(() => null)
-    }
+    const [, submission] = candidates[index]
+    const details: any = candidateDetailsById.get(String(submission.id || submission.submissionId)) || null
     const timestamp = Number(submission.timestamp || details?.timestamp) || 0
     const payload = {
-      submissionId: String(submission.id),
-      titleSlug: submission.title_slug,
+      submissionId: String(submission.id || submission.submissionId),
+      titleSlug: submission.titleSlug,
       title: submission.title || details?.question?.title,
       statusDisplay: submission.status_display || details?.statusDisplay || "Accepted",
       language: submission.lang || details?.lang?.verboseName || details?.lang?.name,
@@ -918,8 +1002,10 @@ async function exportAcceptedHistoryToGithub(
       timestamp,
       submittedAt: timestamp ? new Date(timestamp * 1000).toISOString() : new Date().toISOString()
     }
-    artifacts.push(await buildGithubArtifact(payload, undefined, metadataBySlug.get(payload.titleSlug)))
-    updateStatus("RUNNING", `Preparing accepted solutions for GitHub (${index + 1}/${candidates.length})...`, problemCount, submissionCount)
+    const artifact = await buildGithubArtifact(payload, undefined, metadataBySlug.get(payload.titleSlug))
+    if (artifact) artifacts.push(artifact)
+    else pendingLanguages += 1
+    updateStatus("RUNNING", `Preparing ${payload.titleSlug} (${artifact?.language.displayName || payload.language}) for GitHub (${index + 1}/${candidates.length})...`, problemCount, submissionCount)
   }
 
   let exported = 0
@@ -928,11 +1014,11 @@ async function exportAcceptedHistoryToGithub(
   const commitHistoryBatch = async (batch: any[]): Promise<any[]> => {
     if (signal?.aborted) throw new Error("Sync stopped by user")
     const { result, committed } = await withGithubWriteLock(async () => {
-      const latestIndex = (await storage.get<GithubExportIndex>(GITHUB_EXPORT_INDEX_KEY)) || {}
-      latestIndex[target] ||= {}
+      const latestIndex = normalizeGithubExportIndex(await storage.get(GITHUB_EXPORT_INDEX_KEY))
+      latestIndex.targets[target] ||= {}
       const eligible = batch.filter((artifact) => {
-        const previous = latestIndex[target][artifact.payload.titleSlug]
-        return !previous || previous.timestamp < submissionTimestamp(artifact.payload)
+        const key = githubSolutionKey(artifact.payload.titleSlug, artifact.language.id)
+        return shouldExportRecord(latestIndex.targets[target][key], exportRecordForArtifact(artifact))
       })
       if (!eligible.length) return { result: { ok: true }, committed: [] as any[] }
 
@@ -946,13 +1032,11 @@ async function exportAcceptedHistoryToGithub(
         { allowSequentialFallback: false }
       )
       if (commitResult.ok) {
-        for (const artifact of eligible) {
-          latestIndex[target][artifact.payload.titleSlug] = {
-            submissionId: artifact.payload.submissionId ? String(artifact.payload.submissionId) : null,
-            timestamp: submissionTimestamp(artifact.payload),
-            path: artifact.folder
-          }
-        }
+        latestIndex.targets[target] = applyCommittedRecords(
+          latestIndex.targets[target],
+          eligible.map(exportRecordForArtifact),
+          true
+        )
         await storage.set(GITHUB_EXPORT_INDEX_KEY, latestIndex)
       }
       return { result: commitResult, committed: commitResult.ok ? eligible : [] }
@@ -981,7 +1065,7 @@ async function exportAcceptedHistoryToGithub(
   for (const batch of artifactBatches) {
     const committed = await commitHistoryBatch(batch)
     for (const artifact of committed) {
-      exportedThisRun.add(artifact.payload.titleSlug)
+      exportedThisRun.add(githubSolutionKey(artifact.payload.titleSlug, artifact.language.id))
     }
     exported += committed.length
     updateStatus("RUNNING", `Exported ${exported}/${artifacts.length} accepted solutions to GitHub...`, problemCount, submissionCount)
@@ -993,7 +1077,7 @@ async function exportAcceptedHistoryToGithub(
     timestamp: Date.now(),
     path: basePath
   })
-  return exported
+  return { exported, pendingLanguages }
 }
 
 async function recoverMissingSolvedSolutions(
@@ -1003,66 +1087,61 @@ async function recoverMissingSolvedSolutions(
   updateStatus: (status: string, msg: string, count?: number, subCount?: number) => void,
   submissionCount: number
 ) {
-  if (!(await getGithubAutoSync())) return { exported: 0, unresolved: 0 }
+  if (!(await getGithubAutoSync())) return { exported: 0, unresolved: 0, pendingDiscovery: 0, githubOnlyPreserved: 0 }
 
-  let pat = await getGithubPat()
+  let pat = await getGithubApiToken()
   let repo = await getGithubRepo()
-  if (!pat || !repo) return { exported: 0, unresolved: 0 }
+  if (!pat || !repo) return { exported: 0, unresolved: 0, pendingDiscovery: 0, githubOnlyPreserved: 0 }
   pat = stripWrappingQuotes(pat)
   repo = stripWrappingQuotes(repo)
   const branch = await getGithubBranch() || undefined
   const basePath = await getGithubBasePath()
   const target = githubExportTarget(repo, branch, basePath)
-  const exportIndex = (await storage.get<GithubExportIndex>(GITHUB_EXPORT_INDEX_KEY)) || {}
-  const exportedForTarget = exportIndex[target] || {}
-  const remoteTree = await getGithubTreePaths(pat, repo, branch)
-  if (!remoteTree.ok) {
-    throw new Error(`GitHub history reconciliation failed: ${remoteTree.message}`)
-  }
-  if (remoteTree.truncated) {
-    throw new Error("GitHub history reconciliation failed: the repository tree was truncated.")
-  }
-  const missingProblems = findProblemsMissingFromGithub(
-    problems,
-    exportedForTarget,
-    remoteTree.paths || []
-  ) as any[]
+  const remoteTree = await withGithubWriteLock(async () => {
+    const tree = await getGithubTreePaths(pat, repo, branch)
+    if (!tree.ok) throw new Error(`GitHub history reconciliation failed: ${tree.message}`)
+    if (tree.truncated) throw new Error("GitHub history reconciliation failed: the repository tree was truncated.")
+    const latestIndex = normalizeGithubExportIndex(await storage.get(GITHUB_EXPORT_INDEX_KEY))
+    latestIndex.targets[target] ||= {}
+    for (const [key, record] of Object.entries(latestIndex.targets[target])) {
+      if (!hasCompleteGithubArtifactSet(record, tree.paths || [])) {
+        delete latestIndex.targets[target][key]
+      }
+    }
+    await storage.set(GITHUB_EXPORT_INDEX_KEY, latestIndex)
+    return tree
+  })
 
-  if (!missingProblems.length) return { exported: 0, unresolved: 0 }
-  // The remote branch is authoritative. Remove stale local records before
-  // exporting so entries left behind by an interrupted or superseded branch
-  // update cannot suppress files that are absent from GitHub.
-  for (const problem of missingProblems) delete exportedForTarget[problem.titleSlug]
-  exportIndex[target] = exportedForTarget
-  await storage.set(GITHUB_EXPORT_INDEX_KEY, exportIndex)
-  // A previous global-history run may have been marked complete even though
-  // LeetCode omitted older accepted submissions. Do not keep advertising that
-  // checkpoint as valid while the per-problem recovery is in progress.
-  await storage.remove(STORAGE_KEYS.LAST_SYNC)
+  const scanState = normalizeGithubLanguageScanState(await storage.get(STORAGE_KEYS.GITHUB_LANGUAGE_SCAN))
+  scanState.targets[target] ||= {}
+  const checkpoints = scanState.targets[target]
 
   let exported = 0
   let unresolved = 0
+  let pendingDiscovery = 0
   const problemBatchSize = 8
   const submissionPageSize = 20
   const recoveredCommitSize = 100
-  let pendingGithubExport: any[] = []
+  const pendingGithubExport: any[] = []
+  const uniqueProblems = Array.from(new Map(problems.filter((problem) => problem?.titleSlug).map((problem) => [problem.titleSlug, problem])).values()) as any[]
 
-  for (let batchStart = 0; batchStart < missingProblems.length; batchStart += problemBatchSize) {
+  for (let batchStart = 0; batchStart < uniqueProblems.length; batchStart += problemBatchSize) {
     if (signal?.aborted) throw new Error("Sync stopped by user")
-    const problemBatch = missingProblems.slice(batchStart, batchStart + problemBatchSize)
-    let pending: ProblemSubmissionRequest[] = problemBatch.map((problem: any) => ({
-      titleSlug: problem.titleSlug,
-      offset: 0,
-      lastKey: null
-    }))
-    const acceptedBySlug = new Map<string, any>()
+    const problemBatch = uniqueProblems.slice(batchStart, batchStart + problemBatchSize)
+    let pending: ProblemSubmissionRequest[] = problemBatch
+      .filter((problem: any) => !checkpoints[problem.titleSlug]?.complete)
+      .map((problem: any) => {
+        const checkpoint = checkpoints[problem.titleSlug] || newProblemLanguageScanCheckpoint()
+        checkpoints[problem.titleSlug] = checkpoint
+        return { titleSlug: problem.titleSlug, offset: checkpoint.offset, lastKey: checkpoint.lastKey }
+      })
     let pageRounds = 0
 
     while (pending.length && pageRounds < 50) {
       if (signal?.aborted) throw new Error("Sync stopped by user")
       updateStatus(
         "RUNNING",
-        `Recovering accepted solutions missing from the global history (${Math.min(batchStart + acceptedBySlug.size, missingProblems.length)}/${missingProblems.length})...`,
+        `Discovering accepted languages (${Math.min(batchStart, uniqueProblems.length)}/${uniqueProblems.length})...`,
         problems.length,
         submissionCount
       )
@@ -1070,63 +1149,77 @@ async function recoverMissingSolvedSolutions(
       const nextPending: ProblemSubmissionRequest[] = []
       for (let index = 0; index < pages.length; index += 1) {
         const page = pages[index]
-        const accepted = page.submissions.find((submission: any) =>
-          submission.statusDisplay === "Accepted" || Number(submission.status) === 10
-        )
-        if (accepted) {
-          acceptedBySlug.set(page.titleSlug, accepted)
-          continue
+        const enrichedSubmissions = [...page.submissions]
+        const unknownAcceptedIds = enrichedSubmissions
+          .filter((submission: any) => (submission.statusDisplay === "Accepted" || Number(submission.status) === 10) && !resolveGithubLanguage(submission.lang))
+          .map((submission: any) => Number(submission.id))
+          .filter((id: number) => Number.isSafeInteger(id) && id > 0)
+        if (unknownAcceptedIds.length) {
+          const details = await fetchSubmissionDataInBatches(unknownAcceptedIds, fetchSubmissionLanguagesBatch, signal)
+          const detailsById = new Map(details.map((detail: any) => [String(detail.id), detail]))
+          for (const submission of enrichedSubmissions) {
+            if (resolveGithubLanguage(submission.lang)) continue
+            const detail: any = detailsById.get(String(submission.id))
+            submission.lang = detail?.lang?.verboseName || detail?.lang?.name || submission.lang
+          }
         }
+        const previousCheckpoint = checkpoints[page.titleSlug] || newProblemLanguageScanCheckpoint()
+        checkpoints[page.titleSlug] = mergeAcceptedScanPage(previousCheckpoint, page.titleSlug, enrichedSubmissions, page.hasNext, page.lastKey)
+        await storage.set(STORAGE_KEYS.GITHUB_LANGUAGE_SCAN, scanState)
         if (page.hasNext && page.submissions.length > 0) {
           nextPending.push({
             titleSlug: page.titleSlug,
-            offset: (pending[index].offset || 0) + page.submissions.length,
+            offset: checkpoints[page.titleSlug].offset,
             lastKey: page.lastKey
           })
-        } else {
-          unresolved += 1
         }
       }
       pending = nextPending
       pageRounds += 1
       if (pending.length) await new Promise((resolve) => setTimeout(resolve, 700))
     }
-    unresolved += pending.length
+    pendingDiscovery += pending.length
 
-    const accepted = Array.from(acceptedBySlug.entries())
-    const detailsById = new Map<string, any>()
-    for (let detailStart = 0; detailStart < accepted.length; detailStart += 8) {
-      if (signal?.aborted) throw new Error("Sync stopped by user")
-      const ids = accepted
-        .slice(detailStart, detailStart + 8)
-        .map(([, submission]: any) => Number(submission.id))
-        .filter((id: number) => Number.isSafeInteger(id) && id > 0)
-      const details = await fetchSubmissionDetailsBatch(ids)
-      details.forEach((detail: any) => detailsById.set(String(detail.id), detail))
-      if (detailStart + 8 < accepted.length) await new Promise((resolve) => setTimeout(resolve, 500))
-    }
-
-    const recoveredSubmissions = accepted.map(([titleSlug, submission]: any) => {
-      const details = detailsById.get(String(submission.id))
-      const detailLanguage = details?.lang?.verboseName || details?.lang?.name
-      return {
-        id: String(submission.id),
-        title: submission.title || details?.question?.title,
-        title_slug: titleSlug,
-        status_display: "Accepted",
-        status: 10,
-        lang: submission.lang || detailLanguage,
-        timestamp: submission.timestamp || details?.timestamp,
-        runtime: submission.runtime || details?.runtime,
-        memory: submission.memory || details?.memory,
-        code: details?.code
+    for (const problem of problemBatch) {
+      let checkpoint = checkpoints[problem.titleSlug]
+      if (!checkpoint?.complete) continue
+      const pendingUnknown = Object.values(checkpoint.pendingUnknown || {})
+      if (pendingUnknown.length) {
+        const ids = pendingUnknown.map((submission: any) => Number(submission.id)).filter((id) => Number.isSafeInteger(id) && id > 0)
+        const details = await fetchSubmissionDataInBatches(ids, fetchSubmissionLanguagesBatch, signal)
+        const detailsById = new Map(details.map((detail: any) => [String(detail.id), detail]))
+        const resolved = pendingUnknown.map((submission: any) => {
+          const detail: any = detailsById.get(String(submission.id))
+          return {
+            ...submission,
+            lang: detail?.lang?.verboseName || detail?.lang?.name || submission.lang,
+            timestamp: submission.timestamp || detail?.timestamp
+          }
+        })
+        const merged = mergeAcceptedScanPage(checkpoint, problem.titleSlug, resolved, false, checkpoint.lastKey)
+        merged.offset = checkpoint.offset
+        merged.complete = checkpoint.complete
+        checkpoints[problem.titleSlug] = merged
+        checkpoint = merged
+        await storage.set(STORAGE_KEYS.GITHUB_LANGUAGE_SCAN, scanState)
       }
-    })
-
-    pendingGithubExport.push(...recoveredSubmissions)
-    const isLastProblemBatch = batchStart + problemBatchSize >= missingProblems.length
+      const candidates = Object.values(checkpoint.candidates)
+      if (!candidates.length) {
+        unresolved += 1
+        checkpoints[problem.titleSlug] = newProblemLanguageScanCheckpoint()
+        await storage.set(STORAGE_KEYS.GITHUB_LANGUAGE_SCAN, scanState)
+        continue
+      }
+      pendingGithubExport.push(...candidates.map((submission) => ({
+        ...submission,
+        title_slug: submission.titleSlug,
+        status_display: "Accepted",
+        status: 10
+      })))
+    }
+    const isLastProblemBatch = batchStart + problemBatchSize >= uniqueProblems.length
     if (pendingGithubExport.length >= recoveredCommitSize || (isLastProblemBatch && pendingGithubExport.length)) {
-      exported += await exportAcceptedHistoryToGithub(
+      const result = await exportAcceptedHistoryToGithub(
         pendingGithubExport,
         signal,
         exportedThisRun,
@@ -1134,36 +1227,74 @@ async function recoverMissingSolvedSolutions(
         problems.length,
         submissionCount
       )
-      pendingGithubExport = []
+      exported += result.exported
+      pendingDiscovery += result.pendingLanguages
+      pendingGithubExport.length = 0
     }
     updateStatus(
       "RUNNING",
-      `Recovered ${Math.min(batchStart + problemBatch.length, missingProblems.length)}/${missingProblems.length} missing solved problems...`,
+      `Scanned ${Math.min(batchStart + problemBatch.length, uniqueProblems.length)}/${uniqueProblems.length} solved problems for language variants...`,
       problems.length,
       submissionCount
     )
-    if (batchStart + problemBatchSize < missingProblems.length) {
+    if (batchStart + problemBatchSize < uniqueProblems.length) {
       await new Promise((resolve) => setTimeout(resolve, 900))
     }
   }
 
-  return { exported, unresolved }
+  const incompleteScans = uniqueProblems.filter((problem) => !checkpoints[problem.titleSlug]?.complete).length
+  const unresolvedLanguages = uniqueProblems.reduce((count, problem) => count + Object.keys(checkpoints[problem.titleSlug]?.pendingUnknown || {}).length, 0)
+  const finalPendingDiscovery = Math.max(pendingDiscovery, incompleteScans) + unresolvedLanguages
+
+  if (finalPendingDiscovery === 0 && unresolved === 0) {
+    const verification = exported > 0 ? await getGithubTreePaths(pat, repo, branch) : remoteTree
+    if (!verification.ok || verification.truncated) {
+      throw new Error(`GitHub language migration verification failed: ${verification.message || "repository tree was truncated"}`)
+    }
+    const verifiedIndex = normalizeGithubExportIndex(await storage.get(GITHUB_EXPORT_INDEX_KEY))
+    const verifiedRecords = Object.values(verifiedIndex.targets[target] || {})
+    const allArtifactsPresent = verifiedRecords.every((record) => hasCompleteGithubArtifactSet(record, verification.paths || []))
+    const expectedKeys = new Set(uniqueProblems.flatMap((problem) => Object.keys(checkpoints[problem.titleSlug]?.candidates || {})))
+    const allCandidatesIndexed = Array.from(expectedKeys).every((key) => Boolean(verifiedIndex.targets[target]?.[key]))
+    if (!allArtifactsPresent || !allCandidatesIndexed) {
+      throw new Error("GitHub language migration verification failed: one or more exported artifacts are absent.")
+    }
+    const migrations = (await storage.get<Record<string, any>>(STORAGE_KEYS.GITHUB_LANGUAGE_MIGRATION)) || {}
+    migrations[target] = { schemaVersion: GITHUB_EXPORT_SCHEMA_VERSION, complete: true, verifiedAt: Date.now() }
+    await storage.set(STORAGE_KEYS.GITHUB_LANGUAGE_MIGRATION, migrations)
+  }
+
+  const finalIndex = normalizeGithubExportIndex(await storage.get(GITHUB_EXPORT_INDEX_KEY))
+  const githubOnlyPreserved = findGithubOnlySolutionFolders(
+    basePath,
+    remoteTree.paths || [],
+    finalIndex.targets[target] || {}
+  ).length
+  return { exported, unresolved, pendingDiscovery: finalPendingDiscovery, githubOnlyPreserved }
 }
 
 async function syncGithubRepositoryDashboard(
   problems: any[],
-  archivedCount: number,
   username: string
 ) {
   if (!(await getGithubAutoSync())) return
-  let pat = await getGithubPat()
+  let pat = await getGithubApiToken()
   let repo = await getGithubRepo()
   if (!pat || !repo) return
   pat = stripWrappingQuotes(pat)
   repo = stripWrappingQuotes(repo)
   const branch = await getGithubBranch() || undefined
   const basePath = await getGithubBasePath()
-  const content = buildGithubDashboardReadme(problems, { basePath, archivedCount, username })
+  const target = githubExportTarget(repo, branch, basePath)
+  const exportIndex = normalizeGithubExportIndex(await storage.get(GITHUB_EXPORT_INDEX_KEY))
+  const summary = summarizeGithubExports(exportIndex.targets[target] || {})
+  const content = buildGithubDashboardReadme(problems, {
+    basePath,
+    archivedProblemCount: summary.problemCount,
+    archivedSolutionCount: summary.solutionCount,
+    languageCounts: summary.byLanguage,
+    username
+  })
   const result = await withGithubWriteLock(() => commitToGithub(
     pat,
     repo,
@@ -1189,6 +1320,8 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
     await storage.remove("algovault.solvedSlugs")
     await storage.remove("algovault.syncHasMore")
     await storage.remove(STORAGE_KEYS.LAST_SYNC)
+    await storage.remove(STORAGE_KEYS.GITHUB_LANGUAGE_SCAN)
+    await storage.remove(STORAGE_KEYS.GITHUB_LANGUAGE_MIGRATION)
     startOffset = 0
   }
 
@@ -1372,7 +1505,7 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
       contestRanking
     })
 
-    await exportAcceptedHistoryToGithub(
+    const historyExport = await exportAcceptedHistoryToGithub(
       uniqueRawSubs,
       signal,
       exportedThisRun,
@@ -1382,7 +1515,7 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
     )
 
     const recovered = hasMoreHistory
-      ? { exported: 0, unresolved: 0 }
+      ? { exported: 0, unresolved: 0, pendingDiscovery: 0, githubOnlyPreserved: 0 }
       : await recoverMissingSolvedSolutions(
         problems,
         signal,
@@ -1394,7 +1527,6 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
     if (!hasMoreHistory) {
       await syncGithubRepositoryDashboard(
         problems,
-        Math.max(0, problems.length - recovered.unresolved),
         normalizedUsername
       )
     }
@@ -1427,9 +1559,12 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
     const recoverySuffix = recovered.exported > 0
       ? ` Recovered ${recovered.exported} additional accepted solution${recovered.exported === 1 ? "" : "s"} omitted by the global history endpoint.`
       : ""
+    const legacySuffix = recovered.githubOnlyPreserved > 0
+      ? ` Preserved and reported ${recovered.githubOnlyPreserved} GitHub-only solution folder${recovered.githubOnlyPreserved === 1 ? "" : "s"}; no language was guessed.`
+      : ""
     const completionMessage = hasMoreHistory
       ? `Synced ${submissions.length} submissions. Older history is ready for the next 400-record batch.${exportSuffix}`
-      : `Sync completed successfully. Your history is up to date.${exportSuffix}${recoverySuffix}`
+      : `Sync completed successfully. Your history is up to date.${exportSuffix}${recoverySuffix}${legacySuffix}`
     if (hasMoreHistory) {
       updateStatus("RUNNING", `${completionMessage} Continuing automatically…`, problems.length, startOffset + submissions.length)
       // Keep a deliberate pause between 400-record uploads. The cursor is
@@ -1438,10 +1573,11 @@ async function runSync(username: string, startOffset = 0, signal?: AbortSignal, 
       if (signal?.aborted) throw new Error("Sync stopped by user");
       return runSync(normalizedUsername, offset, signal, false, exportedThisRun)
     }
-    if (recovered.unresolved > 0) {
-      const partialMessage = `History export is incomplete: ${recovered.unresolved} solved problem${recovered.unresolved === 1 ? "" : "s"} did not expose an accepted submission. Run Quick Sync to retry.${recoverySuffix}`
+    const pendingLanguageDiscovery = historyExport.pendingLanguages + recovered.pendingDiscovery
+    if (recovered.unresolved > 0 || pendingLanguageDiscovery > 0) {
+      const partialMessage = `History export is incomplete: ${recovered.unresolved} solved problem${recovered.unresolved === 1 ? "" : "s"} lacked a recoverable accepted submission and ${pendingLanguageDiscovery} language scan${pendingLanguageDiscovery === 1 ? " is" : "s are"} pending. Quick Sync will resume automatically.${recoverySuffix}${legacySuffix}`
       updateStatus("PARTIAL", partialMessage, problems.length, startOffset + submissions.length)
-      return { ok: true, partial: true, unresolved: recovered.unresolved, nextOffset: offset }
+      return { ok: true, partial: true, unresolved: recovered.unresolved, pendingLanguageDiscovery, nextOffset: offset }
     }
     await setLastSync(Date.now())
     updateStatus("SUCCESS", completionMessage, problems.length, startOffset + submissions.length)

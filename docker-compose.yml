@@ -45,7 +45,7 @@ services:
       JWT_ISSUER: ${JWT_ISSUER:-algovault-api}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-algovault-extension}
       JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-86400000}
-      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-chrome-extension://nglebofiomebgndkkdecnmolafjdphhf}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?set CORS_ALLOWED_ORIGINS in .env}
     depends_on:
       postgres:
         condition: service_healthy

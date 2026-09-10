@@ -47,8 +47,9 @@ function response(status, body = {}) {
 }
 
 const writes = [
-  { path: "Solutions/medium/3568/example.cpp", message: "export code", content: "int main() {}" },
-  { path: "Solutions/medium/3568/metadata.json", message: "export metadata", content: "{}" }
+  { path: "Solutions/medium/cpp/3568/example.cpp", message: "export code", content: "int main() {}" },
+  { path: "Solutions/medium/cpp/3568/README.md", message: "export notes", content: "# Example" },
+  { path: "Solutions/medium/cpp/3568/metadata.json", message: "export metadata", content: "{}" }
 ]
 
 test("atomic GitHub batch commit uses the latest tree and normalized credential", async () => {

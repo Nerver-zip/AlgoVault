@@ -2,25 +2,25 @@ export interface GithubExportRecordLike {
   path?: string
 }
 
-export function findProblemsMissingFromGithub(
-  problems: any[],
-  exportedForTarget: Record<string, GithubExportRecordLike>,
-  remoteTreePaths: string[]
-) {
+export function hasCompleteGithubArtifactSet(record: GithubExportRecordLike, remoteTreePaths: string[]) {
+  if (!record.path) return false
   const remotePaths = new Set(remoteTreePaths)
-  const remoteSolutionFolders = new Set(
+  return remotePaths.has(`${record.path}/README.md`)
+    && remotePaths.has(`${record.path}/metadata.json`)
+    && remoteTreePaths.some((path) => path.startsWith(`${record.path}/solution.`))
+}
+
+export function findGithubOnlySolutionFolders(
+  basePath: string,
+  remoteTreePaths: string[],
+  indexedRecords: Record<string, GithubExportRecordLike>
+) {
+  const indexedFolders = new Set(Object.values(indexedRecords).map((record) => record.path).filter(Boolean))
+  const prefix = `${basePath}/`
+  return Array.from(new Set(
     remoteTreePaths
-      .filter((path) => /\/solution\.[^/]+$/.test(path))
+      .filter((path) => path.startsWith(prefix) && /\/solution\.[^/]+$/.test(path))
       .map((path) => path.replace(/\/solution\.[^/]+$/, ""))
-  )
-  return Array.from(new Map(
-    problems
-      .filter((problem: any) => {
-        if (!problem?.titleSlug) return false
-        const record = exportedForTarget[problem.titleSlug]
-        if (!record?.path) return true
-        return !remotePaths.has(`${record.path}/metadata.json`) || !remoteSolutionFolders.has(record.path)
-      })
-      .map((problem: any) => [problem.titleSlug, problem])
-  ).values())
+      .filter((folder) => !indexedFolders.has(folder))
+  )).sort()
 }

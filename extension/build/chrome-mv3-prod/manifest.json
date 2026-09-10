@@ -112,20 +112,20 @@
     },
     {
       "matches": [
-        "https://leetcode.com/u/*"
-      ],
-      "js": [
-        "profile-overlay.2f269a27.js"
-      ],
-      "css": []
-    },
-    {
-      "matches": [
         "https://leetcode.com/problems/*",
         "https://leetcode.com/contest/*/problems/*"
       ],
       "js": [
         "floating-button.124de113.js"
+      ],
+      "css": []
+    },
+    {
+      "matches": [
+        "https://leetcode.com/u/*"
+      ],
+      "js": [
+        "profile-overlay.2f269a27.js"
       ],
       "css": []
     }
@@ -137,8 +137,7 @@
     "https://api.github.com/*",
     "https://api.entranthub.com/*",
     "https://zerotrac.github.io/*",
-    "http://localhost:8080/*",
-    "https://m910q.tail818407.ts.net:8443/*"
+    "http://localhost:8080/*"
   ],
   "web_accessible_resources": [
     {
@@ -151,19 +150,19 @@
     },
     {
       "matches": [
-        "https://leetcode.com/*"
-      ],
-      "resources": [
-        "profile-overlay.95bad065.css"
-      ]
-    },
-    {
-      "matches": [
         "https://leetcode.com/*",
         "https://leetcode.com/*"
       ],
       "resources": [
-        "profile-overlay.95bad065.css"
+        "floating-button.95bad065.css"
+      ]
+    },
+    {
+      "matches": [
+        "https://leetcode.com/*"
+      ],
+      "resources": [
+        "floating-button.95bad065.css"
       ]
     }
   ]

@@ -50,7 +50,9 @@ github:
     client-secret: ${GITHUB_CLIENT_SECRET}
 
 cors:
-  allowed-origins: ${CORS_ALLOWED_ORIGINS:chrome-extension://nglebofiomebgndkkdecnmolafjdphhf}
+  # The extension origin is deployment-specific. Configure it in .env rather
+  # than baking one developer's extension id into the backend.
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:}
 
 logging:
   level:

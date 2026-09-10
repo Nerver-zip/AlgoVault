@@ -1,6 +1,26 @@
 const fs = require('fs');
 const path = require('path');
 
+function loadLocalEnv() {
+  const envPath = path.join(__dirname, '../.env');
+  if (!fs.existsSync(envPath)) return;
+  for (const rawLine of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const separator = line.indexOf('=');
+    if (separator <= 0) continue;
+    const key = line.slice(0, separator).trim();
+    if (process.env[key] !== undefined) continue;
+    let value = line.slice(separator + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
+}
+
+loadLocalEnv();
+
 const dirs = [
   path.join(__dirname, '../build/chrome-mv3-dev'),
   path.join(__dirname, '../build/chrome-mv3-prod')
@@ -24,6 +44,7 @@ const exactBackendPermission = backendHostPermission();
 const prodDir = path.join(__dirname, '../build/chrome-mv3-prod');
 const devDir = path.join(__dirname, '../build/chrome-mv3-dev');
 if (fs.existsSync(prodDir)) {
+  if (fs.existsSync(devDir)) fs.rmSync(devDir, { recursive: true, force: true });
   fs.cpSync(prodDir, devDir, { recursive: true });
   console.log(`Synced build files from chrome-mv3-prod to chrome-mv3-dev`);
 }
@@ -38,7 +59,7 @@ dirs.forEach(dir => {
           && !manifest.host_permissions.includes(exactBackendPermission)) {
         manifest.host_permissions.push(exactBackendPermission);
         modified = true;
-        console.log(`Added exact backend host permission in ${manifestPath}`);
+        console.log(`Added configured backend host permission in ${path.basename(path.dirname(manifestPath))}`);
       }
       if (Array.isArray(manifest.content_scripts)) {
         manifest.content_scripts.forEach(cs => {

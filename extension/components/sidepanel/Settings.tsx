@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react"
+import React, { useEffect, useRef, useState } from "react"
 import { Star, Bug } from "lucide-react"
 import { Card } from "../ui/Card"
 import {
@@ -17,12 +17,15 @@ import {
   getGithubAutoSync,
   setGithubAutoSync as persistGithubAutoSync,
   clearGithubAuth,
+  clearGithubRefreshToken,
+  clearGithubTokenExpiresAt,
+  clearGithubRefreshTokenExpiresAt,
   setJwtToken,
   clearJwtToken,
   getLastSync
 } from "../../lib/storage"
 import { fetchUserStatus } from "../../lib/api/leetcode"
-import { getSettings, updateSettings, exportUserData, logout, authenticateGithubToken } from "../../lib/api/backend"
+import { getSettings, updateSettings, exportUserData, logout, authenticateGithubToken, persistGithubSession } from "../../lib/api/backend"
 import {
   authenticateGithub,
   fetchUserGithubProfile,
@@ -47,6 +50,17 @@ interface SyncStatus {
   problem?: string;
   path?: string;
   timestamp?: number;
+}
+
+function parseGitSyncStatus(raw: unknown): SyncStatus | null {
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw)
+    } catch {
+      return null
+    }
+  }
+  return raw && typeof raw === "object" ? raw as SyncStatus : null
 }
 
 export const Settings = () => {
@@ -76,6 +90,7 @@ export const Settings = () => {
   const [lastSync, setLastSync] = useState<number | null>(null);
   const [settingsSynced, setSettingsSynced] = useState<boolean>(false);
   const [exporting, setExporting] = useState<boolean>(false);
+  const githubSyncSuccessAt = useRef(0)
 
   useEffect(() => {
     chrome.storage.sync.get(['hideAcceptanceRate'], (res) => {
@@ -113,66 +128,68 @@ export const Settings = () => {
     } catch {}
     getLastSync().then(setLastSync).catch(() => setLastSync(null));
 
-    // Load token and fetch repos/profile if present
-    getGithubPat().then((token) => {
-      if (token) {
-        const normalizedToken = normalizeGithubCredential(token)
-        setGithubPat(normalizedToken);
-        // Refresh GitHub profile & repos, validate token validity
-        fetchUserGithubProfile(normalizedToken).then((res) => {
-          if (res.revoked) {
-            setAuthError("GitHub token was revoked or expired. Please connect your account again.");
-            return;
-          }
-          if (!res.ok) {
-            setAuthError(res.error || "GitHub profile validation failed. The saved connection was not cleared.");
-            return;
-          }
-          if (res.ok && res.user) {
-            setGithubUser(res.user);
-            persistGithubUser(res.user);
-          }
-        });
-        setLoadingRepos(true);
-        fetchUserGithubRepos(normalizedToken).then((res) => {
-          if (res.revoked) {
-            setAuthError("GitHub token was revoked or expired. Please connect your account again.");
-            setLoadingRepos(false);
-            return;
-          }
-          if (!res.ok) {
-            setAuthError(res.error || "GitHub repository validation failed. The saved connection was not cleared.");
-            setLoadingRepos(false);
-            return;
-          }
-          if (res.ok && res.repos) {
-            setGithubRepos(res.repos);
-          }
-          setLoadingRepos(false);
-        });
-      } else {
+    // Load the saved credential once and resolve profile/repository validation
+    // together. Independent promises used to race: a late response from one
+    // endpoint could overwrite a successful response from the other with a
+    // stale "token revoked" message.
+    getGithubPat().then(async (token) => {
+      if (!token) {
         setGithubUser(null);
+        return;
+      }
+
+      const normalizedToken = normalizeGithubCredential(token)
+      setGithubPat(normalizedToken);
+      setLoadingRepos(true);
+      try {
+        const [profileRes, reposRes] = await Promise.all([
+          fetchUserGithubProfile(normalizedToken),
+          fetchUserGithubRepos(normalizedToken)
+        ])
+
+        if (profileRes.ok && profileRes.user) {
+          setGithubUser(profileRes.user);
+          await persistGithubUser(profileRes.user);
+        }
+        if (reposRes.ok) setGithubRepos(reposRes.repos)
+
+        // One successful authenticated GitHub response is enough to prove
+        // that the saved connection is usable. A temporary failure in the
+        // other endpoint must not make startup look disconnected.
+        if (profileRes.ok || reposRes.ok) {
+          setAuthError(null)
+        } else if (profileRes.revoked && reposRes.revoked) {
+          setAuthError("GitHub token was revoked or expired. Please connect your account again.")
+        } else {
+          setAuthError(
+            profileRes.error || reposRes.error ||
+            "GitHub connection validation failed. The saved connection was not cleared."
+          )
+        }
+      } catch (error: any) {
+        setAuthError(error?.message || "GitHub connection validation failed. The saved connection was not cleared.")
+      } finally {
+        setLoadingRepos(false)
       }
     });
-    
-    const parseGitSyncStatus = (raw: any) => {
-      if (typeof raw === "string") {
-        try {
-          return JSON.parse(raw);
-        } catch {
-          return null;
-        }
-      }
-      return raw || null;
-    };
 
     chrome.storage.local.get("algovault.gitSyncStatus", (res) => {
-      setGitSyncStatus(parseGitSyncStatus(res["algovault.gitSyncStatus"]));
+      const nextStatus = parseGitSyncStatus(res["algovault.gitSyncStatus"])
+      setGitSyncStatus(nextStatus)
+      if (nextStatus?.success && nextStatus.timestamp) {
+        githubSyncSuccessAt.current = Math.max(githubSyncSuccessAt.current, nextStatus.timestamp)
+        setAuthError(null)
+      }
     });
 
     const gitListener = (changes: any) => {
       if (changes["algovault.gitSyncStatus"]?.newValue) {
-        setGitSyncStatus(parseGitSyncStatus(changes["algovault.gitSyncStatus"].newValue));
+        const nextStatus = parseGitSyncStatus(changes["algovault.gitSyncStatus"].newValue)
+        setGitSyncStatus(nextStatus)
+        if (nextStatus?.success) {
+          githubSyncSuccessAt.current = Math.max(githubSyncSuccessAt.current, nextStatus.timestamp || Date.now())
+          setAuthError(null)
+        }
       }
       if (changes["algovault.github.pat"]) {
         const newPat = changes["algovault.github.pat"].newValue;
@@ -298,9 +315,15 @@ export const Settings = () => {
     try {
       const res = await authenticateGithub();
       if (res.ok && res.token && res.jwt) {
-        await setJwtToken(res.jwt);
+        await persistGithubSession({
+          token: res.jwt,
+          githubToken: res.token,
+          username: "",
+          refreshToken: res.refreshToken,
+          expiresIn: res.expiresIn,
+          refreshTokenExpiresIn: res.refreshTokenExpiresIn
+        });
         setGithubPat(res.token);
-        await persistGithubPat(res.token);
         
         // Fetch profile & repos
         const profileRes = await fetchUserGithubProfile(res.token);
@@ -371,11 +394,10 @@ export const Settings = () => {
     await persistGithubBranch(branchVal);
   };
 
-  const handleBasePathChange = async (path: string) => {
+  const handleBasePathChange = (path: string) => {
     setGithubBasePath(path);
     const result = normalizeGithubBasePath(path);
     setGithubBasePathError(result.error);
-    if (!result.error) await persistGithubBasePath(result.value);
   };
 
   const handleBasePathBlur = async () => {
@@ -412,6 +434,9 @@ export const Settings = () => {
         return;
       }
       await setJwtToken(auth.token);
+      await clearGithubRefreshToken();
+      await clearGithubTokenExpiresAt();
+      await clearGithubRefreshTokenExpiresAt();
       await persistGithubPat(normalizedToken);
       await persistGithubRepo(githubRepo.trim());
       await persistGithubBranch(githubBranch.trim());
@@ -447,9 +472,9 @@ export const Settings = () => {
       });
       setSettingsSynced(true);
       setTimeout(() => setSettingsSynced(false), 2000);
-    } catch (e) {
+    } catch (e: any) {
       console.error("Failed to sync settings:", e);
-      alert("Failed to sync settings to server.");
+      alert(e?.message || "Failed to sync settings to server.");
     }
   };
 
@@ -762,7 +787,7 @@ export const Settings = () => {
                 <p className="mt-1 text-[9px] text-red-400 font-mono">⚠️ {githubBasePathError}</p>
               ) : (
                 <p className="mt-1 text-[9px] text-zinc-500 font-mono break-all">
-                  Preview: {normalizeGithubBasePath(githubBasePath).value}/medium/1-two-sum/
+                  Preview: {normalizeGithubBasePath(githubBasePath).value}/medium/python3/1-two-sum/
                 </p>
               )}
               <p className="mt-1 text-[9px] text-amber-500/90 font-mono leading-relaxed">
@@ -780,7 +805,7 @@ export const Settings = () => {
                   </span>
                 </div>
                 <div className="text-[10px] text-zinc-500 font-mono mt-0.5 leading-relaxed">
-                  Push live and synchronized accepted solutions, measured runtime/memory, and estimated Big-O to GitHub. History uses adaptive batches of up to 100 solutions per commit and maintains a repository README dashboard.
+                  Push the newest accepted solution for each problem and language, measured runtime/memory, and estimated Big-O to GitHub. History uses resumable language discovery, adaptive batches of up to 100 solutions per commit, and maintains a repository README dashboard.
                 </div>
               </div>
               <button

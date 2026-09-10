@@ -15,6 +15,8 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.RestClientException;
 
 import java.util.List;
 import java.util.Map;
@@ -53,7 +55,15 @@ public class AuthController {
         @NotBlank @Pattern(regexp = "^https://[a-p]{32}\\.chromiumapp\\.org/$") String redirectUri
     ) {}
     public record GithubTokenRequest(@NotBlank @Size(max = 500) String token) {}
-    public record GithubExchangeResponse(String token, String githubToken, String username) {}
+    public record GithubRefreshRequest(@NotBlank @Size(max = 500) String refreshToken) {}
+    public record GithubExchangeResponse(
+        String token,
+        String githubToken,
+        String username,
+        String refreshToken,
+        Long expiresIn,
+        Long refreshTokenExpiresIn
+    ) {}
 
     @GetMapping("/github-state")
     public ResponseEntity<OAuthStateResponse> githubState() {
@@ -85,7 +95,7 @@ public class AuthController {
                 return ResponseEntity.status(401).body(Map.of("error", "GitHub did not grant an access token"));
             }
 
-            return ResponseEntity.ok(authenticateGithubToken(githubToken));
+            return ResponseEntity.ok(authenticateGithubToken(githubToken, tokenResponse.getBody()));
         } catch (Exception exception) {
             return ResponseEntity.status(401).body(Map.of("error", "GitHub authorization could not be verified"));
         }
@@ -104,7 +114,50 @@ public class AuthController {
         }
     }
 
+    /**
+     * Rotate an expiring GitHub OAuth access token without exposing the OAuth
+     * client secret to the extension. GitHub rotates both values, so the
+     * caller must persist the refresh token returned in the response.
+     */
+    @PostMapping("/github-refresh")
+    public ResponseEntity<?> refreshGithubToken(@Valid @RequestBody GithubRefreshRequest request) {
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+            ResponseEntity<Map> tokenResponse = restTemplate.postForEntity(
+                "https://github.com/login/oauth/access_token",
+                new org.springframework.http.HttpEntity<>(Map.of(
+                    "client_id", githubClientId,
+                    "client_secret", githubClientSecret,
+                    "grant_type", "refresh_token",
+                    "refresh_token", request.refreshToken()
+                ), headers),
+                Map.class
+            );
+            Map body = tokenResponse.getBody();
+            String githubToken = body == null ? null : (String) body.get("access_token");
+            if (githubToken == null || githubToken.isBlank()) {
+                return ResponseEntity.status(401).body(Map.of("error", "GitHub refresh token is invalid or expired"));
+            }
+            return ResponseEntity.ok(authenticateGithubToken(githubToken, body));
+        } catch (HttpStatusCodeException exception) {
+            if (exception.getStatusCode().is4xxClientError()) {
+                return ResponseEntity.status(401).body(Map.of("error", "GitHub refresh token is invalid or expired"));
+            }
+            return ResponseEntity.status(503).body(Map.of("error", "GitHub token service is temporarily unavailable"));
+        } catch (RestClientException exception) {
+            return ResponseEntity.status(503).body(Map.of("error", "GitHub token service is temporarily unavailable"));
+        } catch (Exception exception) {
+            return ResponseEntity.status(401).body(Map.of("error", "GitHub refresh token could not be verified"));
+        }
+    }
+
     private GithubExchangeResponse authenticateGithubToken(String githubToken) {
+        return authenticateGithubToken(githubToken, null);
+    }
+
+    private GithubExchangeResponse authenticateGithubToken(String githubToken, Map tokenResponse) {
         HttpHeaders githubHeaders = new HttpHeaders();
         githubHeaders.setBearerAuth(githubToken);
         githubHeaders.setAccept(List.of(MediaType.valueOf("application/vnd.github+json")));
@@ -122,7 +175,30 @@ public class AuthController {
         String avatarUrl = profile.get("avatar_url") instanceof String avatar ? avatar : null;
         User user = userRepository.findByGithubId(githubId).orElseGet(() -> userRepository.save(User.builder()
             .githubId(githubId).username(login).avatarUrl(avatarUrl).virtualRating(1500).build()));
-        return new GithubExchangeResponse(jwtService.generateToken(user.getId(), user.getUsername()), githubToken, user.getUsername());
+        return new GithubExchangeResponse(
+            jwtService.generateToken(user.getId(), user.getUsername()),
+            githubToken,
+            user.getUsername(),
+            tokenResponse == null ? null : stringValue(tokenResponse.get("refresh_token")),
+            tokenResponse == null ? null : longValue(tokenResponse.get("expires_in")),
+            tokenResponse == null ? null : longValue(tokenResponse.get("refresh_token_expires_in"))
+        );
+    }
+
+    private static String stringValue(Object value) {
+        return value instanceof String text && !text.isBlank() ? text : null;
+    }
+
+    private static Long longValue(Object value) {
+        if (value instanceof Number number) return number.longValue();
+        if (value instanceof String text) {
+            try {
+                return Long.parseLong(text);
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     @GetMapping("/me")

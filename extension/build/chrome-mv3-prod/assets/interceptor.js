@@ -14,7 +14,8 @@
   });
   observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-algovault-nonce"] });
 
-  var lastSeenSubmissionId;
+  var seenSubmissionIds = new Set();
+  var emittedSubmissionWithoutId = false;
   var originalFetch = window.fetch;
   window.__ALGOVAULT_IS_SUBMITTING__ = false;
 
@@ -28,29 +29,41 @@
     return '';
   }
 
+  function isSubmissionCheckUrl(url) {
+    return /\/submissions\/detail\/\d+\/check(?:\/|[?#]|$)/.test(String(url));
+  }
+
   function emitSubmissionResult(url, data) {
     var body = data && data.data ? data.data : data;
     if (!body || body.state !== 'SUCCESS') return;
     
-    var match = String(url).match(/\/submissions\/detail\/(\d+)\/check/);
+    var match = String(url).match(/\/submissions\/detail\/(\d+)\/check(?:\/|[?#]|$)/);
     var submissionId = match ? match[1] : undefined;
     var isSubmissionCheck = Boolean(submissionId);
 
     // Only fire for real submission checks or active submit action (ignores run code)
     if (!isSubmissionCheck && !window.__ALGOVAULT_IS_SUBMITTING__) return;
     
-    if (submissionId && submissionId === lastSeenSubmissionId) return;
-    if (submissionId) lastSeenSubmissionId = submissionId;
+    if (submissionId) {
+      if (seenSubmissionIds.has(submissionId)) return;
+      seenSubmissionIds.add(submissionId);
+      if (seenSubmissionIds.size > 100) {
+        seenSubmissionIds.delete(seenSubmissionIds.values().next().value);
+      }
+    } else {
+      if (emittedSubmissionWithoutId) return;
+      emittedSubmissionWithoutId = true;
+    }
 
     // Reset submit state once the terminal SUCCESS state is captured
     window.__ALGOVAULT_IS_SUBMITTING__ = false;
     
-    var currentNonce = nonce || document.documentElement.getAttribute("data-algovault-nonce");
+    var currentNonce = nonce || document.documentElement.getAttribute("data-algovault-nonce") || "";
     
     var captured = window.__ALGOVAULT_LAST_SUBMITTED_CODE__ || {};
     window.postMessage({
       type: 'AV_SUBMISSION_RESULT',
-      nonce: nonce,
+      nonce: currentNonce,
       detail: {
         submissionId: submissionId,
         statusCode: body.status_code,
@@ -73,6 +86,7 @@
 
     if (isSubmit) {
       window.__ALGOVAULT_IS_SUBMITTING__ = true;
+      emittedSubmissionWithoutId = false;
       try {
         if (init && init.body) {
           var body = typeof init.body === 'string' ? JSON.parse(init.body) : init.body;
@@ -84,8 +98,7 @@
     }
 
     return originalFetch.apply(this, arguments).then(function(response) {
-      // Match both specific check URL pattern and generic /check/ path
-      if (/\/submissions\/detail\/\d+\/check/.test(url) || (typeof url === 'string' && url.indexOf('/check') !== -1)) {
+      if (isSubmissionCheckUrl(url)) {
         try {
           response.clone().json().then(function(data) {
             emitSubmissionResult(url, data);
@@ -111,6 +124,7 @@
     var isSubmit = /\/submit(\/|\?|$)/.test(url);
     if (isSubmit) {
       window.__ALGOVAULT_IS_SUBMITTING__ = true;
+      emittedSubmissionWithoutId = false;
       if (body) {
         try {
           var payload = typeof body === 'string' ? JSON.parse(body) : body;
@@ -120,7 +134,7 @@
         } catch(e) {}
       }
     }
-    if (/\/submissions\/detail\/\d+\/check/.test(url) || url.indexOf('/check') !== -1) {
+    if (isSubmissionCheckUrl(url)) {
       this.addEventListener('loadend', function() {
         try {
           if (this.status < 200 || this.status >= 300 || !this.responseText) return;

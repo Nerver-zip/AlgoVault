@@ -1,5 +1,18 @@
 import { BACKEND_URL } from "../constants"
-import { getJwtToken, setJwtToken, clearJwtToken, getGithubPat } from "../storage"
+import {
+  getJwtToken,
+  setJwtToken,
+  clearJwtToken,
+  getGithubPat,
+  setGithubPat,
+  getGithubRefreshToken,
+  setGithubRefreshToken,
+  clearGithubRefreshToken,
+  setGithubTokenExpiresAt,
+  clearGithubTokenExpiresAt,
+  setGithubRefreshTokenExpiresAt,
+  clearGithubRefreshTokenExpiresAt
+} from "../storage"
 import type { ActiveSession, DashboardData, PredictionResult, RevisionQueueItem, SessionData, WeaknessSnapshot } from "../types"
 import { BackendAuthError, backendAuthMessage, type BackendAuthFailureKind } from "../backend-auth"
 import { normalizeGithubCredential } from "../github-status"
@@ -9,6 +22,15 @@ const JWT_REFRESH_SKEW_MS = 10 * 60 * 1000
 
 type SilentRefreshResult = { token: string | null; failure?: BackendAuthFailureKind }
 let refreshInFlight: Promise<SilentRefreshResult> | null = null
+
+export type GithubSessionResponse = {
+  token: string
+  githubToken: string
+  username: string
+  refreshToken?: string
+  expiresIn?: number
+  refreshTokenExpiresIn?: number
+}
 
 export const getGithubOAuthState = async (): Promise<string> => {
   const res = await fetch(`${BACKEND_URL}/api/auth/github-state`)
@@ -49,11 +71,58 @@ export const authenticateGithubToken = async (token: string) => {
       }
       throw new BackendAuthError("CLOUD_SESSION_UNAVAILABLE", backendAuthMessage("CLOUD_SESSION_UNAVAILABLE"))
     }
-    return res.json() as Promise<{ token: string; githubToken: string; username: string }>
+    return res.json() as Promise<GithubSessionResponse>
   } catch (error) {
     if (error instanceof BackendAuthError) throw error
     throw new BackendAuthError("CLOUD_SESSION_UNAVAILABLE", backendAuthMessage("CLOUD_SESSION_UNAVAILABLE"))
   }
+}
+
+/**
+ * Rotates an expiring GitHub OAuth access token through the backend. The
+ * client secret never enters the extension bundle; GitHub's response may
+ * contain a new refresh token, which must replace the old one atomically.
+ */
+export const refreshGithubOAuthSession = async (refreshToken: string): Promise<GithubSessionResponse> => {
+  const res = await fetch(`${BACKEND_URL}/api/auth/github-refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refreshToken })
+  })
+  if (!res.ok) {
+    const body = await res.text().catch(() => "")
+    if (res.status === 401) {
+      throw new BackendAuthError("GITHUB_REAUTH_REQUIRED", backendAuthMessage("GITHUB_REAUTH_REQUIRED"))
+    }
+    throw new BackendAuthError("CLOUD_SESSION_UNAVAILABLE", body || backendAuthMessage("CLOUD_SESSION_UNAVAILABLE"))
+  }
+  return res.json() as Promise<GithubSessionResponse>
+}
+
+export async function persistGithubSession(
+  authRes: GithubSessionResponse,
+  options: { preserveExistingRefreshToken?: boolean } = {}
+): Promise<void> {
+  const preserveExistingRefreshToken = options.preserveExistingRefreshToken === true
+  if (authRes.githubToken) {
+    await setGithubPat(authRes.githubToken)
+  }
+  if (authRes.refreshToken) {
+    await setGithubRefreshToken(authRes.refreshToken)
+  } else if (!preserveExistingRefreshToken) {
+    await clearGithubRefreshToken()
+  }
+  if (typeof authRes.expiresIn === "number" && authRes.expiresIn > 0) {
+    await setGithubTokenExpiresAt(Date.now() + authRes.expiresIn * 1000)
+  } else if (!preserveExistingRefreshToken) {
+    await clearGithubTokenExpiresAt()
+  }
+  if (typeof authRes.refreshTokenExpiresIn === "number" && authRes.refreshTokenExpiresIn > 0) {
+    await setGithubRefreshTokenExpiresAt(Date.now() + authRes.refreshTokenExpiresIn * 1000)
+  } else if (!preserveExistingRefreshToken) {
+    await clearGithubRefreshTokenExpiresAt()
+  }
+  await setJwtToken(authRes.token)
 }
 
 async function validateSavedGithubCredential(token: string): Promise<"valid" | "invalid" | "unknown"> {
@@ -84,10 +153,59 @@ async function trySilentRefresh(force = false): Promise<SilentRefreshResult> {
   refreshInFlight = (async () => {
   const pat = await getGithubPat()
   if (!pat) return { token: null, failure: "GITHUB_NOT_CONNECTED" }
+
+  const renewFromSavedCredential = async (): Promise<SilentRefreshResult> => {
+    try {
+      const authRes = await authenticateGithubToken(pat)
+      if (authRes?.token) {
+        // This path intentionally replaces a broken refresh credential with
+        // the still-valid saved access token. If that token is expiring, the
+        // next GitHub validation will correctly require a new OAuth grant.
+        await persistGithubSession(authRes)
+        return { token: authRes.token }
+      }
+    } catch (error) {
+      if (error instanceof BackendAuthError) return { token: null, failure: error.kind }
+    }
+    return { token: null, failure: "CLOUD_SESSION_UNAVAILABLE" }
+  }
+
+  const savedRefreshToken = await getGithubRefreshToken()
+  if (savedRefreshToken) {
+    try {
+      const authRes = await refreshGithubOAuthSession(savedRefreshToken)
+      if (authRes?.token && authRes.githubToken) {
+        // GitHub may omit a rotated value in a successful response. Keep the
+        // previous refresh metadata in that case instead of breaking the next
+        // automatic renewal cycle.
+        await persistGithubSession(authRes, { preserveExistingRefreshToken: true })
+        return { token: authRes.token }
+      }
+      return await renewFromSavedCredential()
+    } catch (error) {
+      if (error instanceof BackendAuthError && error.kind === "GITHUB_REAUTH_REQUIRED") {
+        // A stale refresh token does not prove that the access token itself
+        // was revoked. Validate and reuse it before asking the user to grant
+        // OAuth again, which is the setup-once behavior we want.
+        const directStatus = await validateSavedGithubCredential(pat)
+        if (directStatus === "invalid") {
+          return { token: null, failure: "GITHUB_TOKEN_REJECTED" }
+        }
+        if (directStatus === "valid") return await renewFromSavedCredential()
+        return { token: null, failure: "CLOUD_SESSION_UNAVAILABLE" }
+      }
+      if (error instanceof BackendAuthError && error.kind === "CLOUD_SESSION_UNAVAILABLE") {
+        // A backend/network outage must not discard a still-valid JWT or the
+        // refresh credential. The next request/alarm will retry silently.
+        return { token: null, failure: error.kind }
+      }
+    }
+  }
+
   try {
     const authRes = await authenticateGithubToken(pat)
     if (authRes?.token) {
-      await setJwtToken(authRes.token)
+      await persistGithubSession(authRes)
       return { token: authRes.token }
     }
   } catch (error) {
@@ -188,7 +306,9 @@ async function backendFetch<T = any>(path: string, init: RequestInit = {}): Prom
     await clearJwtToken()
     const kind: BackendAuthFailureKind = refreshed.failure === "GITHUB_TOKEN_REJECTED"
       ? "GITHUB_TOKEN_REJECTED"
-      : "CLOUD_SESSION_EXPIRED"
+      : refreshed.failure === "GITHUB_REAUTH_REQUIRED"
+        ? "GITHUB_REAUTH_REQUIRED"
+        : "CLOUD_SESSION_EXPIRED"
     throw new BackendAuthError(kind, backendAuthMessage(kind))
   }
 

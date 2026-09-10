@@ -294,6 +294,29 @@ export const fetchSubmissionDetailsBatch = async (submissionIds: number[]) => {
   }))
 }
 
+/**
+ * Resolves missing language identities without downloading source code for
+ * submissions that may later lose the newest-per-language selection.
+ */
+export const fetchSubmissionLanguagesBatch = async (submissionIds: number[]) => {
+  const ids = submissionIds.filter((id) => Number.isSafeInteger(id) && id > 0)
+  if (!ids.length) return []
+  const fields = ids.map((id, index) => `
+    s${index}: submissionDetails(submissionId: ${id}) {
+      lang {
+        name
+        verboseName
+      }
+      timestamp
+    }
+  `).join("\n")
+  const response = await fetchGraphQL(`query missingSubmissionLanguages { ${fields} }`)
+  return ids.map((id, index) => ({
+    id: String(id),
+    ...(response.data?.[`s${index}`] || {})
+  }))
+}
+
 export const fetchContestHistory = async (username: string) => {
   const query = `
     query userContestRankingInfo($username: String!) {

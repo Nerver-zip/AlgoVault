@@ -26,7 +26,7 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(org.springframework.http.HttpMethod.OPTIONS, "/**").permitAll()
-                .requestMatchers("/api/auth/github-state", "/api/auth/github-exchange", "/api/auth/github-token").permitAll()
+                .requestMatchers("/api/auth/github-state", "/api/auth/github-exchange", "/api/auth/github-token", "/api/auth/github-refresh").permitAll()
                 .requestMatchers("/api/**").authenticated()
                 .anyRequest().authenticated()
             )

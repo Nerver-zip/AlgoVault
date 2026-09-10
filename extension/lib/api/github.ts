@@ -1,11 +1,55 @@
-import { exchangeGithubCode, getGithubOAuthState } from "./backend";
-import { getGithubAutoSync } from "../storage";
+import { exchangeGithubCode, getGithubOAuthState, persistGithubSession, refreshGithubOAuthSession } from "./backend";
+import {
+  getGithubAutoSync,
+  getGithubPat,
+  getGithubRefreshToken,
+  getGithubTokenExpiresAt,
+  getGithubRefreshTokenExpiresAt
+} from "../storage";
 import { encodeGithubContentPath } from "../github-path";
 import { classifyGithubHttpFailure, githubNetworkFailure, normalizeGithubCredential } from "../github-status";
+import { resolveGithubLanguage } from "../github-language";
 
 // Client IDs identify an OAuth app and are public by design. The client
 // secret is deliberately backend-only and must never be bundled here.
 export const GITHUB_CLIENT_ID = process.env.PLASMO_PUBLIC_GITHUB_CLIENT_ID || '';
+
+const GITHUB_REFRESH_SKEW_MS = 10 * 60 * 1000
+let githubRefreshInFlight: Promise<string | null> | null = null
+
+/**
+ * Return the current GitHub access token and silently rotate it when the
+ * OAuth app issued an expiring token. Legacy PATs and non-expiring OAuth
+ * tokens are returned unchanged.
+ */
+export async function getGithubApiToken(forceRefresh = false): Promise<string | null> {
+  const token = await getGithubPat()
+  const refreshToken = await getGithubRefreshToken()
+  if (!token || !refreshToken) return token
+
+  const refreshTokenExpiresAt = await getGithubRefreshTokenExpiresAt()
+  if (refreshTokenExpiresAt !== null && refreshTokenExpiresAt <= Date.now()) return token
+
+  const expiresAt = await getGithubTokenExpiresAt()
+  if (!forceRefresh && expiresAt !== null && expiresAt - Date.now() > GITHUB_REFRESH_SKEW_MS) return token
+
+  if (!githubRefreshInFlight) {
+    githubRefreshInFlight = (async () => {
+      try {
+        const auth = await refreshGithubOAuthSession(refreshToken)
+        if (!auth.githubToken || !auth.token) return null
+        await persistGithubSession(auth, { preserveExistingRefreshToken: true })
+        return auth.githubToken
+      } catch (error) {
+        console.warn("AlgoVault: silent GitHub OAuth refresh failed", error)
+        return null
+      } finally {
+        githubRefreshInFlight = null
+      }
+    })()
+  }
+  return (await githubRefreshInFlight) || token
+}
 
 export interface GithubUser {
   login: string;
@@ -65,13 +109,30 @@ export interface GithubReposResult {
  */
 export async function fetchUserGithubProfile(token: string): Promise<GithubProfileResult> {
   try {
-    token = normalizeGithubCredential(token)
-    const res = await fetch("https://api.github.com/user", {
+    const normalizedToken = normalizeGithubCredential(token)
+    const storedToken = await getGithubPat()
+    let activeToken = storedToken && normalizeGithubCredential(storedToken) === normalizedToken
+      ? await getGithubApiToken()
+      : normalizedToken
+    if (!activeToken) activeToken = normalizedToken
+    let res = await fetch("https://api.github.com/user", {
       headers: {
-        Authorization: `token ${token}`,
+        Authorization: `token ${activeToken}`,
         Accept: "application/vnd.github.v3+json"
       }
     });
+    if (res.status === 401) {
+      const refreshedToken = await getGithubApiToken(true)
+      if (refreshedToken && refreshedToken !== activeToken) {
+        activeToken = refreshedToken
+        res = await fetch("https://api.github.com/user", {
+          headers: {
+            Authorization: `token ${activeToken}`,
+            Accept: "application/vnd.github.v3+json"
+          }
+        })
+      }
+    }
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
       const failure = classifyGithubHttpFailure(res.status, "profile", res.headers, errText);
@@ -90,13 +151,30 @@ export async function fetchUserGithubProfile(token: string): Promise<GithubProfi
  */
 export async function fetchUserGithubRepos(token: string): Promise<GithubReposResult> {
   try {
-    token = normalizeGithubCredential(token)
-    const res = await fetch("https://api.github.com/user/repos?per_page=100&sort=updated&type=all", {
+    const normalizedToken = normalizeGithubCredential(token)
+    const storedToken = await getGithubPat()
+    let activeToken = storedToken && normalizeGithubCredential(storedToken) === normalizedToken
+      ? await getGithubApiToken()
+      : normalizedToken
+    if (!activeToken) activeToken = normalizedToken
+    let res = await fetch("https://api.github.com/user/repos?per_page=100&sort=updated&type=all", {
       headers: {
-        Authorization: `token ${token}`,
+        Authorization: `token ${activeToken}`,
         Accept: "application/vnd.github.v3+json"
       }
     });
+    if (res.status === 401) {
+      const refreshedToken = await getGithubApiToken(true)
+      if (refreshedToken && refreshedToken !== activeToken) {
+        activeToken = refreshedToken
+        res = await fetch("https://api.github.com/user/repos?per_page=100&sort=updated&type=all", {
+          headers: {
+            Authorization: `token ${activeToken}`,
+            Accept: "application/vnd.github.v3+json"
+          }
+        })
+      }
+    }
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
       const failure = classifyGithubHttpFailure(res.status, "repositories", res.headers, errText);
@@ -129,7 +207,8 @@ export async function commitToGithub(
   filePath: string,
   commitMessage: string,
   fileContent: string,
-  branch?: string
+  branch?: string,
+  authRetryRemaining = 1
 ): Promise<{ ok: boolean; message?: string; alreadySynced?: boolean; revoked?: boolean }> {
   try {
     pat = normalizeGithubCredential(pat)
@@ -173,6 +252,13 @@ export async function commitToGithub(
         if (getJson.content) {
           existingContent = getJson.content.replace(/\n/g, "");
         }
+      } else if (getRes.status === 401 && authRetryRemaining > 0) {
+        const refreshedToken = await getGithubApiToken(true)
+        if (refreshedToken && refreshedToken !== pat) {
+          return commitToGithub(refreshedToken, repoPath, filePath, commitMessage, fileContent, branch, 0)
+        }
+        const failure = classifyGithubHttpFailure(getRes.status, "file", getRes.headers)
+        return { ok: false, revoked: failure.revoked, message: failure.message }
       } else if (getRes.status !== 404) {
         const errText = await getRes.text().catch(() => "");
         const failure = classifyGithubHttpFailure(getRes.status, "file", getRes.headers, errText);
@@ -236,6 +322,12 @@ export async function commitToGithub(
     }
 
     if (!putRes.ok) {
+      if (putRes.status === 401 && authRetryRemaining > 0) {
+        const refreshedToken = await getGithubApiToken(true)
+        if (refreshedToken && refreshedToken !== pat) {
+          return commitToGithub(refreshedToken, repoPath, filePath, commitMessage, fileContent, branch, 0)
+        }
+      }
       const errorMsg = await putRes.text().catch(() => "");
       const failure = classifyGithubHttpFailure(putRes.status, "file", putRes.headers, errorMsg);
       return {
@@ -261,6 +353,7 @@ export interface BatchFileWrite {
 export interface BatchCommitOptions {
   allowSequentialFallback?: boolean
   refUpdateRetriesRemaining?: number
+  authRetryRemaining?: number
 }
 
 export interface BatchCommitResult {
@@ -462,6 +555,16 @@ export async function batchCommitToGithub(
     );
 
     if (refRes.status === 401) {
+      const authRetryRemaining = options.authRetryRemaining ?? 1
+      if (authRetryRemaining > 0) {
+        const refreshedToken = await getGithubApiToken(true)
+        if (refreshedToken && refreshedToken !== pat) {
+          return batchCommitToGithub(refreshedToken, repoPath, writes, branch, commitMessageOverride, {
+            ...options,
+            authRetryRemaining: authRetryRemaining - 1
+          })
+        }
+      }
       const failure = classifyGithubHttpFailure(refRes.status, "branch", refRes.headers);
       return { ok: false, revoked: failure.revoked, message: failure.message };
     }
@@ -669,32 +772,22 @@ async function sequentialFallback(
  * Maps LeetCode language string to standard file extension.
  */
 export function getExtensionForLanguage(lang?: string): string {
-  if (!lang) return "txt";
-  const l = lang.toLowerCase();
-  if (l.includes("cpp") || l === "c++") return "cpp";
-  if (l.includes("java")) return "java";
-  if (l.includes("python") || l === "py") return "py";
-  if (l.includes("javascript") || l === "js") return "js";
-  if (l.includes("typescript") || l === "ts") return "ts";
-  if (l === "c") return "c";
-  if (l.includes("csharp") || l === "c#") return "cs";
-  if (l.includes("golang") || l === "go") return "go";
-  if (l.includes("kotlin")) return "kt";
-  if (l.includes("rust")) return "rs";
-  if (l.includes("ruby")) return "rb";
-  if (l.includes("scala")) return "scala";
-  if (l.includes("swift")) return "swift";
-  if (l.includes("php")) return "php";
-  if (l.includes("bash") || l === "sh") return "sh";
-  if (l.includes("sql")) return "sql";
-  return "txt";
+  return resolveGithubLanguage(lang)?.extension || "txt";
 }
 
 /**
  * Initiates the GitHub OAuth flow using the Chrome Identity API,
  * retrieves the authorization code, and exchanges it via the backend.
  */
-export async function authenticateGithub(): Promise<{ ok: boolean; token?: string; jwt?: string; message?: string }> {
+export async function authenticateGithub(): Promise<{
+  ok: boolean
+  token?: string
+  jwt?: string
+  refreshToken?: string
+  expiresIn?: number
+  refreshTokenExpiresIn?: number
+  message?: string
+}> {
   try {
     if (!GITHUB_CLIENT_ID) return { ok: false, message: "GitHub OAuth client ID is not configured." };
     const redirectUri = chrome.identity.getRedirectURL();
@@ -703,7 +796,7 @@ export async function authenticateGithub(): Promise<{ ok: boolean; token?: strin
     // `public_repo` is intentionally narrower than GitHub's broad `repo`
     // scope. A private repository requires a user-created fine-grained token
     // restricted to that specific repository.
-    const authUrl = `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(GITHUB_CLIENT_ID)}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=public_repo&state=${encodeURIComponent(state)}&code_challenge=${encodeURIComponent(pkce.challenge)}&code_challenge_method=S256`;
+    const authUrl = `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(GITHUB_CLIENT_ID)}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent("public_repo offline_access")}&state=${encodeURIComponent(state)}&code_challenge=${encodeURIComponent(pkce.challenge)}&code_challenge_method=S256`;
     
     return new Promise((resolve) => {
       chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true }, async (responseUrl) => {
@@ -725,7 +818,14 @@ export async function authenticateGithub(): Promise<{ ok: boolean; token?: strin
           // The backend validates both the authorization code and GitHub identity.
           const res = await exchangeGithubCode(code, state, pkce.verifier, redirectUri);
           if (res.token && res.githubToken) {
-            resolve({ ok: true, token: res.githubToken, jwt: res.token });
+            resolve({
+              ok: true,
+              token: res.githubToken,
+              jwt: res.token,
+              refreshToken: res.refreshToken,
+              expiresIn: res.expiresIn,
+              refreshTokenExpiresIn: res.refreshTokenExpiresIn
+            });
           } else {
             resolve({ ok: false, message: res.error || "Backend did not return a valid token" });
           }

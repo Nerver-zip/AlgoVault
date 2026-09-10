@@ -59,6 +59,9 @@ export async function setUsername(username: string): Promise<void> {
       storage.remove("algovault.session.store"),
       storage.remove("algovault.logs.index"),
       storage.remove(STORAGE_KEYS.GITHUB_EXPORT_INDEX),
+      storage.remove(STORAGE_KEYS.GITHUB_EXPORT_INDEX_V2),
+      storage.remove(STORAGE_KEYS.GITHUB_LANGUAGE_SCAN),
+      storage.remove(STORAGE_KEYS.GITHUB_LANGUAGE_MIGRATION),
     ])
     // Clear monthly log buckets (algovault.logs.YYYY_MM)
     const allData = await chrome.storage.local.get(null)
@@ -282,6 +285,42 @@ export async function getGithubUser(): Promise<any | null> {
 
 export async function setGithubUser(user: any): Promise<void> {
   await setTyped(STORAGE_KEYS.GITHUB_USER, user)
+}
+
+export async function getGithubRefreshToken(): Promise<string | null> {
+  return getTyped<string>(STORAGE_KEYS.GITHUB_REFRESH_TOKEN)
+}
+
+export async function setGithubRefreshToken(token: string): Promise<void> {
+  await setTyped(STORAGE_KEYS.GITHUB_REFRESH_TOKEN, token)
+}
+
+export async function clearGithubRefreshToken(): Promise<void> {
+  await storage.remove(STORAGE_KEYS.GITHUB_REFRESH_TOKEN)
+}
+
+export async function getGithubTokenExpiresAt(): Promise<number | null> {
+  return getTyped<number>(STORAGE_KEYS.GITHUB_TOKEN_EXPIRES_AT)
+}
+
+export async function setGithubTokenExpiresAt(timestamp: number): Promise<void> {
+  await setTyped(STORAGE_KEYS.GITHUB_TOKEN_EXPIRES_AT, timestamp)
+}
+
+export async function clearGithubTokenExpiresAt(): Promise<void> {
+  await storage.remove(STORAGE_KEYS.GITHUB_TOKEN_EXPIRES_AT)
+}
+
+export async function getGithubRefreshTokenExpiresAt(): Promise<number | null> {
+  return getTyped<number>(STORAGE_KEYS.GITHUB_REFRESH_TOKEN_EXPIRES_AT)
+}
+
+export async function setGithubRefreshTokenExpiresAt(timestamp: number): Promise<void> {
+  await setTyped(STORAGE_KEYS.GITHUB_REFRESH_TOKEN_EXPIRES_AT, timestamp)
+}
+
+export async function clearGithubRefreshTokenExpiresAt(): Promise<void> {
+  await storage.remove(STORAGE_KEYS.GITHUB_REFRESH_TOKEN_EXPIRES_AT)
 }
 
 export async function getGithubBranch(): Promise<string | null> {
